@@ -25,8 +25,30 @@ set(SOURCES
 )
 
 set(TEST_SOURCES
+    tests/adder_semantics.cc
+    tests/bram.cc
+    tests/bram_semantics.cc
+    tests/ccf.cc
+    tests/clocking.cc
+    tests/config_output.cc
+    tests/errors.cc
+    tests/harness.cc
+    tests/io_registers.cc
+    tests/io_semantics.cc
+    tests/known_bugs.h
     tests/lut.cc
+    tests/lut_semantics.cc
+    tests/mult.cc
+    tests/netlist_eval.cc
+    tests/netlist_eval.h
+    tests/pll.cc
+    tests/qor.cc
+    tests/random_logic.cc
+    tests/seq_semantics.cc
     tests/testing.cc
+    tests/testing.h
+    tests/timing_matrix.cc
+    tests/timing_paths.cc
 )
 
 add_nextpnr_himbaechel_microarchitecture(${uarch}

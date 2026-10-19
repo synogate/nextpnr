@@ -1,0 +1,6 @@
+Pin_in  "a" Loc = "IO_SB_A0";
+Pin_in  "b" Loc = "IO_SB_B0";
+Pin_out "o" Loc = "IO_SB_A1";
+start floorplanning
+top u* ; pB : x60y60x70y70
+end floorplanning

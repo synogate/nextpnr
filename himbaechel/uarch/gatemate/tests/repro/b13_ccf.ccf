@@ -1,0 +1,4 @@
+default_GPIO | Drive = 9 | Slew = fast;
+NET "x" Loc = "IO_SA_A0" | Drive = 3;
+NET "y" Loc = "IO_SA_A1";
+NET "y" Slew = slow;
