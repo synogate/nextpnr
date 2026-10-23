@@ -49,6 +49,12 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("clk-cp", "use CP lines for CLK and EN");
     specific.add_options()("no-cpe-cp", "do not use CP lines pass through CPE");
     specific.add_options()("no-bridges", "do not use CPE in bridge mode");
+    specific.add_options()("lookahead", po::value<std::string>(),
+                           "router delay estimate: linear (default) or table (shortest paths on the empty chip)");
+    specific.add_options()("place-delay", po::value<std::string>(), "placer delay estimate: linear (default) or table");
+    specific.add_options()("lookahead-radius", po::value<int>(), "radius in tiles of the delay tables (default 12)");
+    specific.add_options()("router-estimate-weight", po::value<float>(),
+                           "weight of the delay estimate in the router's search (router2 default 1.25)");
     return specific;
 }
 
@@ -121,11 +127,29 @@ void GateMateImpl::init_database(Arch *arch)
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
+    auto table = [&](const char *option) {
+        if (!args.options.count(option))
+            return false;
+        std::string value = args.options[option].as<std::string>();
+        if (value != "linear" && value != "table")
+            log_error("Invalid %s='%s', valid values are linear and table.\n", option, value.c_str());
+        return value == "table";
+    };
+    table_route = table("lookahead");
+    table_place = table("place-delay");
 }
 
 void GateMateImpl::init(Context *ctx)
 {
     HimbaechelAPI::init(ctx);
+    auto &options = ctx->args.options;
+    if (table_route || table_place) {
+        int radius = options.count("lookahead-radius") ? options["lookahead-radius"].as<int>() : 12;
+        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); });
+    }
+    if (options.count("router-estimate-weight"))
+        ctx->settings[ctx->id("router2/estimateWeight")] =
+                std::to_string(options["router-estimate-weight"].as<float>());
     for (const auto &pad : ctx->package_info->pads) {
         available_pads.emplace(IdString(pad.package_pin));
         BelId bel = ctx->getBelByName(IdStringList::concat(IdString(pad.tile), IdString(pad.bel)));
@@ -371,7 +395,7 @@ void GateMateImpl::postPlace()
         pip_data[cell.second.get()->bel.tile] = data;
     }
 }
-bool GateMateImpl::checkPipAvail(PipId pip) const
+bool GateMateImpl::pip_allowed_by_options(PipId pip) const
 {
     const auto &extra_data = *pip_extra_data(pip);
     if (!use_cp_for_clk && extra_data.type == PipExtra::PIP_EXTRA_MUX) {
@@ -386,6 +410,14 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
         IdString(extra_data.name) == ctx->id("CPE.C_SN")) {
         return false;
     }
+    return true;
+}
+
+bool GateMateImpl::checkPipAvail(PipId pip) const
+{
+    if (!pip_allowed_by_options(pip))
+        return false;
+    const auto &extra_data = *pip_extra_data(pip);
     if (extra_data.type == PipExtra::PIP_EXTRA_MUX && (extra_data.block != 0)) {
         if (pip_mask[pip.tile] & extra_data.block) {
             return false;

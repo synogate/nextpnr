@@ -11,6 +11,8 @@ set(SOURCES
     gatemate.h
     gfx.cc
     gfxids.inc
+    lookahead.cc
+    lookahead.h
     pack.cc
     pack_bram.cc
     pack_clocking.cc
@@ -36,6 +38,7 @@ set(TEST_SOURCES
     tests/io_registers.cc
     tests/io_semantics.cc
     tests/known_bugs.h
+    tests/lookahead.cc
     tests/lut.cc
     tests/lut_semantics.cc
     tests/mult.cc
