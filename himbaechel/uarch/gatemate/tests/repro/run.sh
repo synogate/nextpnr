@@ -269,6 +269,13 @@ bug() {
             synth $d; pnr $d; result $d
             [ $status = 0 ] && grep -m1 finished out/$d.log | sed 's/^Info: /nextpnr: /'
         done ;;
+    37)
+        for d in b37_adder_sum_operand b37_adder_sum_operand_ok; do
+            title $d.v
+            synth $d; pnr $d; result $d
+            grep -A3 "combinational loops:" out/$d.log | sed 's/^Info: */nextpnr: /'
+            [ $status = 0 ] && grep -m1 finished out/$d.log | sed 's/^Info: /nextpnr: /'
+        done ;;
     o1 | O1)
         d=o1_fmax_crash
         title "$d.v synthesized with -noclkbuf"
@@ -279,7 +286,7 @@ bug() {
 }
 
 [ $# = 0 ] && { sed -n '2,7p' "$0" | sed 's/^# \?//'; exit 1; }
-[ "$1" = all ] && set -- 1 2 3 4 5 6 7 8 9 11 12 13 14 15 16 17 18 19 20 21 23 24 26 27 28 30 31 33 34 35 36 o1
+[ "$1" = all ] && set -- 1 2 3 4 5 6 7 8 9 11 12 13 14 15 16 17 18 19 20 21 23 24 26 27 28 30 31 33 34 35 36 37 o1
 for b in "$@"; do
     echo "######## bug $b"
     bug $b

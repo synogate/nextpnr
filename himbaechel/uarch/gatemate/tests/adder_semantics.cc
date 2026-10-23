@@ -199,6 +199,21 @@ TEST_F(GateMateAdderTest, carry_used_as_operand_before_next_bit)
             400));
 }
 
+// A chain whose second bit adds the first bit's sum: an ordinary design without a loop. The packer
+// merges both bits into one two-bit adder CPE, whose first sum then feeds its own operand input;
+// timing analysis must not take that for a combinational loop (the first bit's sum does not depend
+// on the second bit's operands).
+TEST_F(GateMateAdderTest, sum_into_next_bit)
+{
+    auto [s0, c0] = addf("x0", input("a"), input("b"), input("ci"));
+    auto [s1, co] = addf("x1", s0, input("c"), c0);
+    output("s0", s0);
+    output("s1", s1);
+    output("co", co);
+    // The whole flow: the timing analysis that stops it runs while routing
+    EXPECT_NO_THROW(place_and_route());
+}
+
 // A carry out feeding the carry inputs of two adders: the next bit of its own chain and the first
 // bit of another chain.
 TEST_F(GateMateAdderTest, carry_feeding_two_carry_inputs)
