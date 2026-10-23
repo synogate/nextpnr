@@ -23,6 +23,7 @@
 #include "extra_data.h"
 #include "himbaechel_api.h"
 #include "log.h"
+#include "lookahead.h"
 #include "nextpnr.h"
 #include "util.h"
 
@@ -58,10 +59,15 @@ struct GateMateImpl : HimbaechelAPI
     void expandBoundingBox(BoundingBox &bb) const override;
     bool checkPipAvail(PipId pip) const override;
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override { return checkPipAvail(pip); };
+    // Whether a pip is usable at all with the chosen options, regardless of placement
+    bool pip_allowed_by_options(PipId pip) const;
 
     bool isBelLocationValid(BelId bel, bool explain_invalid = false) const override;
     delay_t estimateDelay(WireId src, WireId dst) const override;
     delay_t predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const override;
+    // Delay tables for the router (estimateDelay) and the placer (predictDelay), see lookahead.h
+    GateMateLookahead lookahead;
+    bool table_route = false, table_place = false;
     bool getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const override;
     TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const override;
     TimingClockingInfo getPortClockingInfo(const CellInfo *cell, IdString port, int index) const override;

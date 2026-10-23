@@ -33,6 +33,11 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
     int d2d = 0;
     if (tile_extra_data(src.tile)->die != tile_extra_data(dst.tile)->die)
         d2d += 2000;
+    if (table_route) {
+        delay_t delay = lookahead.estimate(src, dst);
+        if (delay >= 0)
+            return delay + d2d;
+    }
     tile_xy(ctx->chip_info, src.tile, sx, sy);
     tile_xy(ctx->chip_info, dst.tile, dx, dy);
 
@@ -44,6 +49,12 @@ delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_be
     int d2d = 0;
     if (tile_extra_data(src_bel.tile)->die != tile_extra_data(dst_bel.tile)->die)
         d2d += 2000;
+    if (table_place) {
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        delay_t delay = src != WireId() && dst != WireId() ? lookahead.estimate(src, dst) : -1;
+        if (delay >= 0)
+            return delay + d2d;
+    }
 
     Loc src_loc = ctx->getBelLocation(src_bel), dst_loc = ctx->getBelLocation(dst_bel);
     return 100 + 100 * (std::abs(dst_loc.x - src_loc.x) + std::abs(dst_loc.y - src_loc.y)) + d2d;
