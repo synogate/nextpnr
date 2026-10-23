@@ -370,6 +370,7 @@ void GateMateImpl::postPlace()
         pip_mask[cell.second.get()->bel.tile] = mask;
         pip_data[cell.second.get()->bel.tile] = data;
     }
+    update_gui_labels();
 }
 bool GateMateImpl::checkPipAvail(PipId pip) const
 {
@@ -946,6 +947,7 @@ void GateMateImpl::postRoute()
         }
     }
     ctx->assignArchInfo();
+    update_gui_labels();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {

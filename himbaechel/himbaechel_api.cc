@@ -32,6 +32,25 @@ std::vector<IdString> HimbaechelAPI::getCellTypes() const
     return result;
 }
 
+void HimbaechelAPI::drawTileWire(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire)
+{
+    Loc loc;
+    tile_xy(ctx->chip_info, tile_wire.tile, loc.x, loc.y);
+    const auto &wire_data = chip_wire_info(ctx->chip_info, tile_wire);
+    drawWire(g, style, loc, IdString(wire_data.wire_type), wire_data.tile_wire,
+             IdString(chip_tile_info(ctx->chip_info, tile_wire.tile).type_name));
+}
+
+void HimbaechelAPI::drawPip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip)
+{
+    WireId src_wire = ctx->getPipSrcWire(pip);
+    WireId dst_wire = ctx->getPipDstWire(pip);
+    int32_t src_id = chip_wire_info(ctx->chip_info, src_wire).tile_wire;
+    int32_t dst_id = chip_wire_info(ctx->chip_info, dst_wire).tile_wire;
+    drawPip(g, style, ctx->getPipLocation(pip), src_wire, ctx->getWireType(src_wire), src_id, dst_wire,
+            ctx->getWireType(dst_wire), dst_id);
+}
+
 BelBucketId HimbaechelAPI::getBelBucketForBel(BelId bel) const { return ctx->getBelType(bel); }
 
 BelBucketId HimbaechelAPI::getBelBucketForCellType(IdString cell_type) const { return cell_type; }

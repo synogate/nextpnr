@@ -19,6 +19,8 @@ set(GUI_SOURCES
     pythontab.cc
     pythontab.h
     quadtree.h
+    textshader.cc
+    textshader.h
     treemodel.cc
     treemodel.h
     worker.cc

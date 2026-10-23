@@ -26,6 +26,8 @@
 #include <QOpenGLVertexArrayObject>
 #include <QOpenGLWidget>
 #include <array>
+#include <memory>
+#include <vector>
 
 #include "log.h"
 #include "nextpnr.h"
@@ -155,7 +157,8 @@ class LineShader
 
         int last_vbo_update = 0;
     };
-    std::array<Buffers, GraphicElement::STYLE_MAX> buffers_;
+    // One set of buffers per slot (by default one per style)
+    std::vector<std::unique_ptr<Buffers>> buffers_;
 
     // GL uniform locations.
     struct
@@ -191,13 +194,13 @@ class LineShader
                                                          "   Out_Color = color;\n"
                                                          "}\n";
 
-    // Must be called on initialization.
-    bool compile(void);
+    // Must be called on initialization, with the number of buffer slots (one per style by default).
+    bool compile(int slots = GraphicElement::STYLE_MAX);
 
-    void update_vbos(enum GraphicElement::style_t style, const LineShaderData &line);
+    void update_vbos(int slot, const LineShaderData &line);
 
-    // Render a LineShaderData with a given M/V/P transformation.
-    void draw(enum GraphicElement::style_t style, const QColor &color, float thickness, const QMatrix4x4 &projection);
+    // Render the LineShaderData of a slot with a given M/V/P transformation.
+    void draw(int slot, const QColor &color, float thickness, const QMatrix4x4 &projection);
 };
 
 NEXTPNR_NAMESPACE_END

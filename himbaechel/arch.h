@@ -785,6 +785,25 @@ struct Arch : BaseArch<ArchRanges>
     DecalXY getWireDecal(WireId wire) const override;
     DecalXY getPipDecal(PipId pip) const override;
     DecalXY getGroupDecal(GroupId group) const override;
+    bool guiDrawsUnusedRouting() const override { return uarch->guiDrawsUnusedRouting(); }
+    std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return uarch->getDetailDecals(); }
+    std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override
+    {
+        return uarch->getDetailPips(decal, x, y);
+    }
+    float getGuiColumnX(int x) const override { return uarch->getGuiColumnX(x); }
+    std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override
+    {
+        return uarch->getBelAttrs(bel);
+    }
+    std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const override
+    {
+        return uarch->getWireAttrs(wire);
+    }
+    std::vector<std::pair<IdString, std::string>> getPipAttrs(PipId pip) const override
+    {
+        return uarch->getPipAttrs(pip);
+    }
 
     // ------------------------------------------------
     // Routing methods
