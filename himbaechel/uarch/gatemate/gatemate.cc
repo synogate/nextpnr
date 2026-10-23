@@ -687,6 +687,7 @@ void GateMateImpl::postPlace()
         ctx->settings[ctx->id("partition-unrouted")] = 1;
         timing_analysis(ctx, false, false, false, false, true);
     }
+    update_gui_labels();
 }
 void GateMateImpl::configureRouter2(Router2Cfg &cfg)
 {
@@ -1361,6 +1362,7 @@ void GateMateImpl::postRoute()
         }
     }
     ctx->assignArchInfo();
+    update_gui_labels();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {

@@ -125,6 +125,24 @@ struct HimbaechelAPI
 
     virtual void drawGroup(std::vector<GraphicElement> &g, GroupId group, Loc loc) {};
 
+    // Draw one tile wire of a wire's node, and a pip. These get the tile wire and the pip themselves,
+    // where drawWire and drawPip get the graphics ids of gfxids.inc; by default they call drawWire and
+    // drawPip.
+    virtual void drawTileWire(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire);
+    virtual void drawPip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip);
+
+    // GUI: whether wires and pips no net uses are drawn, and properties shown for a selected element
+    virtual bool guiDrawsUnusedRouting() const { return true; }
+    // Details of tiles shown only when zoomed in (see ArchAPI::getDetailDecals): decals of type
+    // DecalId::TYPE_DETAIL, drawn by drawDetail
+    virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const { return {}; }
+    virtual void drawDetail(std::vector<GraphicElement> &g, DecalId decal) {}
+    virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const { return {}; }
+    virtual float getGuiColumnX(int x) const { return x; }
+    virtual std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const { return {}; }
+    virtual std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const { return {}; }
+    virtual std::vector<std::pair<IdString, std::string>> getPipAttrs(PipId pip) const { return {}; }
+
     // Cell delay
     virtual bool getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const;
     virtual TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const;

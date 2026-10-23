@@ -20,6 +20,9 @@
 #ifndef HIMBAECHEL_GATEMATE_H
 #define HIMBAECHEL_GATEMATE_H
 
+#include <array>
+#include <mutex>
+
 #include "extra_data.h"
 #include "himbaechel_api.h"
 #include "log.h"
@@ -39,6 +42,7 @@ enum MultiDieStrategy
 };
 
 struct TimingAnalyser;
+struct PlacedAnchor; // gfx.cc
 
 struct GateMateImpl : HimbaechelAPI
 {
@@ -149,6 +153,42 @@ struct GateMateImpl : HimbaechelAPI
     TimingClockingInfo getPortClockingInfo(const CellInfo *cell, IdString port, int index) const override;
 
     void drawBel(std::vector<GraphicElement> &g, GraphicElement::style_t style, IdString bel_type, Loc loc) override;
+    using HimbaechelAPI::drawPip;
+    void drawTileWire(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire) override;
+    void drawPip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip) override;
+    bool guiDrawsUnusedRouting() const override;
+    std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override;
+    void drawDetail(std::vector<GraphicElement> &g, DecalId decal) override;
+    std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override;
+    float getGuiColumnX(int x) const override;
+    std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override;
+    std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const override;
+    std::vector<std::pair<IdString, std::string>> getPipAttrs(PipId pip) const override;
+    // Labels of the configuration of the used bels for the GUI (gui_attrs.cc). Built after placement
+    // and after routing, while the context is locked; read while drawing, which may happen in
+    // another thread.
+    void update_gui_labels();
+    std::vector<std::string> gui_labels(BelId bel) const;
+    // The pad of an IO tile, or nullptr
+    const PadInfoPOD *tile_pad(Loc loc) const;
+    // Lanes and channel tracks for the used routing in the GUI (gfx.cc), assigned after routing so
+    // that no two signals share one; with the labels
+    void update_gui_routing();
+    float gui_lane(int tile, int index, float lane) const;
+    float gui_track(WireId node, int channel, float track) const;
+    // Whether a pip from this wire arriving from another tile is used
+    bool gui_arrival_used(int tile, int index) const;
+    bool fixed_pip(PipId pip) const;
+    // Where the GUI draws a tile wire, and where the drawing of a pip starts (at its source, or for
+    // a source arriving from another tile, at its driver) and ends; for checking the drawings
+    std::pair<float, float> gui_position(int tile, int index) const;
+    std::array<float, 4> gui_pip_ends(PipId pip) const;
+    // gfx.cc helpers: a tile wire's anchor with its assigned lane; a pip's or a wire's drawing, with
+    // the assigned lanes and tracks or the default ones
+    PlacedAnchor placed_routed(int tile, int index) const;
+    void draw_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip, bool assigned) const;
+    void draw_route_from_driver(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire,
+                                const PlacedAnchor &to, bool assigned) const;
 
     bool getClusterPlacement(ClusterId cluster, BelId root_bel,
                              std::vector<std::pair<CellInfo *, BelId>> &placement) const override;
@@ -260,6 +300,12 @@ struct GateMateImpl : HimbaechelAPI
     pool<int> partition_routed_tiles;
 
   private:
+    mutable std::mutex gui_labels_mutex_;
+    dict<BelId, std::vector<std::string>> gui_labels_;
+    dict<std::pair<int, int>, float> gui_lanes_;
+    dict<std::pair<WireId, int>, float> gui_tracks_;
+    pool<std::pair<int, int>> gui_arrivals_;
+
     bool getChildPlacement(const BaseClusterInfo *cluster, Loc root_loc,
                            std::vector<std::pair<CellInfo *, BelId>> &placement) const;
 

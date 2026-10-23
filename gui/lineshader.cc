@@ -152,7 +152,7 @@ void PolyLine::build(LineShaderData &target) const
     }
 }
 
-bool LineShader::compile(void)
+bool LineShader::compile(int slots)
 {
     program_ = new QOpenGLShaderProgram(parent_);
     program_->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource_);
@@ -171,97 +171,101 @@ bool LineShader::compile(void)
     uniforms_.color = program_->uniformLocation("color");
     program_->release();
 
-    for (int style = 0; style < GraphicElement::STYLE_MAX; style++) {
-        buffers_[style].position = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
-        buffers_[style].normal = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
-        buffers_[style].miter = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
-        buffers_[style].index = QOpenGLBuffer(QOpenGLBuffer::IndexBuffer);
+    buffers_.clear();
+    for (int slot = 0; slot < slots; slot++) {
+        buffers_.push_back(std::make_unique<Buffers>());
+        Buffers &b = *buffers_.back();
+        b.position = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
+        b.normal = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
+        b.miter = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
+        b.index = QOpenGLBuffer(QOpenGLBuffer::IndexBuffer);
 
-        if (!buffers_[style].vao.create())
+        if (!b.vao.create())
             log_abort();
-        buffers_[style].vao.bind();
+        b.vao.bind();
 
-        if (!buffers_[style].position.create())
+        if (!b.position.create())
             log_abort();
-        if (!buffers_[style].normal.create())
+        if (!b.normal.create())
             log_abort();
-        if (!buffers_[style].miter.create())
+        if (!b.miter.create())
             log_abort();
-        if (!buffers_[style].index.create())
+        if (!b.index.create())
             log_abort();
 
-        buffers_[style].position.setUsagePattern(QOpenGLBuffer::StaticDraw);
-        buffers_[style].normal.setUsagePattern(QOpenGLBuffer::StaticDraw);
-        buffers_[style].miter.setUsagePattern(QOpenGLBuffer::StaticDraw);
-        buffers_[style].index.setUsagePattern(QOpenGLBuffer::StaticDraw);
+        b.position.setUsagePattern(QOpenGLBuffer::StaticDraw);
+        b.normal.setUsagePattern(QOpenGLBuffer::StaticDraw);
+        b.miter.setUsagePattern(QOpenGLBuffer::StaticDraw);
+        b.index.setUsagePattern(QOpenGLBuffer::StaticDraw);
 
-        buffers_[style].position.bind();
-        buffers_[style].normal.bind();
-        buffers_[style].miter.bind();
-        buffers_[style].index.bind();
+        b.position.bind();
+        b.normal.bind();
+        b.miter.bind();
+        b.index.bind();
 
-        buffers_[style].vao.release();
+        b.vao.release();
     }
 
     return true;
 }
 
-void LineShader::update_vbos(enum GraphicElement::style_t style, const LineShaderData &line)
+void LineShader::update_vbos(int slot, const LineShaderData &line)
 {
-    if (buffers_[style].last_vbo_update == line.last_render)
+    Buffers &b = *buffers_.at(slot);
+    if (b.last_vbo_update == line.last_render)
         return;
-    buffers_[style].last_vbo_update = line.last_render;
+    b.last_vbo_update = line.last_render;
 
-    buffers_[style].indices = line.indices.size();
-    if (buffers_[style].indices == 0)
+    b.indices = line.indices.size();
+    if (b.indices == 0)
         return;
 
-    buffers_[style].position.bind();
-    buffers_[style].position.allocate(&line.vertices[0], sizeof(Vertex2DPOD) * line.vertices.size());
+    b.position.bind();
+    b.position.allocate(&line.vertices[0], sizeof(Vertex2DPOD) * line.vertices.size());
 
-    buffers_[style].normal.bind();
-    buffers_[style].normal.allocate(&line.normals[0], sizeof(Vertex2DPOD) * line.normals.size());
+    b.normal.bind();
+    b.normal.allocate(&line.normals[0], sizeof(Vertex2DPOD) * line.normals.size());
 
-    buffers_[style].miter.bind();
-    buffers_[style].miter.allocate(&line.miters[0], sizeof(GLfloat) * line.miters.size());
+    b.miter.bind();
+    b.miter.allocate(&line.miters[0], sizeof(GLfloat) * line.miters.size());
 
-    buffers_[style].index.bind();
-    buffers_[style].index.allocate(&line.indices[0], sizeof(GLuint) * line.indices.size());
+    b.index.bind();
+    b.index.allocate(&line.indices[0], sizeof(GLuint) * line.indices.size());
 }
 
-void LineShader::draw(enum GraphicElement::style_t style, const QColor &color, float thickness,
-                      const QMatrix4x4 &projection)
+void LineShader::draw(int slot, const QColor &color, float thickness, const QMatrix4x4 &projection)
 {
+    Buffers &b = *buffers_.at(slot);
     auto gl = QOpenGLContext::currentContext()->functions();
-    if (buffers_[style].indices == 0)
+    if (b.indices == 0)
         return;
     program_->bind();
-    buffers_[style].vao.bind();
+    b.vao.bind();
 
     program_->setUniformValue(uniforms_.projection, projection);
     program_->setUniformValue(uniforms_.thickness, thickness);
     program_->setUniformValue(uniforms_.color, color.redF(), color.greenF(), color.blueF(), color.alphaF());
 
-    buffers_[style].position.bind();
+    b.position.bind();
     program_->enableAttributeArray(attributes_.position);
     program_->setAttributeBuffer(attributes_.position, GL_FLOAT, 0, 2);
 
-    buffers_[style].normal.bind();
+    b.normal.bind();
     program_->enableAttributeArray(attributes_.normal);
     program_->setAttributeBuffer(attributes_.normal, GL_FLOAT, 0, 2);
 
-    buffers_[style].miter.bind();
+    b.miter.bind();
     program_->enableAttributeArray(attributes_.miter);
     program_->setAttributeBuffer(attributes_.miter, GL_FLOAT, 0, 1);
 
-    buffers_[style].index.bind();
-    gl->glDrawElements(GL_TRIANGLES, buffers_[style].indices, GL_UNSIGNED_INT, (void *)0);
+    b.index.bind();
+    gl->glDrawElements(GL_TRIANGLES, b.indices, GL_UNSIGNED_INT, (void *)0);
 
     program_->disableAttributeArray(attributes_.position);
     program_->disableAttributeArray(attributes_.normal);
     program_->disableAttributeArray(attributes_.miter);
 
-    buffers_[style].vao.release();
+    b.vao.release();
     program_->release();
 }
 

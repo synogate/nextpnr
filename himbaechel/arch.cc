@@ -600,6 +600,8 @@ std::vector<GraphicElement> Arch::getDecalGraphics(DecalId decal) const
         Loc loc;
         tile_xy(chip_info, decal.tile, loc.x, loc.y);
         uarch->drawGroup(ret, group, loc);
+    } else if (decal.type == DecalId::TYPE_DETAIL) {
+        uarch->drawDetail(ret, decal);
     } else if (decal.type == DecalId::TYPE_BEL) {
         BelId bel(decal.tile, decal.index);
         GraphicElement::style_t style = decal.active ? GraphicElement::STYLE_ACTIVE : GraphicElement::STYLE_INACTIVE;
@@ -607,24 +609,14 @@ std::vector<GraphicElement> Arch::getDecalGraphics(DecalId decal) const
     } else if (decal.type == DecalId::TYPE_WIRE) {
         WireId w(decal.tile, decal.index);
         for (WireId wire : get_tile_wire_range(w)) {
-            auto wire_type = getWireType(wire);
             GraphicElement::style_t style =
                     decal.active ? GraphicElement::STYLE_ACTIVE : GraphicElement::STYLE_INACTIVE;
-            Loc loc;
-            tile_xy(chip_info, wire.tile, loc.x, loc.y);
-            int32_t tilewire = chip_wire_info(chip_info, wire).tile_wire;
-            uarch->drawWire(ret, style, loc, wire_type, tilewire, get_tile_type(wire.tile));
+            uarch->drawTileWire(ret, style, wire);
         }
     } else if (decal.type == DecalId::TYPE_PIP) {
         PipId pip(decal.tile, decal.index);
-        WireId src_wire = getPipSrcWire(pip);
-        WireId dst_wire = getPipDstWire(pip);
-        Loc loc = getPipLocation(pip);
-        int32_t src_id = chip_wire_info(chip_info, src_wire).tile_wire;
-        int32_t dst_id = chip_wire_info(chip_info, dst_wire).tile_wire;
         GraphicElement::style_t style = decal.active ? GraphicElement::STYLE_ACTIVE : GraphicElement::STYLE_HIDDEN;
-        uarch->drawPip(ret, style, loc, src_wire, getWireType(src_wire), src_id, dst_wire, getWireType(dst_wire),
-                       dst_id);
+        uarch->drawPip(ret, style, pip);
     }
     return ret;
 }

@@ -15,6 +15,7 @@ set(SOURCES
     lookahead.cc
     lookahead.h
     lut_swap.cc
+    gui_attrs.cc
     pack.cc
     pack_bram.cc
     pack_clocking.cc
@@ -40,6 +41,7 @@ set(TEST_SOURCES
     tests/clocking.cc
     tests/config_output.cc
     tests/errors.cc
+    tests/gui.cc
     tests/harness.cc
     tests/hierarchy.cc
     tests/io_registers.cc

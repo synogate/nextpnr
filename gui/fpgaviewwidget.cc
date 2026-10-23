@@ -17,6 +17,8 @@
  *
  */
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <math.h>
 
@@ -44,9 +46,11 @@
 NEXTPNR_NAMESPACE_BEGIN
 
 FPGAViewWidget::FPGAViewWidget(QWidget *parent)
-        : QOpenGLWidget(parent), movieSaving(false), ctx_(nullptr), paintTimer_(this), lineShader_(this), zoom_(10.0f),
-          rendererArgs_(new FPGAViewWidget::RendererArgs), rendererData_(new FPGAViewWidget::RendererData)
+        : QOpenGLWidget(parent), movieSaving(false), ctx_(nullptr), paintTimer_(this), lineShader_(this),
+          textShader_(this), zoom_(10.0f), rendererArgs_(new FPGAViewWidget::RendererArgs),
+          rendererData_(new FPGAViewWidget::RendererData)
 {
+    TextShader::init_font();
     colors_.background = QColor("#000000");
     colors_.grid = QColor("#333");
     colors_.frame = QColor("#808080");
@@ -108,8 +112,11 @@ QSize FPGAViewWidget::sizeHint() const { return QSize(640, 480); }
 
 void FPGAViewWidget::initializeGL()
 {
-    if (!lineShader_.compile()) {
+    if (!lineShader_.compile(archLineSlot(ARCH_LAYERS, 0, 0))) {
         log_error("Could not compile shader.\n");
+    }
+    if (!textShader_.compile(archTextSlot(ARCH_LAYERS, 0, 0))) {
+        log_error("Could not compile text shader.\n");
     }
     initializeOpenGLFunctions();
     QtImGui::initialize(this);
@@ -117,7 +124,7 @@ void FPGAViewWidget::initializeGL()
                  1.0);
 }
 
-float FPGAViewWidget::PickedElement::distance(Context *ctx, float wx, float wy) const
+float FPGAViewWidget::PickedElement::distance(Context *ctx, float wx, float wy, float scale) const
 {
     // Get DecalXY for this element.
     DecalXY dec = decal(ctx);
@@ -136,6 +143,8 @@ float FPGAViewWidget::PickedElement::distance(Context *ctx, float wx, float wy) 
     std::vector<float> distances;
     std::transform(
             graphics.begin(), graphics.end(), std::back_inserter(distances), [&](const GraphicElement &ge) -> float {
+                if (!lodVisible(lodRange(ge), scale))
+                    return -1;
                 switch (ge.type) {
                 case GraphicElement::TYPE_BOX: {
                     // If outside the box, return unit distance to closest border.
@@ -187,6 +196,40 @@ float FPGAViewWidget::PickedElement::distance(Context *ctx, float wx, float wy) 
     });
 }
 
+// The head of an arrow in a decal's graphics: two short lines back from its end, appended to heads.
+// A path drawn as several arrows gets one head, at its end: none where another line of the decal
+// continues. The head's size follows the arrow's length, up to a limit, and it is shown only from
+// the zoom on where it is a few pixels long.
+static void arrowHead(const std::vector<GraphicElement> &graphics, const GraphicElement &el,
+                      std::vector<GraphicElement> &heads)
+{
+    if (el.type != GraphicElement::TYPE_ARROW && el.type != GraphicElement::TYPE_LOCAL_ARROW)
+        return;
+    const float eps = 1e-4f, max_length = 0.003f, min_pixels = 4;
+    for (auto &other : graphics) {
+        if (&other == &el ||
+            (other.type != GraphicElement::TYPE_LINE && other.type != GraphicElement::TYPE_ARROW &&
+             other.type != GraphicElement::TYPE_LOCAL_LINE && other.type != GraphicElement::TYPE_LOCAL_ARROW))
+            continue;
+        for (auto [x, y] : {std::pair<float, float>(other.x1, other.y1), {other.x2, other.y2}})
+            if (std::abs(x - el.x2) < eps && std::abs(y - el.y2) < eps)
+                return;
+    }
+    float dx = el.x2 - el.x1, dy = el.y2 - el.y1, length = std::hypot(dx, dy);
+    if (length == 0)
+        return;
+    float h = std::min(0.3f * length, max_length), w = 0.35f * h;
+    dx /= length, dy /= length;
+    GraphicElement head = el;
+    head.type = el.type == GraphicElement::TYPE_ARROW ? GraphicElement::TYPE_LINE : GraphicElement::TYPE_LOCAL_LINE;
+    head.min_scale = std::max(el.min_scale, min_pixels / h);
+    for (float side : {-1.0f, 1.0f}) {
+        head.x1 = el.x2 - dx * h - dy * w * side;
+        head.y1 = el.y2 - dy * h + dx * w * side;
+        heads.push_back(head);
+    }
+}
+
 void FPGAViewWidget::renderGraphicElement(LineShaderData &out, PickQuadTree::BoundingBox &bb, const GraphicElement &el,
                                           float x, float y)
 {
@@ -224,28 +267,131 @@ void FPGAViewWidget::renderDecal(LineShaderData &out, PickQuadTree::BoundingBox 
     float offsetX = decal.x;
     float offsetY = decal.y;
 
-    for (auto &el : ctx_->getDecalGraphics(decal.decal)) {
-        renderGraphicElement(out, bb, el, offsetX, offsetY);
+    // Selected and highlighted items are drawn in full detail at any zoom: without the elements
+    // that stand in for details when zoomed out, and, for a used item, without the inactive
+    // elements of its decal (the background, such as unused connections inside a bel).
+    auto graphics = ctx_->getDecalGraphics(decal.decal);
+    bool active = std::any_of(graphics.begin(), graphics.end(),
+                              [](const GraphicElement &el) { return el.style == GraphicElement::STYLE_ACTIVE; });
+    std::vector<GraphicElement> heads;
+    for (auto &el : graphics)
+        arrowHead(graphics, el, heads);
+    graphics.insert(graphics.end(), heads.begin(), heads.end());
+    for (auto &el : graphics) {
+        if (std::isinf(el.max_scale) && !(active && el.style == GraphicElement::STYLE_INACTIVE))
+            renderGraphicElement(out, bb, el, offsetX, offsetY);
     }
 }
 
-void FPGAViewWidget::renderArchDecal(LineShaderData out[GraphicElement::STYLE_MAX], PickQuadTree::BoundingBox &bb,
-                                     const DecalXY &decal)
+int FPGAViewWidget::archStyle(GraphicElement::style_t style)
+{
+    switch (style) {
+    case GraphicElement::STYLE_FRAME:
+        return 0;
+    case GraphicElement::STYLE_INACTIVE:
+        return 1;
+    case GraphicElement::STYLE_ACTIVE:
+        return 2;
+    default:
+        return -1;
+    }
+}
+
+int FPGAViewWidget::lodLevel(float scale)
+{
+    int level = 0;
+    while (level + 1 < LOD_LEVELS && lodScale_[level + 1] <= scale)
+        level++;
+    return level;
+}
+
+int FPGAViewWidget::lodRange(const GraphicElement &el)
+{
+    int lo = lodLevel(el.min_scale);
+    int hi = std::isinf(el.max_scale) ? LOD_LEVELS : lodLevel(el.max_scale);
+    return hi > lo ? lo * (LOD_LEVELS + 1) + hi : -1;
+}
+
+bool FPGAViewWidget::lodVisible(int range, float scale)
+{
+    if (range < 0)
+        return false;
+    int lo = range / (LOD_LEVELS + 1), hi = range % (LOD_LEVELS + 1);
+    return scale >= lodScale_[lo] && (hi == LOD_LEVELS || scale < lodScale_[hi]);
+}
+
+void FPGAViewWidget::renderArchDecal(ArchLayer &layer, PickQuadTree::BoundingBox &bb, const DecalXY &decal, bool view,
+                                     PickQuadTree::BoundingBox *viewBB, int maxLevel)
 {
     float offsetX = decal.x;
     float offsetY = decal.y;
 
-    for (auto &el : ctx_->getDecalGraphics(decal.decal)) {
-        switch (el.style) {
-        case GraphicElement::STYLE_FRAME:
-        case GraphicElement::STYLE_INACTIVE:
-        case GraphicElement::STYLE_ACTIVE:
-            renderGraphicElement(out[el.style], bb, el, offsetX, offsetY);
-            break;
-        default:
-            break;
+    auto graphics = ctx_->getDecalGraphics(decal.decal);
+    std::vector<GraphicElement> heads;
+    for (auto &el : graphics)
+        arrowHead(graphics, el, heads);
+    graphics.insert(graphics.end(), heads.begin(), heads.end());
+    for (auto &el : graphics) {
+        int style = archStyle(el.style), range = lodRange(el);
+        if (style < 0 || range < 0)
+            continue;
+        if (viewDependent(el) != view) {
+            if (viewBB != nullptr) {
+                viewBB->setX0(std::min({viewBB->x0(), offsetX + el.x1, offsetX + el.x2}));
+                viewBB->setY0(std::min({viewBB->y0(), offsetY + el.y1, offsetY + el.y2}));
+                viewBB->setX1(std::max({viewBB->x1(), offsetX + el.x1, offsetX + el.x2}));
+                viewBB->setY1(std::max({viewBB->y1(), offsetY + el.y1, offsetY + el.y2}));
+            }
+            continue;
         }
+        if (lodLevel(el.min_scale) > maxLevel)
+            continue;
+        if (el.type == GraphicElement::TYPE_LABEL)
+            TextShader::build(layer.text[range][style], el.text, offsetX + el.x1, offsetY + el.y1, offsetX + el.x2,
+                              offsetY + el.y2);
+        else
+            renderGraphicElement(layer.gfx[range][style], bb, el, offsetX, offsetY);
     }
+}
+
+void FPGAViewWidget::renderView(ArchLayer &layer,
+                                const std::vector<std::pair<PickQuadTree::BoundingBox, DecalXY>> &decals,
+                                const PickQuadTree::BoundingBox &rect, int maxLevel)
+{
+    PickQuadTree::BoundingBox bb;
+    for (auto &d : decals) {
+        const auto &b = d.first;
+        if (b.x1() >= rect.x0() && b.x0() <= rect.x1() && b.y1() >= rect.y0() && b.y0() <= rect.y1())
+            renderArchDecal(layer, bb, d.second, true, nullptr, maxLevel);
+    }
+}
+
+FPGAViewWidget::PickQuadTree::BoundingBox FPGAViewWidget::visibleRect()
+{
+    QVector4D a = mouseToWorldCoordinates(0, 0), b = mouseToWorldCoordinates(width(), height());
+    PickQuadTree::BoundingBox r(a.x(), a.y(), b.x(), b.y());
+    r.fixup();
+    return r;
+}
+
+void FPGAViewWidget::requestView()
+{
+    auto v = visibleRect();
+    const auto &r = viewRequested_;
+    int level = lodLevel(1.0f / mouseToWorldDimensions(1, 0).x());
+    if (v.x0() >= r.x0() && v.x1() <= r.x1() && v.y0() >= r.y0() && v.y1() <= r.y1() && level <= viewRequestedLevel_)
+        return;
+    // The visible area and as much again on each side, to pan a bit without drawing again; up to
+    // the level of detail shown now (zooming in further asks again, for a smaller area)
+    viewRequested_ = PickQuadTree::BoundingBox(v.x0() - v.w(), v.y0() - v.h(), v.x1() + v.w(), v.y1() + v.h());
+    viewRequestedLevel_ = level;
+    {
+        QMutexLocker lock(&rendererArgsLock_);
+        rendererArgs_->viewRect = viewRequested_;
+        rendererArgs_->viewLevel = level;
+        rendererArgs_->viewChanged = true;
+    }
+    pokeRenderer();
 }
 
 void FPGAViewWidget::populateQuadTree(RendererData *data, const DecalXY &decal, const PickedElement &element)
@@ -253,8 +399,17 @@ void FPGAViewWidget::populateQuadTree(RendererData *data, const DecalXY &decal, 
     float x = decal.x;
     float y = decal.y;
 
+    // The graphics drawn only in view (possibly many) get one box for all of them
+    PickQuadTree::BoundingBox viewBB;
     for (auto &el : ctx_->getDecalGraphics(decal.decal)) {
         if (el.style == GraphicElement::STYLE_HIDDEN || el.style == GraphicElement::STYLE_FRAME) {
+            continue;
+        }
+        if (viewDependent(el)) {
+            viewBB.setX0(std::min({viewBB.x0(), x + el.x1, x + el.x2}));
+            viewBB.setY0(std::min({viewBB.y0(), y + el.y1, y + el.y2}));
+            viewBB.setX1(std::max({viewBB.x1(), x + el.x1, x + el.x2}));
+            viewBB.setY1(std::max({viewBB.y1(), y + el.y1, y + el.y2}));
             continue;
         }
 
@@ -287,6 +442,9 @@ void FPGAViewWidget::populateQuadTree(RendererData *data, const DecalXY &decal, 
         if (!res) {
             NPNR_ASSERT_FALSE("populateQuadTree: could not insert element");
         }
+    }
+    if (viewBB.x0() <= viewBB.x1() && !data->qt->insert(viewBB, element)) {
+        NPNR_ASSERT_FALSE("populateQuadTree: could not insert element");
     }
 }
 
@@ -329,11 +487,24 @@ void FPGAViewWidget::paintGL()
     // Render the grid.
     lineShader_.draw(GraphicElement::STYLE_GRID, colors_.grid, thick1Px, matrix);
 
-    // Render Arch graphics.
-    lineShader_.draw(GraphicElement::STYLE_FRAME, colors_.frame, thick11Px, matrix);
-    lineShader_.draw(GraphicElement::STYLE_HIDDEN, colors_.hidden, thick11Px, matrix);
-    lineShader_.draw(GraphicElement::STYLE_INACTIVE, colors_.inactive, thick11Px, matrix);
-    lineShader_.draw(GraphicElement::STYLE_ACTIVE, colors_.active, thick11Px, matrix);
+    // Render Arch graphics: the levels of detail for the current zoom, lines first, then text.
+    float scale = 1.0f / thick1Px; // pixels per coordinate unit
+    if (scale >= lodScale_[VIEW_LEVEL])
+        requestView();
+    const QColor *archColors[ARCH_STYLES] = {&colors_.frame, &colors_.inactive, &colors_.active};
+    for (int style = 0; style < ARCH_STYLES; style++)
+        for (int layer = 0; layer < ARCH_LAYERS; layer++)
+            for (int range = 0; range < LOD_RANGES; range++)
+                if (lodVisible(range, scale))
+                    lineShader_.draw(archLineSlot(layer, range, style), *archColors[style], thick11Px, matrix);
+    gl->glEnable(GL_BLEND);
+    gl->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    for (int style = 0; style < ARCH_STYLES; style++)
+        for (int layer = 0; layer < ARCH_LAYERS; layer++)
+            for (int range = 0; range < LOD_RANGES; range++)
+                if (lodVisible(range, scale))
+                    textShader_.draw(archTextSlot(layer, range, style), *archColors[style], matrix);
+    gl->glDisable(GL_BLEND);
 
     // Draw highlighted items.
     for (int i = 0; i < 8; i++) {
@@ -398,6 +569,7 @@ void FPGAViewWidget::renderLines(void)
     std::vector<std::pair<DecalXY, WireId>> wireDecals;
     std::vector<std::pair<DecalXY, PipId>> pipDecals;
     std::vector<std::pair<DecalXY, GroupId>> groupDecals;
+    std::vector<std::pair<DecalXY, BoundingBox>> detailDecals;
     bool decalsChanged = false;
     {
         // Take the UI/Normal mutex on the Context, copy over all we need as
@@ -439,14 +611,25 @@ void FPGAViewWidget::renderLines(void)
                     belDecals.push_back({ctx_->getBelDecal(bel), bel});
                 }
             }
-            if (displayWire_) {
-                for (auto wire : ctx_->getWires()) {
-                    wireDecals.push_back({ctx_->getWireDecal(wire), wire});
+            if (ctx_->guiDrawsUnusedRouting()) {
+                if (displayWire_) {
+                    for (auto wire : ctx_->getWires()) {
+                        wireDecals.push_back({ctx_->getWireDecal(wire), wire});
+                    }
                 }
-            }
-            if (displayPip_) {
-                for (auto pip : ctx_->getPips()) {
-                    pipDecals.push_back({ctx_->getPipDecal(pip), pip});
+                if (displayPip_) {
+                    for (auto pip : ctx_->getPips()) {
+                        pipDecals.push_back({ctx_->getPipDecal(pip), pip});
+                    }
+                }
+            } else if (displayWire_ || displayPip_) {
+                for (auto &net : ctx_->nets) {
+                    for (auto &wire : net.second->wires) {
+                        if (displayWire_)
+                            wireDecals.push_back({ctx_->getWireDecal(wire.first), wire.first});
+                        if (displayPip_ && wire.second.pip != PipId())
+                            pipDecals.push_back({ctx_->getPipDecal(wire.second.pip), wire.second.pip});
+                    }
                 }
             }
             if (displayGroup_) {
@@ -454,6 +637,7 @@ void FPGAViewWidget::renderLines(void)
                     groupDecals.push_back({ctx_->getGroupDecal(group), group});
                 }
             }
+            detailDecals = ctx_->getDetailDecals();
         }
     }
 
@@ -463,6 +647,9 @@ void FPGAViewWidget::renderLines(void)
     std::vector<DecalXY> highlightedDecals[8];
     bool highlightedOrSelectedChanged;
     bool gridChanged;
+    PickQuadTree::BoundingBox viewRect;
+    int viewLevel;
+    bool viewChanged;
     {
         // Take the renderer arguments lock, copy over all we need.
         QMutexLocker lock(&rendererArgsLock_);
@@ -477,17 +664,14 @@ void FPGAViewWidget::renderLines(void)
         gridChanged = rendererArgs_->gridChanged;
         rendererArgs_->changed = false;
         rendererArgs_->gridChanged = false;
+        viewRect = rendererArgs_->viewRect;
+        viewLevel = rendererArgs_->viewLevel;
+        viewChanged = rendererArgs_->viewChanged;
+        rendererArgs_->viewChanged = false;
     }
 
     // Render decals if necessary.
     if (decalsChanged) {
-        int last_render[GraphicElement::STYLE_HIGHLIGHTED0];
-        {
-            QMutexLocker locker(&rendererDataLock_);
-            for (int i = 0; i < GraphicElement::STYLE_HIGHLIGHTED0; i++)
-                last_render[i] = rendererData_->gfxByStyle[(enum GraphicElement::style_t)i].last_render;
-        }
-
         auto data = std::unique_ptr<FPGAViewWidget::RendererData>(new FPGAViewWidget::RendererData);
         // Reset bounding box.
         data->bbGlobal.clear();
@@ -495,26 +679,47 @@ void FPGAViewWidget::renderLines(void)
         // Draw Bels.
         if (displayBel_) {
             for (auto const &decal : belDecals) {
-                renderArchDecal(data->gfxByStyle, data->bbGlobal, decal.first);
+                PickQuadTree::BoundingBox viewBB;
+                renderArchDecal(data->arch, data->bbGlobal, decal.first, false, &viewBB);
+                if (viewBB.x0() <= viewBB.x1())
+                    data->viewDecals.push_back({viewBB, decal.first});
             }
         }
         // Draw Wires.
         if (displayWire_) {
             for (auto const &decal : wireDecals) {
-                renderArchDecal(data->gfxByStyle, data->bbGlobal, decal.first);
+                PickQuadTree::BoundingBox viewBB;
+                renderArchDecal(data->arch, data->bbGlobal, decal.first, false, &viewBB);
+                if (viewBB.x0() <= viewBB.x1())
+                    data->viewDecals.push_back({viewBB, decal.first});
             }
         }
         // Draw Pips.
         if (displayPip_) {
             for (auto const &decal : pipDecals) {
-                renderArchDecal(data->gfxByStyle, data->bbGlobal, decal.first);
+                PickQuadTree::BoundingBox viewBB;
+                renderArchDecal(data->arch, data->bbGlobal, decal.first, false, &viewBB);
+                if (viewBB.x0() <= viewBB.x1())
+                    data->viewDecals.push_back({viewBB, decal.first});
             }
         }
         // Draw Groups.
         if (displayGroup_) {
             for (auto const &decal : groupDecals) {
-                renderArchDecal(data->gfxByStyle, data->bbGlobal, decal.first);
+                PickQuadTree::BoundingBox viewBB;
+                renderArchDecal(data->arch, data->bbGlobal, decal.first, false, &viewBB);
+                if (viewBB.x0() <= viewBB.x1())
+                    data->viewDecals.push_back({viewBB, decal.first});
             }
+        }
+
+        // Details, drawn only in view: from the tiles they cover
+        for (auto const &decal : detailDecals) {
+            const BoundingBox &tiles = decal.second;
+            PickQuadTree::BoundingBox area(ctx_->getGuiColumnX(tiles.x0), tiles.y0, ctx_->getGuiColumnX(tiles.x1) + 1,
+                                           tiles.y1 + 1);
+            data->viewDecals.push_back({area, decal.first});
+            data->detailDecals.push_back({area, decal.first});
         }
 
         // Bounding box should be calculated by now.
@@ -562,24 +767,48 @@ void FPGAViewWidget::renderLines(void)
                 for (int i = 0; i < 8; i++)
                     data->gfxHighlighted[i] = rendererData_->gfxHighlighted[i];
             }
-            for (int i = 0; i < GraphicElement::STYLE_HIGHLIGHTED0; i++)
-                data->gfxByStyle[(enum GraphicElement::style_t)i].last_render = ++last_render[i];
+            data->arch.setGeneration(++archGeneration_);
             rendererData_ = std::move(data);
         }
+    }
+    // Render the graphics drawn only in view, for a new area or after the decals changed.
+    if ((viewChanged || decalsChanged) && viewRect.x0() <= viewRect.x1()) {
+        std::vector<std::pair<PickQuadTree::BoundingBox, DecalXY>> decals;
+        {
+            QMutexLocker lock(&rendererDataLock_);
+            for (auto &d : rendererData_->viewDecals) {
+                const auto &b = d.first;
+                if (b.x1() >= viewRect.x0() && b.x0() <= viewRect.x1() && b.y1() >= viewRect.y0() &&
+                    b.y0() <= viewRect.y1())
+                    decals.push_back(d);
+            }
+        }
+        auto view = std::unique_ptr<ArchLayer>(new ArchLayer);
+        renderView(*view, decals, viewRect, viewLevel);
+        QMutexLocker lock(&rendererDataLock_);
+        rendererData_->view = std::move(*view);
+        rendererData_->view.setGeneration(++archGeneration_);
+        rendererData_->viewRect = viewRect;
     }
     if (gridChanged) {
         QMutexLocker locker(&rendererDataLock_);
         rendererData_->gfxGrid.clear();
         // Render grid.
-        for (float i = 0.0f; i < 1.0f * ctx_->getGridDimX() + 1; i += 1.0f) {
-            PolyLine(i, 0.0f, i, 1.0f * ctx_->getGridDimY()).build(rendererData_->gfxGrid);
+        // The edges of the tile columns (where the Arch spreads them out, both edges of each)
+        int columns = ctx_->getGridDimX();
+        float right = ctx_->getGuiColumnX(columns - 1) + 1.0f;
+        for (int x = 0; x < columns; x++) {
+            float left = ctx_->getGuiColumnX(x);
+            if (x == 0 || left != ctx_->getGuiColumnX(x - 1) + 1.0f)
+                PolyLine(left, 0.0f, left, 1.0f * ctx_->getGridDimY()).build(rendererData_->gfxGrid);
+            PolyLine(left + 1.0f, 0.0f, left + 1.0f, 1.0f * ctx_->getGridDimY()).build(rendererData_->gfxGrid);
         }
         for (float i = 0.0f; i < 1.0f * ctx_->getGridDimY() + 1; i += 1.0f) {
-            PolyLine(0.0f, i, 1.0f * ctx_->getGridDimX(), i).build(rendererData_->gfxGrid);
+            PolyLine(ctx_->getGuiColumnX(0), i, right, i).build(rendererData_->gfxGrid);
         }
         rendererData_->bbGlobal.setX0(-1.0f);
         rendererData_->bbGlobal.setY0(-1.0f);
-        rendererData_->bbGlobal.setX1(1.0f * (ctx_->getGridDimX() + 1));
+        rendererData_->bbGlobal.setX1(right + 1.0f);
         rendererData_->bbGlobal.setY1(1.0f * (ctx_->getGridDimY() + 1));
         rendererData_->gfxGrid.last_render++;
     }
@@ -687,17 +916,30 @@ boost::optional<FPGAViewWidget::PickedElement> FPGAViewWidget::pickElement(float
             return {};
         }
         elems = rendererData_->qt->get(worldx, worldy);
+        // The pips drawn in the details (which are not in the quadtree), where they are shown
+        if (1.0f / mouseToWorldDimensions(1, 0).x() >= lodScale_[VIEW_LEVEL]) {
+            for (auto &d : rendererData_->detailDecals) {
+                if (!d.first.contains(worldx, worldy))
+                    continue;
+                const DecalXY &decal = d.second;
+                for (PipId pip : ctx_->getDetailPips(decal.decal, worldx - decal.x, worldy - decal.y)) {
+                    DecalXY pd = ctx_->getPipDecal(pip);
+                    elems.push_back(PickedElement::fromPip(pip, pd.x, pd.y));
+                }
+            }
+        }
     }
 
     if (elems.size() == 0) {
         return {};
     }
 
-    // Calculate distances to all elements picked.
+    // Calculate distances to all elements picked, considering only what is drawn at this zoom.
+    float scale = 1.0f / mouseToWorldDimensions(1, 0).x();
     using ElemDist = std::pair<const PickedElement *, float>;
     std::vector<ElemDist> distances;
     std::transform(elems.begin(), elems.end(), std::back_inserter(distances), [&](const PickedElement &e) -> ElemDist {
-        return std::make_pair(&e, e.distance(ctx_, worldx, worldy));
+        return std::make_pair(&e, e.distance(ctx_, worldx, worldy, scale));
     });
 
     // Find closest non -1 element.
@@ -955,8 +1197,14 @@ void FPGAViewWidget::update_vbos()
 {
     lineShader_.update_vbos(GraphicElement::STYLE_GRID, rendererData_->gfxGrid);
 
-    for (int style = GraphicElement::STYLE_FRAME; style < GraphicElement::STYLE_HIGHLIGHTED0; style++) {
-        lineShader_.update_vbos((enum GraphicElement::style_t)(style), rendererData_->gfxByStyle[style]);
+    for (int layer = 0; layer < ARCH_LAYERS; layer++) {
+        const ArchLayer &data = layer == 0 ? rendererData_->arch : rendererData_->view;
+        for (int range = 0; range < LOD_RANGES; range++) {
+            for (int style = 0; style < ARCH_STYLES; style++) {
+                lineShader_.update_vbos(archLineSlot(layer, range, style), data.gfx[range][style]);
+                textShader_.update_vbos(archTextSlot(layer, range, style), data.text[range][style]);
+            }
+        }
     }
 
     for (int i = 0; i < 8; i++) {

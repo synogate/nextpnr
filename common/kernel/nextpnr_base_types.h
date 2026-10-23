@@ -28,6 +28,7 @@
 #define NEXTPNR_BASE_TYPES_H
 
 #include <boost/functional/hash.hpp>
+#include <limits>
 #include <string>
 
 #include "hashlib.h"
@@ -42,7 +43,7 @@ struct GraphicElement
     {
         TYPE_NONE,
         TYPE_LINE,
-        TYPE_ARROW,
+        TYPE_ARROW, // A line with a head at (x2, y2), unless another line of the decal continues from there
         TYPE_BOX,
         TYPE_CIRCLE,
         TYPE_LABEL,
@@ -77,7 +78,12 @@ struct GraphicElement
     } style = STYLE_FRAME;
 
     float x1 = 0, y1 = 0, x2 = 0, y2 = 0, z = 0;
+    // TYPE_LABEL: the text, centred in the box (x1, y1) - (x2, y2) and as large as fits
     std::string text;
+    // Level of detail: drawn only while one coordinate unit is at least min_scale and less than
+    // max_scale pixels on screen, e.g. details only when zoomed in, or a simpler shape in their place
+    // when zoomed out. The GUI rounds both down to one of a few levels.
+    float min_scale = 0, max_scale = std::numeric_limits<float>::infinity();
     GraphicElement() {};
     GraphicElement(type_t type, style_t style, float x1, float y1, float x2, float y2, float z)
             : type(type), style(style), x1(x1), y1(y1), x2(x2), y2(y2), z(z) {};

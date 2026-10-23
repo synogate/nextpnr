@@ -37,6 +37,7 @@
 #include "lineshader.h"
 #include "nextpnr.h"
 #include "quadtree.h"
+#include "textshader.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -220,7 +221,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
             }
             return decal;
         }
-        float distance(Context *ctx, float wx, float wy) const;
+        // Distance to the elements visible at `scale` (pixels per coordinate unit), or -1
+        float distance(Context *ctx, float wx, float wy, float scale) const;
     };
     using PickQuadTree = QuadTree<float, PickedElement>;
 
@@ -230,6 +232,44 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
     QPoint lastDragPos_;
     LineShader lineShader_;
+    TextShader textShader_;
+
+    // Levels of detail, in pixels per coordinate unit. An element's min_scale and max_scale are
+    // rounded down to a level, and the graphics from the Arch are kept per range of levels: from
+    // level lo up to, not including, level hi (LOD_LEVELS: no upper limit).
+    static constexpr int LOD_LEVELS = 7;
+    static constexpr float lodScale_[LOD_LEVELS] = {0, 10, 25, 60, 150, 400, 1000};
+    static constexpr int LOD_RANGES = LOD_LEVELS * (LOD_LEVELS + 1);
+    static int lodLevel(float scale);
+    // The range of an element, or -1 if it is never drawn
+    static int lodRange(const GraphicElement &el);
+    static bool lodVisible(int range, float scale);
+    // The styles of Arch graphics: STYLE_FRAME, STYLE_INACTIVE and STYLE_ACTIVE
+    static constexpr int ARCH_STYLES = 3;
+    static int archStyle(GraphicElement::style_t style);
+    // The finest levels of detail, from VIEW_LEVEL on, are drawn only for the area in view (and
+    // around it), and drawn again when the view leaves that area: for the whole chip, there may be
+    // far too many of them to keep.
+    static constexpr int VIEW_LEVEL = 4;
+    static bool viewDependent(const GraphicElement &el) { return lodLevel(el.min_scale) >= VIEW_LEVEL; }
+    // The Arch graphics are in two layers: those drawn regardless of the view, and those in view
+    static constexpr int ARCH_LAYERS = 2;
+    // Buffer slots of the Arch graphics: after the per-style slots for lines, from 0 for text
+    static int archLineSlot(int layer, int range, int style)
+    {
+        return GraphicElement::STYLE_MAX + archTextSlot(layer, range, style);
+    }
+    static int archTextSlot(int layer, int range, int style)
+    {
+        return (layer * LOD_RANGES + range) * ARCH_STYLES + style;
+    }
+    int archGeneration_ = 0;
+    // The area and the finest level of detail the in-view layer was last asked for (GUI thread)
+    PickQuadTree::BoundingBox viewRequested_;
+    int viewRequestedLevel_ = -1;
+    // The area of the chip shown
+    PickQuadTree::BoundingBox visibleRect();
+    void requestView();
     QMatrix4x4 viewMove_;
     float zoom_;
 
@@ -266,6 +306,11 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
         // Flags for rendering.
         bool zoomOutbound;
+        // The area and the finest level of detail to draw the in-view layer for, and whether they
+        // changed
+        PickQuadTree::BoundingBox viewRect;
+        int viewLevel = LOD_LEVELS - 1;
+        bool viewChanged = false;
         // Hint text
         std::string hintText;
         // cursor pos
@@ -274,10 +319,29 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     std::unique_ptr<RendererArgs> rendererArgs_;
     QMutex rendererArgsLock_;
 
+    struct ArchLayer
+    {
+        // By range of levels of detail and style (see lodRange, archStyle)
+        LineShaderData gfx[LOD_RANGES][ARCH_STYLES];
+        TextShaderData text[LOD_RANGES][ARCH_STYLES];
+        void setGeneration(int generation)
+        {
+            for (int range = 0; range < LOD_RANGES; range++)
+                for (int style = 0; style < ARCH_STYLES; style++)
+                    gfx[range][style].last_render = text[range][style].last_render = generation;
+        }
+    };
+
     struct RendererData
     {
         LineShaderData gfxGrid;
-        LineShaderData gfxByStyle[GraphicElement::STYLE_MAX];
+        // Arch graphics: those drawn regardless of the view, and those for the area viewRect only
+        ArchLayer arch, view;
+        PickQuadTree::BoundingBox viewRect;
+        // The decals with graphics drawn only in view, with the bounding box of those graphics
+        std::vector<std::pair<PickQuadTree::BoundingBox, DecalXY>> viewDecals;
+        // The detail decals (see ArchAPI::getDetailDecals), with the area they cover
+        std::vector<std::pair<PickQuadTree::BoundingBox, DecalXY>> detailDecals;
         LineShaderData gfxSelected;
         LineShaderData gfxHovered;
         LineShaderData gfxHighlighted[8];
@@ -298,8 +362,14 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void renderGraphicElement(LineShaderData &out, PickQuadTree::BoundingBox &bb, const GraphicElement &el, float x,
                               float y);
     void renderDecal(LineShaderData &out, PickQuadTree::BoundingBox &bb, const DecalXY &decal);
-    void renderArchDecal(LineShaderData out[GraphicElement::STYLE_MAX], PickQuadTree::BoundingBox &bb,
-                         const DecalXY &decal);
+    // Draw the graphics of a decal that are drawn regardless of the view (view false), adding the
+    // bounding box of the others to viewBB, or those drawn only in view (view true), up to a level
+    // of detail
+    void renderArchDecal(ArchLayer &layer, PickQuadTree::BoundingBox &bb, const DecalXY &decal, bool view,
+                         PickQuadTree::BoundingBox *viewBB, int maxLevel = LOD_LEVELS - 1);
+    // Draw the in-view layer for an area up to a level of detail, from the decals of viewDecals in it
+    void renderView(ArchLayer &layer, const std::vector<std::pair<PickQuadTree::BoundingBox, DecalXY>> &decals,
+                    const PickQuadTree::BoundingBox &rect, int maxLevel);
     void populateQuadTree(RendererData *data, const DecalXY &decal, const PickedElement &element);
     boost::optional<PickedElement> pickElement(float worldx, float worldy);
     QVector4D mouseToWorldCoordinates(int x, int y);
