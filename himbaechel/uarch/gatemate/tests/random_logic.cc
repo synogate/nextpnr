@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <random>
+#include <set>
 #include "known_bugs.h"
 #include "netlist_eval.h"
 #include "testing.h"
@@ -87,6 +88,32 @@ TEST_F(GateMateTest, mx4_registered)
         NetInfo *y = mx4("mux", d[0], d[1], d[2], d[3], input("s0"), input("s1"));
         output("q", dff("ff", y, global_clock("clk"))->getPort(id_Q));
     }));
+}
+
+// Bug 38: after placement, the repack merges the upper half of a 4:1 multiplexer (and of an adder)
+// into the lower one and deletes it; its cluster root must not keep a pointer to it
+// (getClusterPlacement() follows them).
+TEST_F(GateMateTest, cluster_children_are_live_cells_after_placement)
+{
+    NetInfo *d[4];
+    for (int i = 0; i < 4; i++)
+        d[i] = input(stringf("d%d", i));
+    NetInfo *y = mx4("mux", d[0], d[1], d[2], d[3], input("s0"), input("s1"));
+    output("q", dff("ff", y, global_clock("clk"))->getPort(id_Q));
+    output("sum", addf("add", d[0], d[1], gnd()).first);
+    ctx->pack();
+    ctx->place();
+    std::set<const CellInfo *> live;
+    for (auto &cell : ctx->cells)
+        live.insert(cell.second.get());
+    int children = 0;
+    for (auto &cell : ctx->cells)
+        for (CellInfo *child : cell.second->constr_children) {
+            // (Comparing the pointer only: a deleted cell must not be read)
+            EXPECT_TRUE(live.count(child)) << "a child of " << cell.first.c_str(ctx) << " was deleted";
+            children++;
+        }
+    EXPECT_GT(children, 0);
 }
 
 TEST_F(GateMateTest, l2t5_random_inits)

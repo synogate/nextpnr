@@ -103,6 +103,31 @@ TEST_F(GateMateBramTest, input_from_undriven_net)
             ::testing::ExitedWithCode(0), "");
 }
 
+// Bug 39: after placement, repack_ram merges each block's RAM halves into a new RAM cell and
+// deletes them, but the CPEs at the RAM's pins keep the deleted half's name as their cluster, so
+// getClusterRootCell() throws std::out_of_range for them.
+TEST_F(GateMateBramTest, ram_pin_cpes_keep_a_live_cluster_root_after_placement)
+{
+    CellInfo *ram = ctx->createCell(ctx->id("ram"), id_CC_BRAM_20K);
+    ram->params[id_RAM_MODE] = Property("TDP");
+    for (auto p : {id_A_RD_WIDTH, id_A_WR_WIDTH})
+        ram->params[p] = Property(5, 32);
+    connect_input(ram, id_A_CLK, global_clock("clk"));
+    connect_input(ram, ctx->id("A_ADDR[7]"), input("a"));
+    output("o", connect_output(ram, ctx->id("A_DO[0]")));
+    ctx->pack();
+    ctx->place();
+    int clustered = 0;
+    for (auto &cell : ctx->cells) {
+        if (cell.second->cluster == ClusterId())
+            continue;
+        clustered++;
+        EXPECT_TRUE(ctx->cells.count(cell.second->cluster))
+                << cell.first.c_str(ctx) << " is in the cluster of " << cell.second->cluster.c_str(ctx) << ", deleted";
+    }
+    EXPECT_GT(clustered, 0);
+}
+
 // The LOC parameter of the RAM primitives ("D<die>X<column>Y<row>", cells_sim.v) places the RAM
 // in that block. pack_bram.cc reads it, but does not use it.
 TEST_F(GateMateBramTest, location_parameter)
