@@ -410,6 +410,7 @@ class HeAPPlacer
             placer1_cfg.hpwl_scale_x = cfg.hpwl_scale_x;
             placer1_cfg.hpwl_scale_y = cfg.hpwl_scale_y;
             placer1_cfg.netShareWeight = cfg.netShareWeight;
+            placer1_cfg.adjust_crit = cfg.adjust_crit;
             if (!placer1_refine(ctx, placer1_cfg)) {
                 return false;
             }
@@ -958,8 +959,10 @@ class HeAPPlacer
                                                                        std::abs(o_pos - this_pos)));
 
                     if (user_idx) {
-                        weight *= (1.0 + cfg.timingWeight * std::pow(tmg.get_criticality(CellPortKey(port)),
-                                                                     cfg.criticalityExponent));
+                        float crit = tmg.get_criticality(CellPortKey(port));
+                        if (cfg.adjust_crit)
+                            crit = cfg.adjust_crit(port, crit);
+                        weight *= (1.0 + cfg.timingWeight * std::pow(crit, cfg.criticalityExponent));
                     }
 
                     // If cell 0 is not fixed, it will stamp +w on its equation and -w on the other end's equation,

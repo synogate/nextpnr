@@ -675,7 +675,8 @@ void GateMateTest::place_and_route()
 
 ::testing::AssertionResult GateMateTest::implementation_matches_reference(const std::function<void()> &build,
                                                                           int steps, uint64_t seed,
-                                                                          const std::function<void()> &after_pack)
+                                                                          const std::function<void()> &after_pack,
+                                                                          const std::function<void()> &after_place)
 {
     std::string dev = device;
     std::vector<std::string> opts = vopts;
@@ -692,6 +693,8 @@ void GateMateTest::place_and_route()
             if (after_pack)
                 after_pack();
             ctx->place();
+            if (after_place)
+                after_place();
         } catch (const log_execution_error_exception &) {
             return ::testing::AssertionFailure() << "implementation failed: " << errors.str();
         } catch (const std::exception &e) {

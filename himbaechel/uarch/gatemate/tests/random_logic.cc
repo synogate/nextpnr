@@ -430,6 +430,163 @@ TEST_P(GateMateRandomLogicTest, matches_reference)
     EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed));
 }
 
+// --vopt lut-input-swap: swapping the input pairs of every LUT tree keeps the function. (The full
+// seeds already fail matches_reference on known bugs.)
+TEST_P(GateMateRandomLogicTest, swapped_lut_inputs_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    int swapped = 0;
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed, {},
+                                                 [&] { swapped = impl->swap_lut_inputs(true); }));
+    EXPECT_GT(swapped, 0);
+}
+
+// --vopt replicate-fanout: copying LUT trees that drive several sinks next to groups of them keeps
+// the function. (The full seeds already fail matches_reference on known bugs.)
+TEST_P(GateMateRandomLogicTest, replicated_drivers_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    int copies = 0;
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed, {},
+                                                 [&] { copies = impl->replicate_drivers(2, true); }));
+    EXPECT_GT(copies, 0);
+}
+
+// --vopt place-repair: moving a LUT tree to another free position (preferably in the other half
+// of a CPE, which changes how it passes its result), and a register with the LUT tree feeding it to
+// another free half, keeps the function, and the placement valid.
+TEST_P(GateMateRandomLogicTest, relocated_cells_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    int moved = 0, moved_registers = 0;
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed, {}, [&] {
+        std::vector<CellInfo *> trees;
+        for (auto &cell : ctx->cells)
+            if (impl->relocatable_lut_tree(cell.second.get()))
+                trees.push_back(cell.second.get());
+        for (CellInfo *ci : trees) {
+            Loc loc = ctx->getBelLocation(ci->bel);
+            BelId to;
+            for (int d = 1; d < 10 && to == BelId(); d++)
+                for (auto [dx, dy] : {std::make_pair(d, 0), std::make_pair(0, d), std::make_pair(-d, 0),
+                                      std::make_pair(0, -d)})
+                    for (int z : {loc.z ^ 1, loc.z}) {
+                        BelId bel = ctx->getBelByLocation(Loc(loc.x + dx, loc.y + dy, z));
+                        if (to == BelId() && impl->free_lut_tree_bel(ci, bel))
+                            to = bel;
+                    }
+            if (to != BelId()) {
+                impl->relocate_lut_tree(ci, to);
+                moved++;
+            }
+        }
+        std::vector<CellInfo *> registers;
+        for (auto &cell : ctx->cells)
+            if (impl->relocatable_register(cell.second.get()))
+                registers.push_back(cell.second.get());
+        for (CellInfo *ff : registers) {
+            CellInfo *lut = impl->relocatable_register(ff);
+            Loc loc = ctx->getBelLocation(lut->bel);
+            BelId to;
+            for (int d = 0; d < 10 && to == BelId(); d++)
+                for (auto [dx, dy] : {std::make_pair(d, 0), std::make_pair(0, d), std::make_pair(-d, 0),
+                                      std::make_pair(0, -d)})
+                    for (int z : {loc.z ^ 1, loc.z}) {
+                        BelId bel = ctx->getBelByLocation(Loc(loc.x + dx, loc.y + dy, z));
+                        if (to == BelId() && bel != lut->bel && impl->free_register_half(lut, ff, bel))
+                            to = bel;
+                    }
+            if (to != BelId()) {
+                impl->relocate_register(lut, ff, to);
+                moved_registers++;
+            }
+        }
+        for (auto &cell : ctx->cells) {
+            if (cell.second->bel != BelId()) {
+                EXPECT_TRUE(ctx->isBelLocationValid(cell.second->bel)) << cell.first.c_str(ctx);
+            }
+        }
+    }));
+    EXPECT_GT(moved, 0);
+    EXPECT_GT(moved_registers, 0);
+}
+
+// --vopt fuse-luts: folding inverters (forward, backward and through registers) and fusing LUTs
+// into the LUTs they feed keeps the function. The netlists (the reference too) get inverters on the
+// outputs of half their LUTs, multiplexers and registers, so there is much to fold (tests/fuse.cc
+// tests each rule on its own).
+TEST_P(GateMateRandomLogicTest, fused_luts_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    init_context("CCGM1A1", {"--allow-unconstrained", "--fuse-luts"});
+    auto build_with_inverters = [&] {
+        build();
+        std::mt19937 rng(GetParam().seed);
+        std::vector<NetInfo *> outputs;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (!ci->type.in(id_CC_LUT2, id_CC_L2T4, id_CC_MX2, id_CC_DFF))
+                continue;
+            NetInfo *out = ci->getPort(ci->type == id_CC_MX2 ? id_Y : ci->type == id_CC_DFF ? id_Q : id_O);
+            if (!out || out->users.empty())
+                continue;
+            bool plain = true;
+            for (auto &user : out->users)
+                plain &= user.cell->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_L2T5, id_CC_MX2, id_CC_MX4,
+                                            id_CC_DFF, id_CC_ADDF) &&
+                         !user.port.in(id_CLK, id_EN, id_SR);
+            if (plain)
+                outputs.push_back(out);
+        }
+        int n = 0;
+        for (NetInfo *net : outputs) {
+            if (rng() % 2)
+                continue;
+            std::vector<PortRef> users;
+            for (auto &user : net->users)
+                users.push_back(user);
+            NetInfo *inverted = lut1(stringf("inv%d", n++), 0b01, net);
+            for (auto &user : users) {
+                user.cell->disconnectPort(user.port);
+                user.cell->connectPort(user.port, inverted);
+            }
+        }
+    };
+    EXPECT_TRUE(implementation_matches_reference(build_with_inverters, 300, GetParam().seed));
+}
+
+// --vopt enable-to-lut: moving register enables into the registers' LUTs (every register that
+// qualifies) keeps the function.
+TEST_P(GateMateRandomLogicTest, enables_in_luts_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    init_context("CCGM1A1", {"--allow-unconstrained", "--enable-to-lut=1"});
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed));
+}
+
+// --vopt mux-chains: merging chains of 2:1 multiplexers into 4:1 multiplexers keeps the function.
+TEST_P(GateMateRandomLogicTest, merged_mux_chains_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    init_context("CCGM1A1", {"--allow-unconstrained", "--mux-chains"});
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed));
+}
+
+// --vopt cpe-merge=2: merging pairs of LUT levels into one CPE (with copies) keeps the function.
+TEST_P(GateMateRandomLogicTest, merged_cpes_match_reference)
+{
+    if (!GetParam().avoid_known_bugs)
+        GTEST_SKIP() << "fails on known bugs anyway, see matches_reference";
+    init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=2"});
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed));
+}
+
 // The same netlists: the packed and placed design uses no more CPE halves than the netlist can
 // need (see cpe_half_bound), so the packer neither duplicates logic nor adds needless CPEs.
 TEST_P(GateMateRandomLogicTest, cpe_use_within_bound)

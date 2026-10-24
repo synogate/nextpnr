@@ -38,6 +38,8 @@ enum MultiDieStrategy
     FULL_USE,
 };
 
+struct TimingAnalyser;
+
 struct GateMateImpl : HimbaechelAPI
 {
     ~GateMateImpl();
@@ -65,6 +67,72 @@ struct GateMateImpl : HimbaechelAPI
     bool isBelLocationValid(BelId bel, bool explain_invalid = false) const override;
     delay_t estimateDelay(WireId src, WireId dst) const override;
     delay_t predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const override;
+    void configureRouter2(Router2Cfg &cfg) override;
+    // Swap the input pairs of the LUT trees where the delay tables estimate it faster, or of all of
+    // them; returns how many were swapped (lut_swap.cc)
+    int swap_lut_inputs(bool all = false);
+    bool lut_swap = false;
+    bool timing_opt_after_place = false;
+    // After routing, up to `rounds` rounds of swapping the input pairs of LUT trees on critical paths,
+    // each kept only if it improves Fmax (`test_undo`: try any trees, and undo every round); returns
+    // how many trees it tried
+    int improve_lut_inputs(int rounds, bool test_undo = false);
+    int lut_swap_rounds = 0;
+    // After routing, route `runs` more times from scratch, with criticality learnt from the runs
+    // before, and keep the best (reroute.cc)
+    void route_learning(int runs);
+    int route_runs = 0;
+    void report_critical_routing();
+    // The fastest path for a connection ignoring other nets' routing (reroute.cc)
+    std::vector<PipId> ideal_path(NetInfo *net, WireId src, WireId sink, delay_t &delay, bool free_only = false,
+                                  int margin = -1) const;
+    // Route what a repair ripped up, all other routing staying (reroute.cc)
+    bool route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid);
+    // Bind a connection along its ideal path with STRENGTH_PLACER, displacing other nets (reroute.cc)
+    void lay_ideal_path(NetInfo *net, const PortRef &user, std::vector<std::pair<NetInfo *, WireId>> &laid);
+    // After routing, up to `rounds` repairs of connections on the critical paths (reroute.cc)
+    void repair_critical_routing(int rounds);
+    int route_repair = 0;
+    // The simple timing model fixes (--vopt timing-fixes; delay.cc). TEMPORARY until fixed upstream
+    bool timing_fixes = false;
+    // After the routing repair, up to `rounds` moves of LUT trees on the critical paths (reroute.cc)
+    void repair_critical_placement(int rounds);
+    int place_repair = 0;
+    // After routing, up to `rounds` repairs of whole nets with several sinks on the critical paths
+    // (reroute.cc)
+    void repair_critical_nets(int rounds);
+    int net_repair = 0;
+    // LUT trees that can move after placement, the free positions they can move to, and the move;
+    // the same for registers with the LUT tree feeding them (reroute.cc)
+    bool relocatable_lut_tree(const CellInfo *ci) const;
+    bool free_lut_tree_bel(const CellInfo *ci, BelId bel, const CellInfo *leaving = nullptr) const;
+    void relocate_lut_tree(CellInfo *ci, BelId bel);
+    CellInfo *relocatable_register(const CellInfo *ff) const;
+    bool free_register_half(const CellInfo *lut, const CellInfo *ff, BelId lt) const;
+    void relocate_register(CellInfo *lut, CellInfo *ff, BelId lt);
+    void update_used_cpe(int tile);
+    bool reroute_clock_sink(NetInfo *clk, const PortRef &user, WireId old_sink);
+    // Before routing, copy the LUT trees driving nets of at least min_fanout sinks spread far apart
+    // next to groups of their sinks (with `all`, every such driver, two groups); returns the copies
+    // made (replicate.cc)
+    int replicate_drivers(int min_fanout, bool all = false);
+    int replicate_fanout = 0;
+    // Criticality per net learnt from earlier runs (--vopt place-crit-in)
+    dict<IdString, float> learnt_net_crit;
+    bool learnt_scale = false;
+    bool report_crit_routing = false;
+    std::string route_learn_mode = "max";
+    float route_learn_step = 0.25;
+    // Nets routed before router2 (clocks, multipliers), which routing again leaves alone
+    pool<IdString> prerouted_nets;
+    bool swap_pairs = true, swap_halves = true;
+    // Criticality-weighted delay from a LUT tree's inputs to its output, as it is and with the pairs
+    // swapped; with `routed`, as it is uses the real routing, otherwise both use the delay tables
+    std::pair<float, float> lut_tree_costs(CellInfo *ci, const TimingAnalyser &tmg, bool routed) const;
+    // Extra router cost (ns) of entering a scarce switch box mux, per tile type and pip; the router
+    // scales it down for critical connections. Empty unless --vopt sb-y-cost or sb-ydiag-cost.
+    std::vector<std::vector<float>> scarce_pip_cost;
+    float sb_y_cost = 0, sb_ydiag_cost = 0;
     // Delay tables for the router (estimateDelay) and the placer (predictDelay), see lookahead.h
     GateMateLookahead lookahead;
     bool table_route = false, table_place = false;

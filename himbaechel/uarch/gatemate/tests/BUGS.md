@@ -12,6 +12,15 @@ synthesizes them, runs nextpnr and prints the part of its output that shows the 
 timing bugs, typically that nextpnr finds no register-to-register path in a design that has
 exactly one, or the delay it uses for one arc. It needs yosys and jq, and writes into `repro/out/`.
 
+Simple fixes for the timing bugs 7, 23, 24, 25, 26, 28, 29, 31, 33 and 37 are behind
+`--vopt timing-fixes` (`delay.cc`, marked TEMPORARY), to measure with a truer timing model until
+the timing model is fixed for real; the environment variable `GATEMATE_TIMING_FIXES` turns them on
+for the tests, whose failing tests for these bugs then pass. Bug 31 also needed the internal inputs
+counted in `getPortTimingClass`: a LUT fed only through `COMBIN` counted as a constant, so its
+output was ignored. The estimates where the database has nothing: `COMBIN` -> `OUT` zero (an upper
+input reaches the lower output about as fast as its own), `CINY1` -> `OUT` the adder's carry-in to
+sum, a mid-chain carry out (33) the adder's carry out plus `CPOUT_cpout`.
+
 | # | Where | What goes wrong | Failing test(s) | `KnownBug` |
 |---|---|---|---|---|
 | 1 | `pack.cc` `optimize_lut2` | A LUT with the same net on two inputs gets a configuration for the input it disconnects; `AND(x, x)` leaves the pin undriven. Also happens after a buffer LUT is removed. | `GateMateLut2Test.same_net_on_both_inputs`, `input_equal_after_buffer_removal`, `GateMateL2T4Test.repeated_inputs` | `LUT_SAME_INPUT` |

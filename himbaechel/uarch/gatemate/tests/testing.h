@@ -112,10 +112,12 @@ class GateMateTest : public ::testing::Test
     // Builds the design twice with `build`: as the reference netlist, which stays unpacked, and
     // as the implementation in `ctx`, which is packed and placed. Then drives both with `steps`
     // random input vectors and checks that the implementation produces the same outputs.
-    // `after_pack`, if given, runs between packing and placement (e.g. to place cells by hand).
+    // `after_pack`, if given, runs between packing and placement (e.g. to place cells by hand), and
+    // `after_place` after placement (e.g. to transform the placed netlist).
     ::testing::AssertionResult implementation_matches_reference(const std::function<void()> &build, int steps = 200,
                                                                uint64_t seed = 1,
-                                                               const std::function<void()> &after_pack = {});
+                                                               const std::function<void()> &after_pack = {},
+                                                               const std::function<void()> &after_place = {});
 
     // After placement: the combinational dependencies inside cells (an output whose value
     // depends on an input, found with the simulator's cell models and random input values) that

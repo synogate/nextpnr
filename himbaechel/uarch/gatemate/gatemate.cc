@@ -17,6 +17,8 @@
  *
  */
 
+#include <fstream>
+#include <regex>
 #include <utility>
 
 #include "gatemate.h"
@@ -24,6 +26,9 @@
 #include "nextpnr_assertions.h"
 #include "placer_heap.h"
 #include "placer_static.h"
+#include "router2.h"
+#include "timing.h"
+#include "timing_opt.h"
 
 #define GEN_INIT_CONSTIDS
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
@@ -49,10 +54,94 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("clk-cp", "use CP lines for CLK and EN");
     specific.add_options()("no-cpe-cp", "do not use CP lines pass through CPE");
     specific.add_options()("no-bridges", "do not use CPE in bridge mode");
+    // The options from here on come from the timing experiments (docs/timing_experiments.md). Those
+    // marked TEMPORARY gave no gain; they and the code behind them are to go once the comparison has
+    // been repeated with the timing model fixed.
     specific.add_options()("lookahead", po::value<std::string>(),
                            "router delay estimate: linear (default) or table (shortest paths on the empty chip)");
     specific.add_options()("place-delay", po::value<std::string>(), "placer delay estimate: linear (default) or table");
     specific.add_options()("lookahead-radius", po::value<int>(), "radius in tiles of the delay tables (default 12)");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("sb-y-cost", po::value<float>(),
+                           "extra router cost (ns) of a switch box Y output for non-critical nets (default 0)");
+    specific.add_options()(
+            "sb-ydiag-cost", po::value<float>(),
+            "extra router cost (ns) of a small switch box's diagonal mux for non-critical nets (default 0)");
+    specific.add_options()("route-seed", po::value<uint64_t>(),
+                           "reseed the random generator before routing, to vary routing on the same placement");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("route-runs", po::value<int>(),
+                           "after routing, route again from scratch this many times with learnt criticality, keeping "
+                           "the best (default 0)");
+    specific.add_options()("route-learn", po::value<std::string>(),
+                           "how route-runs learn criticality: max (default), ema, scale or none");
+    specific.add_options()("route-learn-step", po::value<float>(), "step of the ema and scale learning (default 0.25)");
+    specific.add_options()("route-repair", po::value<int>(),
+                           "after routing, rounds of re-routing critical connections on their ideal path (default 0)");
+    // TEMPORARY until the timing model is fixed upstream (tests/BUGS.md; docs/timing_experiments.md)
+    specific.add_options()(
+            "timing-fixes",
+            "fix the timing bugs with simple fixes (tests/BUGS.md 7, 23, 24, 25, 26, 28, 29, 31, 33, 37), "
+            "to measure with a truer timing model");
+    // TEMPORARY until measured (docs/timing_experiments.md)
+    specific.add_options()("rewrite-crit-in", po::value<std::string>(),
+                           "apply mux-chains, fuse-luts and enable-to-lut only to cells driving nets that were "
+                           "critical in an earlier run (a place-crit-out file)");
+    specific.add_options()("rewrite-crit-min", po::value<float>(),
+                           "criticality from rewrite-crit-in a net needs (default 0.9)");
+    // TEMPORARY until measured (docs/timing_experiments.md)
+    specific.add_options()("rewrite-depth", po::value<float>(),
+                           "apply mux-chains, fuse-luts and enable-to-lut only on paths at least this fraction as "
+                           "deep (in logic levels) as the deepest");
+    // TEMPORARY until measured (docs/timing_experiments.md)
+    specific.add_options()("cpe-merge", po::value<int>(),
+                           "before packing, merge two levels of LUTs into one CPE where they fit: 1 where the first "
+                           "feeds only the second, 2 also with a copy of the first");
+    // TEMPORARY until measured (docs/timing_experiments.md)
+    specific.add_options()("mux-chains", "before packing, merge chains of two 2:1 multiplexers into 4:1 multiplexers");
+    // TEMPORARY until measured (docs/timing_experiments.md)
+    specific.add_options()("enable-to-lut", po::value<int>(),
+                           "before packing, move the enables of registers fed through a pass-through LUT into that LUT "
+                           "(D = EN ? D : Q), for enables feeding at least this many registers");
+    specific.add_options()("fuse-luts", "before packing, fold inverters and fuse LUTs into the LUTs they feed");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("net-repair", po::value<int>(),
+                           "after routing, rounds of re-routing nets with several critical sinks (default 0)");
+    specific.add_options()("place-repair", po::value<int>(),
+                           "after routing, rounds of moving LUT trees on the critical paths (default 0)");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("replicate-fanout", po::value<int>(),
+                           "before routing, copy LUTs driving critical nets of at least this many far-spread sinks");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("place-crit-in", po::value<std::string>(),
+                           "file of net criticalities (net, criticality) the placer treats as a minimum");
+    specific.add_options()(
+            "place-crit-mode", po::value<std::string>(),
+            "how the placer uses place-crit-in: max (a minimum criticality, default) or scale (a factor)");
+    specific.add_options()("place-crit-out", po::value<std::string>(),
+                           "file to write each net's criticality after routing to (its most critical sink)");
+    specific.add_options()("report-crit-routing",
+                           "after routing, compare the critical paths' routing with the delay tables");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("timing-opt", "after placement, move LUT trees on critical paths (nextpnr's timing_opt)");
+    // TEMPORARY: +1.5% at most, see docs/timing_experiments.md; goes unless it pays off after the timing fixes
+    specific.add_options()("lut-input-swap", "before routing, swap the input pairs of LUT trees to save plane changes");
+    specific.add_options()(
+            "lut-swap-rounds", po::value<int>(),
+            "after routing, rounds of swapping LUT input pairs or CPE halves on critical paths (default 0)");
+    specific.add_options()("lut-swap-moves", po::value<std::string>(),
+                           "moves for lut-swap-rounds: pairs, halves or both (default)");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("place-density-weight", po::value<float>(),
+                           "weight of a pin density penalty in the annealing placer (default 0, off)");
+    specific.add_options()("place-density-pins", po::value<float>(),
+                           "pins per tile above which the density penalty starts (default 8)");
+    specific.add_options()("place-density-bin", po::value<int>(),
+                           "bin size in tiles of the density penalty (default 4)");
+    // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()(
+            "router-critical-estimate-weight", po::value<float>(),
+            "weight of the delay estimate for the most critical connections (default: as for the others)");
     specific.add_options()("router-estimate-weight", po::value<float>(),
                            "weight of the delay estimate in the router's search (router2 default 1.25)");
     return specific;
@@ -137,16 +226,91 @@ void GateMateImpl::init_database(Arch *arch)
     };
     table_route = table("lookahead");
     table_place = table("place-delay");
+    lut_swap = args.options.count("lut-input-swap") > 0;
+    timing_opt_after_place = args.options.count("timing-opt") > 0;
+    report_crit_routing = args.options.count("report-crit-routing") > 0;
+    if (args.options.count("route-repair"))
+        route_repair = args.options["route-repair"].as<int>();
+    // TEMPORARY: the environment variable lets the bug tests run with the fixes
+    timing_fixes = args.options.count("timing-fixes") || getenv("GATEMATE_TIMING_FIXES");
+    if (args.options.count("place-repair"))
+        place_repair = args.options["place-repair"].as<int>();
+    if (args.options.count("net-repair"))
+        net_repair = args.options["net-repair"].as<int>();
+    if (args.options.count("route-runs"))
+        route_runs = args.options["route-runs"].as<int>();
+    if (args.options.count("replicate-fanout"))
+        replicate_fanout = args.options["replicate-fanout"].as<int>();
+    if (args.options.count("route-learn")) {
+        route_learn_mode = args.options["route-learn"].as<std::string>();
+        if (!pool<std::string>{"max", "ema", "scale", "none"}.count(route_learn_mode))
+            log_error("Invalid route-learn='%s', valid values are max, ema, scale and none.\n",
+                      route_learn_mode.c_str());
+    }
+    if (args.options.count("route-learn-step"))
+        route_learn_step = args.options["route-learn-step"].as<float>();
+    if (args.options.count("lut-swap-rounds"))
+        lut_swap_rounds = args.options["lut-swap-rounds"].as<int>();
+    if (args.options.count("lut-swap-moves")) {
+        std::string moves = args.options["lut-swap-moves"].as<std::string>();
+        if (moves != "pairs" && moves != "halves" && moves != "both")
+            log_error("Invalid lut-swap-moves='%s', valid values are pairs, halves and both.\n", moves.c_str());
+        swap_pairs = moves != "halves";
+        swap_halves = moves != "pairs";
+    }
+    if (args.options.count("sb-y-cost"))
+        sb_y_cost = args.options["sb-y-cost"].as<float>();
+    if (args.options.count("sb-ydiag-cost"))
+        sb_ydiag_cost = args.options["sb-ydiag-cost"].as<float>();
 }
 
 void GateMateImpl::init(Context *ctx)
 {
     HimbaechelAPI::init(ctx);
+    if (ctx->args.options.count("place-crit-in")) {
+        std::string filename = ctx->args.options["place-crit-in"].as<std::string>();
+        std::ifstream in(filename);
+        if (!in)
+            log_error("Cannot read '%s'.\n", filename.c_str());
+        std::string name;
+        float crit;
+        while (in >> name >> crit)
+            learnt_net_crit[ctx->id(name)] = crit;
+        log_info("Read the criticality of %d nets from '%s'.\n", int(learnt_net_crit.size()), filename.c_str());
+        learnt_scale = ctx->args.options.count("place-crit-mode") &&
+                       ctx->args.options["place-crit-mode"].as<std::string>() == "scale";
+    }
     auto &options = ctx->args.options;
-    if (table_route || table_place) {
+    if (table_route || table_place || lut_swap || lut_swap_rounds > 0 || route_repair > 0) {
         int radius = options.count("lookahead-radius") ? options["lookahead-radius"].as<int>() : 12;
         lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); });
     }
+    if (sb_y_cost > 0 || sb_ydiag_cost > 0) {
+        // Every switch box plane has four Y outputs, each driving a whole node, and a small switch
+        // box has only one diagonal mux per plane, through which all plane changes and diagonal hops
+        // pass; under congestion these run out first.
+        static const std::regex y_mux(R"(SB_(SML\.P\d+\.Y\d_int|BIG\.P\d+\.Y\d))"),
+                ydiag_mux(R"(SB_SML\.P\d+\.YDIAG_int)");
+        for (auto &type : ctx->chip_info->tile_types) {
+            scarce_pip_cost.emplace_back(type.pips.ssize(), 0.0f);
+            for (int i = 0; i < type.pips.ssize(); i++) {
+                std::string dst = IdString(type.wires[type.pips[i].dst_wire].name).str(ctx);
+                if (std::regex_match(dst, y_mux))
+                    scarce_pip_cost.back()[i] = sb_y_cost;
+                else if (std::regex_match(dst, ydiag_mux))
+                    scarce_pip_cost.back()[i] = sb_ydiag_cost;
+            }
+        }
+    }
+    if (options.count("place-density-weight"))
+        ctx->settings[ctx->id("placer1/densityWeight")] = std::to_string(options["place-density-weight"].as<float>());
+    if (options.count("place-density-pins"))
+        ctx->settings[ctx->id("placer1/densityPins")] = std::to_string(options["place-density-pins"].as<float>());
+    if (options.count("place-density-bin"))
+        ctx->settings[ctx->id("placer1/densityBin")] = std::to_string(options["place-density-bin"].as<int>());
+    if (options.count("router-critical-estimate-weight"))
+        ctx->settings[ctx->id("router2/criticalEstimateWeight")] =
+                std::to_string(options["router-critical-estimate-weight"].as<float>());
     if (options.count("router-estimate-weight"))
         ctx->settings[ctx->id("router2/estimateWeight")] =
                 std::to_string(options["router-estimate-weight"].as<float>());
@@ -342,6 +506,12 @@ void GateMateImpl::prePlace() { assign_cell_info(); }
 
 void GateMateImpl::postPlace()
 {
+    if (timing_opt_after_place) {
+        // Only cells outside clusters move, so these are LUT trees not merged with a register
+        TimingOptCfg cfg(ctx);
+        cfg.cellTypes.insert(id_CPE_L2T4);
+        timing_opt(ctx, cfg);
+    }
     repack();
     ctx->assignArchInfo();
     used_cpes.resize(ctx->getGridDimX() * ctx->getGridDimY());
@@ -395,6 +565,27 @@ void GateMateImpl::postPlace()
         pip_data[cell.second.get()->bel.tile] = data;
     }
 }
+void GateMateImpl::configureRouter2(Router2Cfg &cfg)
+{
+    if (scarce_pip_cost.empty())
+        return;
+    int y_pips = 0, ydiag_pips = 0;
+    for (auto &type : scarce_pip_cost)
+        for (float cost : type) {
+            y_pips += cost != 0 && cost == sb_y_cost;
+            ydiag_pips += cost != 0 && cost == sb_ydiag_cost && cost != sb_y_cost;
+        }
+    log_info("Extra router cost for non-critical nets: %.3f ns per switch box Y output, %.3f ns per diagonal mux "
+             "(%d and %d pips over all tile types).\n",
+             sb_y_cost, sb_ydiag_cost, y_pips, ydiag_pips);
+    cfg.get_base_cost = [this](Context *ctx, WireId wire, PipId pip, float crit_weight) {
+        float cost = default_base_cost(ctx, wire, pip, crit_weight);
+        if (pip != PipId())
+            cost += crit_weight * scarce_pip_cost[ctx->chip_info->tile_insts[pip.tile].type][pip.index];
+        return cost;
+    };
+}
+
 bool GateMateImpl::pip_allowed_by_options(PipId pip) const
 {
     const auto &extra_data = *pip_extra_data(pip);
@@ -439,6 +630,12 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
 
 void GateMateImpl::preRoute()
 {
+    if (replicate_fanout > 0)
+        replicate_drivers(replicate_fanout);
+    if (ctx->args.options.count("route-seed"))
+        ctx->rngseed(ctx->args.options["route-seed"].as<uint64_t>());
+    if (lut_swap)
+        swap_lut_inputs();
     route_mult();
     route_clock();
     ctx->assignArchInfo();
@@ -457,6 +654,10 @@ void GateMateImpl::preRoute()
             }
         }
     }
+    prerouted_nets.clear();
+    for (auto &net : ctx->nets)
+        if (!net.second->wires.empty())
+            prerouted_nets.insert(net.first);
 }
 
 void GateMateImpl::reassign_bridges(NetInfo *start_net, const dict<WireId, PipMap> &net_wires, WireId start_wire,
@@ -649,6 +850,40 @@ void GateMateImpl::reassign_cplines(NetInfo *ni, const dict<WireId, PipMap> &net
 
 void GateMateImpl::postRoute()
 {
+    if (route_runs > 0)
+        route_learning(route_runs);
+    if (net_repair > 0)
+        repair_critical_nets(net_repair);
+    if (route_repair > 0)
+        repair_critical_routing(route_repair);
+    if (place_repair > 0) {
+        repair_critical_placement(place_repair);
+        // The moved trees' new connections can often be repaired too
+        if (net_repair > 0)
+            repair_critical_nets(net_repair);
+        if (route_repair > 0)
+            repair_critical_routing(route_repair);
+    }
+    if (lut_swap_rounds > 0)
+        improve_lut_inputs(lut_swap_rounds);
+    if (report_crit_routing)
+        report_critical_routing();
+    if (ctx->args.options.count("place-crit-out")) {
+        std::string filename = ctx->args.options["place-crit-out"].as<std::string>();
+        std::ofstream out(filename);
+        if (!out)
+            log_error("Cannot write '%s'.\n", filename.c_str());
+        TimingAnalyser tmg(ctx);
+        tmg.setup();
+        tmg.run();
+        for (auto &net : ctx->nets) {
+            float crit = 0;
+            for (auto &user : net.second->users)
+                crit = std::max(crit, tmg.get_criticality(CellPortKey(user)));
+            if (crit > 0 && net.first.str(ctx).find_first_of(" \t\n") == std::string::npos)
+                out << net.first.str(ctx) << "\t" << crit << "\n";
+        }
+    }
     int num = 0;
 
     pool<IdString> nets_with_bridges;
@@ -1035,6 +1270,16 @@ void GateMateImpl::configurePlacerHeap(PlacerHeapCfg &cfg)
 {
     cfg.chainRipup = true;
     cfg.placeAllAtOnce = true;
+    if (!learnt_net_crit.empty())
+        // What earlier runs learnt (--vopt place-crit-in): at least the criticality the net had after
+        // routing, or (place-crit-mode=scale) the criticality times the net's learnt importance
+        cfg.adjust_crit = [this](const PortRef &user, float crit) {
+            NetInfo *net = user.cell ? user.cell->getPort(user.port) : nullptr;
+            auto found = net ? learnt_net_crit.find(net->name) : learnt_net_crit.end();
+            if (found == learnt_net_crit.end())
+                return crit;
+            return learnt_scale ? std::min(1.0f, crit * found->second) : std::max(crit, found->second);
+        };
 }
 
 void GateMateImpl::configurePlacerStatic(PlacerStaticCfg &cfg)

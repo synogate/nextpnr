@@ -250,6 +250,11 @@ class SAPlacer
 
         if (cfg.netShareWeight > 0)
             setup_nets_by_tile();
+        if (cfg.densityWeight > 0) {
+            setup_density();
+            log_info("  pin density cost %.0f (bins of %dx%d tiles, %.1f pins per tile)\n", curr_density_cost,
+                     cfg.densityBin, cfg.densityBin, cfg.densityPins);
+        }
 
         wirelen_t avg_wirelen = curr_wirelen_cost;
         wirelen_t min_wirelen = curr_wirelen_cost;
@@ -384,11 +389,17 @@ class SAPlacer
             curr_timing_cost = total_timing_cost();
             last_wirelen_cost = curr_wirelen_cost;
             last_timing_cost = curr_timing_cost;
+            if (cfg.densityWeight > 0)
+                setup_density();
             // Let the UI show visualization updates.
             ctx->yield();
         }
 
         auto saplace_end = std::chrono::high_resolution_clock::now();
+        if (cfg.densityWeight > 0) {
+            setup_density();
+            log_info("  pin density cost %.0f\n", curr_density_cost);
+        }
         log_info("SA placement time %.02fs\n", std::chrono::duration<float>(saplace_end - saplace_start).count());
 
         // Final post-placement validity check
@@ -472,6 +483,7 @@ class SAPlacer
     {
         static const double epsilon = 1e-20;
         moveChange.reset(this);
+        move_bin_pins.clear();
         if (!require_legal && cell->cluster != ClusterId())
             return false;
         BelId oldBel = cell->bel;
@@ -512,9 +524,11 @@ class SAPlacer
         }
 
         add_move_cell(moveChange, cell, oldBel);
+        add_density_move(cell, oldBel);
 
         if (other_cell != nullptr) {
             add_move_cell(moveChange, other_cell, newBel);
+            add_density_move(other_cell, newBel);
         }
 
         // Always check both the new and old locations; as in some cases of dedicated routing ripping up a cell can deny
@@ -537,10 +551,12 @@ class SAPlacer
         delta += (cfg.constraintWeight / temp) * (new_dist - old_dist) / last_wirelen_cost;
         if (cfg.netShareWeight > 0)
             delta += -cfg.netShareWeight * (net_delta_score / std::max<double>(total_net_share, epsilon));
+        delta += density_cost_change();
         n_move++;
         // SA acceptance criteria
         if (delta < 0 || (temp > 1e-8 && (ctx->rng() / float(0x3fffffff)) <= std::exp(-delta / temp))) {
             n_accept++;
+            commit_density();
         } else {
             if (other_cell != nullptr)
                 ctx->unbindBel(oldBel);
@@ -596,6 +612,7 @@ class SAPlacer
         double delta = 0;
         int orig_share_cost = total_net_share;
         moveChange.reset(this);
+        move_bin_pins.clear();
 #if CHAIN_DEBUG
         log_info("finding cells for chain swap %s\n", cell->name.c_str(ctx));
 #endif
@@ -680,6 +697,7 @@ class SAPlacer
         for (const auto &mm : moved_cells) {
             CellInfo *cell = ctx->cells.at(mm.first).get();
             add_move_cell(moveChange, cell, moved_cells.at(cell->name));
+            add_density_move(cell, moved_cells.at(cell->name));
             if (cfg.netShareWeight > 0)
                 update_nets_by_tile(cell, ctx->getBelLocation(moved_cells.at(cell->name)),
                                     ctx->getBelLocation(cell->bel));
@@ -696,10 +714,12 @@ class SAPlacer
             delta +=
                     cfg.netShareWeight * (orig_share_cost - total_net_share) / std::max<double>(total_net_share, 1e-20);
         }
+        delta += density_cost_change();
         n_move++;
         // SA acceptance criteria
         if (delta < 0 || (temp > 1e-8 && (ctx->rng() / float(0x3fffffff)) <= std::exp(-delta / temp))) {
             n_accept++;
+            commit_density();
 #if CHAIN_DEBUG
             log_info("accepted chain swap %s\n", cell->name.c_str(ctx));
 #endif
@@ -844,6 +864,8 @@ class SAPlacer
             return 0;
 
         float crit = tmg.get_criticality(CellPortKey(user));
+        if (cfg.adjust_crit)
+            crit = cfg.adjust_crit(user, crit);
         double delay = ctx->getDelayNS(ctx->predictArcDelay(net, user));
         return delay * std::pow(crit, crit_exp);
     }
@@ -1210,6 +1232,77 @@ class SAPlacer
     wirelen_t last_wirelen_cost, curr_wirelen_cost;
     double last_timing_cost, curr_timing_cost;
 
+    // Pin density (cfg.densityWeight): connected pins per bin, the density cost (the sum of the bins'
+    // penalties) and the pins each bin gains in the move being evaluated
+    std::vector<int> bin_pins;
+    int bins_x = 1;
+    double curr_density_cost = 0, last_density_cost = 0;
+    dict<int, int> move_bin_pins;
+
+    int cell_pins(const CellInfo *cell) const
+    {
+        int pins = 0;
+        for (auto &port : cell->ports)
+            pins += port.second.net != nullptr;
+        return pins;
+    }
+    int bin_of(BelId bel) const
+    {
+        Loc loc = ctx->getBelLocation(bel);
+        return loc.x / cfg.densityBin + (loc.y / cfg.densityBin) * bins_x;
+    }
+    double bin_capacity() const { return cfg.densityPins * cfg.densityBin * cfg.densityBin; }
+    double bin_penalty(int pins) const
+    {
+        double over = pins - bin_capacity();
+        return over > 0 ? over * over : 0;
+    }
+    void setup_density()
+    {
+        bins_x = (ctx->getGridDimX() + cfg.densityBin - 1) / cfg.densityBin;
+        int bins_y = (ctx->getGridDimY() + cfg.densityBin - 1) / cfg.densityBin;
+        bin_pins.assign(bins_x * bins_y, 0);
+        for (auto &cell : ctx->cells)
+            if (cell.second->bel != BelId())
+                bin_pins.at(bin_of(cell.second->bel)) += cell_pins(cell.second.get());
+        curr_density_cost = 0;
+        for (int pins : bin_pins)
+            curr_density_cost += bin_penalty(pins);
+        last_density_cost = curr_density_cost;
+    }
+    // Note that `cell`, now at its new bel, moved there from `from`
+    void add_density_move(CellInfo *cell, BelId from)
+    {
+        if (cfg.densityWeight <= 0)
+            return;
+        int pins = cell_pins(cell);
+        move_bin_pins[bin_of(from)] -= pins;
+        move_bin_pins[bin_of(cell->bel)] += pins;
+    }
+    double density_delta() const
+    {
+        double delta = 0;
+        for (auto &bin : move_bin_pins)
+            delta += bin_penalty(bin_pins.at(bin.first) + bin.second) - bin_penalty(bin_pins.at(bin.first));
+        return delta;
+    }
+    // The density part of a move's cost, normalised like the others
+    double density_cost_change() const
+    {
+        if (cfg.densityWeight <= 0)
+            return 0;
+        double norm = std::max(last_density_cost, bin_capacity() * bin_capacity());
+        return cfg.densityWeight * density_delta() / norm;
+    }
+    void commit_density()
+    {
+        if (cfg.densityWeight <= 0)
+            return;
+        curr_density_cost += density_delta();
+        for (auto &bin : move_bin_pins)
+            bin_pins.at(bin.first) += bin.second;
+    }
+
     Context *ctx;
     float temp = 10;
     float crit_exp = 8;
@@ -1240,6 +1333,9 @@ Placer1Cfg::Placer1Cfg(Context *ctx)
     timing_driven = ctx->setting<bool>("timing_driven");
     hpwl_scale_x = 1;
     hpwl_scale_y = 1;
+    densityWeight = ctx->setting<float>("placer1/densityWeight", 0);
+    densityBin = ctx->setting<int>("placer1/densityBin", 4);
+    densityPins = ctx->setting<float>("placer1/densityPins", 8);
 }
 
 bool placer1(Context *ctx, Placer1Cfg cfg)

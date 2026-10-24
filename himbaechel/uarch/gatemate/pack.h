@@ -67,6 +67,19 @@ struct GateMatePacker
     void remove_double_constrained();
 
     void cleanup();
+    void fuse_luts();
+    void fuse_l2t5_inputs();
+    void enables_into_luts(int min_fanout);
+    void merge_mux_chains();
+    void merge_into_cpes(int level);
+    // LUTs merge_into_cpes() put on a 5-input LUT's fifth input, for fuse_l2t5_inputs() to fold
+    pool<IdString> into_upper_half;
+    // The rewrites above only for cells on deep paths, once find_deep_cells has run (fuse.cc)
+    void find_deep_cells(float fraction);
+    void find_critical_cells(const std::string &filename, float min_crit);
+    bool deep(IdString cell) const { return !only_deep || deep_cells.count(cell); }
+    pool<IdString> deep_cells;
+    bool only_deep = false;
     void repack_cpe();
     void repack_ram();
     void reassign_clocks();

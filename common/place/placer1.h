@@ -19,6 +19,7 @@
 #ifndef PLACE_H
 #define PLACE_H
 
+#include <functional>
 #include "log.h"
 #include "nextpnr.h"
 
@@ -33,6 +34,15 @@ struct Placer1Cfg
     int timingFanoutThresh;
     bool timing_driven;
     int hpwl_scale_x, hpwl_scale_y;
+    // Penalty on pin density, if densityWeight > 0: the connected cell pins in each bin of
+    // densityBin x densityBin tiles above densityPins per tile, squared. TEMPORARY: no gain in the
+    // GateMate timing experiments (himbaechel/uarch/gatemate/docs/timing_experiments.md)
+    float densityWeight;
+    int densityBin;
+    float densityPins;
+    // If set, adjusts the criticality of a connection (its sink), e.g. by what earlier runs learnt.
+    // TEMPORARY: only the GateMate placement learning uses it, which gave no gain
+    std::function<float(const PortRef &user, float crit)> adjust_crit;
 };
 
 extern bool placer1(Context *ctx, Placer1Cfg cfg);

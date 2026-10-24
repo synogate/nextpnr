@@ -11,8 +11,10 @@ set(SOURCES
     gatemate.h
     gfx.cc
     gfxids.inc
+    fuse.cc
     lookahead.cc
     lookahead.h
+    lut_swap.cc
     pack.cc
     pack_bram.cc
     pack_clocking.cc
@@ -22,6 +24,8 @@ set(SOURCES
     pack_serdes.cc
     pack.h
     pll.cc
+    replicate.cc
+    reroute.cc
     route_clock.cc
     route_mult.cc
 )
@@ -40,6 +44,8 @@ set(TEST_SOURCES
     tests/known_bugs.h
     tests/lookahead.cc
     tests/lut.cc
+    tests/fuse.cc
+    tests/lut_swap.cc
     tests/lut_semantics.cc
     tests/mult.cc
     tests/netlist_eval.cc
@@ -47,6 +53,7 @@ set(TEST_SOURCES
     tests/pll.cc
     tests/qor.cc
     tests/random_logic.cc
+    tests/router_cost.cc
     tests/seq_semantics.cc
     tests/testing.cc
     tests/testing.h

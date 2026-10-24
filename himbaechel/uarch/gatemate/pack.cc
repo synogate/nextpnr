@@ -636,6 +636,20 @@ void GateMateImpl::pack()
     if (forced_die == IdString())
         packer.assign_regions();
     packer.pack_constants();
+    if (args.options.count("rewrite-depth"))
+        packer.find_deep_cells(args.options["rewrite-depth"].as<float>());
+    if (args.options.count("rewrite-crit-in"))
+        packer.find_critical_cells(args.options["rewrite-crit-in"].as<std::string>(),
+                                   args.options.count("rewrite-crit-min") ? args.options["rewrite-crit-min"].as<float>()
+                                                                          : 0.9f);
+    if (args.options.count("mux-chains"))
+        packer.merge_mux_chains();
+    if (args.options.count("fuse-luts"))
+        packer.fuse_luts();
+    if (args.options.count("enable-to-lut"))
+        packer.enables_into_luts(args.options["enable-to-lut"].as<int>());
+    if (args.options.count("cpe-merge"))
+        packer.merge_into_cpes(args.options["cpe-merge"].as<int>());
     packer.cleanup();
     packer.pack_io();
     packer.insert_clocking();
@@ -648,6 +662,8 @@ void GateMateImpl::pack()
     packer.pack_mult();
     packer.pack_addf();
     packer.pack_cpe();
+    if (args.options.count("fuse-luts") || args.options.count("cpe-merge"))
+        packer.fuse_l2t5_inputs();
     packer.copy_clocks();
     packer.remove_constants();
     packer.remove_double_constrained();

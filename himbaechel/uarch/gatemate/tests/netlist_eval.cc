@@ -188,7 +188,9 @@ void NetlistEvaluator::resolve_unknown_init(uint64_t seed, const std::set<std::s
         h ^= h >> 31;
         h *= 0xbf58476d1ce4e5b9ULL;
         h ^= h >> 29;
-        entry.second.q = tri(h & 1);
+        // A register --vopt fuse-luts moved an inverter behind holds the inverse of the original
+        bool inverted = bool_or_default(entry.first.first->attrs, ctx->id("FUSE_INVERTED"), false);
+        entry.second.q = tri((h & 1) ^ inverted);
     }
     memo.clear();
 }
@@ -611,6 +613,10 @@ Tri NetlistEvaluator::eval_l2t4(const CellInfo *cell)
     }
     if (connected(cell, id_COMBIN))
         throw EvalUnsupported(stringf("cell '%s' has COMBIN connected but no INIT_L20", cell->name.c_str(ctx)));
+    // After placement a lower half's result always passes L20, which then has no configuration
+    // (repack() sets INIT_L20 for every LUT tree placed there, and L2T4_UPPER for every one)
+    if (!upper && cell->bel != BelId() && cell->params.count(id_L2T4_UPPER))
+        throw EvalUnsupported(stringf("cell '%s' is in a lower half but has no INIT_L20", cell->name.c_str(ctx)));
     return l10();
 }
 

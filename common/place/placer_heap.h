@@ -57,6 +57,11 @@ struct PlacerHeapCfg
     // components) so will always be spread together
     std::vector<pool<BelBucketId>> cellGroups;
 
+    // If set, adjusts the criticality of a connection (its sink), e.g. by what earlier runs learnt; also
+    // passed on to the annealing refinement. TEMPORARY: only the GateMate placement learning uses it,
+    // which gave no gain (himbaechel/uarch/gatemate/docs/timing_experiments.md)
+    std::function<float(const PortRef &user, float crit)> adjust_crit;
+
     // this is an optional callback to prioritise certain cells/clusters for legalisation
     std::function<float(Context *, CellInfo *)> get_cell_legalisation_weight = [](Context *, CellInfo *) { return 1; };
 

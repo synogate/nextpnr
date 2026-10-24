@@ -786,7 +786,8 @@ struct Router2
     {
         if (!timing_driven)
             return 0;
-        return tmg.get_criticality(CellPortKey(net->users.at(i)));
+        float crit = tmg.get_criticality(CellPortKey(net->users.at(i)));
+        return cfg.adjust_crit ? cfg.adjust_crit(net->users.at(i), crit) : crit;
     }
 
     bool arc_failed_slack(NetInfo *net, store_index<PortRef> usr_idx)
@@ -818,6 +819,8 @@ struct Router2
         // Calculate a timing weight based on criticality
         float crit = get_arc_crit(net, i);
         float crit_weight = std::max<float>(0.05f, (1.0f - std::pow(crit, 2)));
+        float estimate_weight =
+                cfg.critical_estimate_weight + (cfg.estimate_weight - cfg.critical_estimate_weight) * crit_weight;
         ROUTE_LOG_DBG("     crit=%.3f crit_weight=%.3f\n", crit, crit_weight);
         // Check if arc was already done _in this iteration_
         if (t.processed_sinks.count(dst_wire))
@@ -927,7 +930,7 @@ struct Router2
                         next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, dh, crit_weight);
                         next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, dh, crit_weight);
                         next_score.togo_cost =
-                                cfg.estimate_weight * get_togo_cost(net, i, next_idx, dst_wire, false, crit_weight);
+                                estimate_weight * get_togo_cost(net, i, next_idx, dst_wire, false, crit_weight);
                         if (was_visited_fwd(next_idx, next_score.delay)) {
                             // Don't expand the same node twice.
                             continue;
@@ -1001,10 +1004,9 @@ struct Router2
                         WireScore next_score;
                         next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, uh, crit_weight);
                         next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, uh, crit_weight);
-                        next_score.togo_cost = const_mode
-                                                       ? 0
-                                                       : cfg.estimate_weight * get_togo_cost(net, i, next_idx, src_wire,
-                                                                                             true, crit_weight);
+                        next_score.togo_cost = const_mode ? 0
+                                                          : estimate_weight * get_togo_cost(net, i, next_idx, src_wire,
+                                                                                            true, crit_weight);
                         if (was_visited_bwd(next_idx, next_score.delay)) {
                             // Don't expand the same node twice.
                             continue;
@@ -1693,7 +1695,7 @@ struct Router2
         }
     }
 
-    void operator()()
+    bool operator()()
     {
         log_info("Running router2...\n");
         log_info("Setting up routing resources...\n");
@@ -1731,6 +1733,8 @@ struct Router2
                     net.max_crit = 0;
                     for (auto &usr : ni->users) {
                         float c = tmg.get_criticality(CellPortKey(usr));
+                        if (cfg.adjust_crit)
+                            c = cfg.adjust_crit(usr, c);
                         net.max_crit = std::max(net.max_crit, c);
                     }
                 }
@@ -1805,7 +1809,13 @@ struct Router2
             ++iter;
             if (curr_cong_weight < 1e9)
                 curr_cong_weight += cfg.curr_cong_mult;
-        } while (!failed_nets.empty());
+        } while (!failed_nets.empty() && (cfg.max_iterations < 0 || iter <= cfg.max_iterations));
+        if (!failed_nets.empty()) {
+            log_info("Router2 gave up after %d iterations with %d nets still failing.\n", iter - 1,
+                     int(failed_nets.size()));
+            lock.unlock();
+            return false;
+        }
         if (cfg.perf_profile) {
             std::vector<std::pair<int, IdString>> nets_by_runtime;
             for (auto &n : nets_by_udata) {
@@ -1833,15 +1843,16 @@ struct Router2
                         true /* warn_on_failure */, true /* update_results */);
 
         lock.unlock();
+        return true;
     }
 };
 } // namespace
 
-void router2(Context *ctx, const Router2Cfg &cfg)
+bool router2(Context *ctx, const Router2Cfg &cfg)
 {
     Router2 rt(ctx, cfg);
     rt.ctx = ctx;
-    rt();
+    return rt();
 }
 
 Router2Cfg::Router2Cfg(Context *ctx)
@@ -1863,6 +1874,7 @@ Router2Cfg::Router2Cfg(Context *ctx)
         curr_cong_mult = ctx->setting<float>("router2/currCongWeightMult", 2.0f);
         estimate_weight = ctx->setting<float>("router2/estimateWeight", 1.25f);
     }
+    critical_estimate_weight = ctx->setting<float>("router2/criticalEstimateWeight", estimate_weight);
     perf_profile = ctx->setting<bool>("router2/perfProfile", false);
     if (ctx->settings.count(ctx->id("router2/heatmap")))
         heatmap = ctx->settings.at(ctx->id("router2/heatmap")).as_string();
