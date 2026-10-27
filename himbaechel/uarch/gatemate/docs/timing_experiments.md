@@ -6,8 +6,10 @@ known timing model bugs (tests/BUGS.md: 6, 23, 28, 31 among others) are fixed. E
 was measured with the timing model as it was then, and the optimisations read that model, so some
 results may change.
 
-Everything here is behind `--vopt` switches (off by default). Options and code that gave no gain
-are marked `TEMPORARY` in the sources; delete them after the repeat if they still give nothing.
+Everything here is behind `--vopt` switches (off by default, except `route-repair` and `place-repair`,
+which now run until timing is met unless given a number of rounds; 0 turns them off). Options and
+code that gave no gain are marked `TEMPORARY` in the sources; delete them after the repeat if they
+still give nothing.
 
 ## How to measure
 

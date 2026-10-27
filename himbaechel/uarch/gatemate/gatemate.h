@@ -90,14 +90,16 @@ struct GateMateImpl : HimbaechelAPI
     bool route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid);
     // Bind a connection along its ideal path with STRENGTH_PLACER, displacing other nets (reroute.cc)
     void lay_ideal_path(NetInfo *net, const PortRef &user, std::vector<std::pair<NetInfo *, WireId>> &laid);
-    // After routing, up to `rounds` repairs of connections on the critical paths (reroute.cc)
+    // After routing, up to `rounds` repairs of connections on the critical paths, with rounds < 0 until
+    // timing is met (reroute.cc)
     void repair_critical_routing(int rounds);
-    int route_repair = 0;
+    int route_repair = -1;
     // The simple timing model fixes (--vopt timing-fixes; delay.cc). TEMPORARY until fixed upstream
     bool timing_fixes = false;
-    // After the routing repair, up to `rounds` moves of LUT trees on the critical paths (reroute.cc)
+    // After the routing repair, up to `rounds` moves of LUT trees on the critical paths, with rounds < 0
+    // until timing is met (reroute.cc)
     void repair_critical_placement(int rounds);
-    int place_repair = 0;
+    int place_repair = -1;
     // After routing, up to `rounds` repairs of whole nets with several sinks on the critical paths
     // (reroute.cc)
     void repair_critical_nets(int rounds);

@@ -271,6 +271,15 @@ float slowest_fmax(TimingAnalyser &tmg)
     return worst;
 }
 
+// Whether every clock reaches its constraint (after slowest_fmax() has set up the analyser)
+bool timing_met(TimingAnalyser &tmg)
+{
+    for (auto &clock : tmg.get_timing_result().clock_fmax)
+        if (clock.second.achieved < clock.second.constraint)
+            return false;
+    return true;
+}
+
 // How near-critical the design is beyond its worst path: the sum over all connections of how far
 // their criticality exceeds 0.9. Many paths can share the worst delay (say, the 30 register enables
 // of one write enable), and repairing one of them alone does not raise Fmax: such a repair is kept
@@ -559,7 +568,11 @@ void GateMateImpl::repair_critical_routing(int rounds)
     best_near = near_critical(ctx, *current);
     log_info("Repairing the routing of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0;
-    for (int round = 1; round <= rounds; round++) {
+    for (int round = 1; rounds < 0 || round <= rounds; round++) {
+        if (rounds < 0 && timing_met(*current)) {
+            log_info("    round %d: timing met\n", round);
+            break;
+        }
         // The connections of the worst paths, by how much slower they are than their ideal path
         struct Candidate
         {
@@ -1135,7 +1148,11 @@ void GateMateImpl::repair_critical_placement(int rounds)
     best_near = near_critical(ctx, *current);
     log_info("Moving cells of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0;
-    for (int round = 1; round <= rounds; round++) {
+    for (int round = 1; rounds < 0 || round <= rounds; round++) {
+        if (rounds < 0 && timing_met(*current)) {
+            log_info("    round %d: timing met\n", round);
+            break;
+        }
         Unit unit;
         BelId to;
         CellInfo *swapped = nullptr; // a LUT tree taking the moved one's place

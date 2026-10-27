@@ -77,7 +77,8 @@ po::options_description GateMateImpl::getUArchOptions()
                            "how route-runs learn criticality: max (default), ema, scale or none");
     specific.add_options()("route-learn-step", po::value<float>(), "step of the ema and scale learning (default 0.25)");
     specific.add_options()("route-repair", po::value<int>(),
-                           "after routing, rounds of re-routing critical connections on their ideal path (default 0)");
+                           "after routing, rounds of re-routing critical connections on their ideal path (default: until "
+                           "timing is met or nothing is left to try; 0 turns it off)");
     // TEMPORARY until the timing model is fixed upstream (tests/BUGS.md; docs/timing_experiments.md)
     specific.add_options()(
             "timing-fixes",
@@ -108,7 +109,8 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("net-repair", po::value<int>(),
                            "after routing, rounds of re-routing nets with several critical sinks (default 0)");
     specific.add_options()("place-repair", po::value<int>(),
-                           "after routing, rounds of moving LUT trees on the critical paths (default 0)");
+                           "after routing, rounds of moving LUT trees on the critical paths (default: until timing is met "
+                           "or nothing is left to try; 0 turns it off)");
     // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
     specific.add_options()("replicate-fanout", po::value<int>(),
                            "before routing, copy LUTs driving critical nets of at least this many far-spread sinks");
@@ -281,7 +283,7 @@ void GateMateImpl::init(Context *ctx)
                        ctx->args.options["place-crit-mode"].as<std::string>() == "scale";
     }
     auto &options = ctx->args.options;
-    if (table_route || table_place || lut_swap || lut_swap_rounds > 0 || route_repair > 0) {
+    if (table_route || table_place || lut_swap || lut_swap_rounds > 0 || route_repair != 0 || place_repair != 0) {
         int radius = options.count("lookahead-radius") ? options["lookahead-radius"].as<int>() : 12;
         lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); });
     }
@@ -854,14 +856,14 @@ void GateMateImpl::postRoute()
         route_learning(route_runs);
     if (net_repair > 0)
         repair_critical_nets(net_repair);
-    if (route_repair > 0)
+    if (route_repair != 0)
         repair_critical_routing(route_repair);
-    if (place_repair > 0) {
+    if (place_repair != 0) {
         repair_critical_placement(place_repair);
         // The moved trees' new connections can often be repaired too
         if (net_repair > 0)
             repair_critical_nets(net_repair);
-        if (route_repair > 0)
+        if (route_repair != 0)
             repair_critical_routing(route_repair);
     }
     if (lut_swap_rounds > 0)
