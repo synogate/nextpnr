@@ -1017,6 +1017,9 @@ void GateMateImpl::repair_critical_placement(int rounds)
 {
     if (!lookahead.built())
         log_error("place-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
+    // The cells were numbered again since placement (repack() and assignArchInfo() in postPlace()),
+    // free_register_half() compares the registers of a CPE by their numbers
+    assign_cell_info();
     const int radius = 12;
     const float window = 250;      // ps: cells within this of the worst slack are candidates
     const float min_gain = 50;     // ps of slack

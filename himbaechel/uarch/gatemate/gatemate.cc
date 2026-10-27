@@ -1390,6 +1390,7 @@ void GateMateImpl::assign_cell_info()
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
         auto &fc = fast_cell_info.at(ci->flat_index);
+        fc = GateMateCellInfo();
         if (getBelBucketForCellType(ci->type) == id_CPE_FF) {
             fc.ff_en = ci->getPort(id_EN_INT);
             fc.ff_clk = ci->getPort(id_CLK_INT);
