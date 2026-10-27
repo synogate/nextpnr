@@ -111,6 +111,9 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("place-repair", po::value<int>(),
                            "after routing, rounds of moving LUT trees on the critical paths (default: until timing is met "
                            "or nothing is left to try; 0 turns it off)");
+    specific.add_options()("repair-margin", po::value<float>(),
+                           "percent above each clock's constraint route-repair and place-repair aim for when run "
+                           "until timing is met (default 0)");
     // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
     specific.add_options()("replicate-fanout", po::value<int>(),
                            "before routing, copy LUTs driving critical nets of at least this many far-spread sinks");
@@ -237,6 +240,8 @@ void GateMateImpl::init_database(Arch *arch)
     timing_fixes = args.options.count("timing-fixes") || getenv("GATEMATE_TIMING_FIXES");
     if (args.options.count("place-repair"))
         place_repair = args.options["place-repair"].as<int>();
+    if (args.options.count("repair-margin"))
+        repair_margin = args.options["repair-margin"].as<float>();
     if (args.options.count("net-repair"))
         net_repair = args.options["net-repair"].as<int>();
     if (args.options.count("route-runs"))

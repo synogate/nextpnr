@@ -285,11 +285,12 @@ float slowest_fmax(TimingAnalyser &tmg)
     return worst;
 }
 
-// Whether every clock reaches its constraint (after slowest_fmax() has set up the analyser)
-bool timing_met(TimingAnalyser &tmg)
+// Whether every clock reaches its constraint raised by margin percent (after slowest_fmax() has set up
+// the analyser)
+bool timing_met(TimingAnalyser &tmg, float margin)
 {
     for (auto &clock : tmg.get_timing_result().clock_fmax)
-        if (clock.second.achieved < clock.second.constraint)
+        if (clock.second.achieved < clock.second.constraint * (1 + margin / 100))
             return false;
     return true;
 }
@@ -583,7 +584,7 @@ void GateMateImpl::repair_critical_routing(int rounds)
     log_info("Repairing the routing of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0;
     for (int round = 1; rounds < 0 || round <= rounds; round++) {
-        if (rounds < 0 && timing_met(*current)) {
+        if (rounds < 0 && timing_met(*current, repair_margin)) {
             log_info("    round %d: timing met\n", round);
             break;
         }
@@ -1163,7 +1164,7 @@ void GateMateImpl::repair_critical_placement(int rounds)
     log_info("Moving cells of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0;
     for (int round = 1; rounds < 0 || round <= rounds; round++) {
-        if (rounds < 0 && timing_met(*current)) {
+        if (rounds < 0 && timing_met(*current, repair_margin)) {
             log_info("    round %d: timing met\n", round);
             break;
         }

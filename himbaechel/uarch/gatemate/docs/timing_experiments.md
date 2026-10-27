@@ -7,9 +7,9 @@ was measured with the timing model as it was then, and the optimisations read th
 results may change.
 
 Everything here is behind `--vopt` switches (off by default, except `route-repair` and `place-repair`,
-which now run until timing is met unless given a number of rounds; 0 turns them off). Options and
-code that gave no gain are marked `TEMPORARY` in the sources; delete them after the repeat if they
-still give nothing.
+which now run until timing is met unless given a number of rounds; 0 turns them off; `repair-margin=P`
+makes them aim P percent above each clock's constraint). Options and code that gave no gain are
+marked `TEMPORARY` in the sources; delete them after the repeat if they still give nothing.
 
 ## How to measure
 

@@ -102,6 +102,8 @@ struct GateMateImpl : HimbaechelAPI
     // until timing is met (reroute.cc)
     void repair_critical_placement(int rounds);
     int place_repair = -1;
+    // Percent above each clock's constraint that "until timing is met" means (--vopt repair-margin)
+    float repair_margin = 0;
     // After routing, up to `rounds` repairs of whole nets with several sinks on the critical paths
     // (reroute.cc)
     void repair_critical_nets(int rounds);
