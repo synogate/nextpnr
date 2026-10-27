@@ -86,6 +86,8 @@ struct GateMateImpl : HimbaechelAPI
     // The fastest path for a connection ignoring other nets' routing (reroute.cc)
     std::vector<PipId> ideal_path(NetInfo *net, WireId src, WireId sink, delay_t &delay, bool free_only = false,
                                   int margin = -1) const;
+    // Whether a bound pip sets the resource of pip (a CPE mux select) to another value (reroute.cc)
+    bool resource_taken(PipId pip) const;
     // Route what a repair ripped up, all other routing staying (reroute.cc)
     bool route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid);
     // Bind a connection along its ideal path with STRENGTH_PLACER, displacing other nets (reroute.cc)

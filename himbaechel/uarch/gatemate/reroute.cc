@@ -173,7 +173,7 @@ std::vector<PipId> GateMateImpl::ideal_path(NetInfo *net, WireId src, WireId sin
             break;
         delay_t d = best.at(w).first;
         for (PipId pip : ctx->getPipsDownhill(w)) {
-            if (!checkPipAvail(pip))
+            if (!checkPipAvail(pip) || resource_taken(pip))
                 continue;
             WireId next = ctx->getPipDstWire(pip);
             NetInfo *held = ctx->getBoundWireNet(next);
@@ -201,6 +201,20 @@ std::vector<PipId> GateMateImpl::ideal_path(NetInfo *net, WireId src, WireId sin
         path.push_back(best.at(w).second);
     std::reverse(path.begin(), path.end());
     return path;
+}
+
+// Pips sharing a resource (a mux select of a CPE, such as C_SEL_C) must agree on its value across all
+// nets, which router2 keeps to but binding pips directly does not
+bool GateMateImpl::resource_taken(PipId pip) const
+{
+    GroupId key = getResourceKeyForPip(pip);
+    if (key == GroupId())
+        return false;
+    int value = getResourceValueForPip(pip);
+    for (PipId other : ctx->getGroupPips(key))
+        if (other != pip && ctx->getBoundPipNet(other) && getResourceValueForPip(other) != value)
+            return true;
+    return false;
 }
 
 // The routing on the critical paths against the least delay on the empty chip for the same pins (the
@@ -456,7 +470,7 @@ void GateMateImpl::lay_ideal_path(NetInfo *net, const PortRef &user, std::vector
     }
     for (size_t i = first; i < path.size(); i++) {
         WireId w = ctx->getPipDstWire(path[i]);
-        if (!ctx->checkPipAvailForNet(path[i], net) || !ctx->checkWireAvail(w))
+        if (!ctx->checkPipAvailForNet(path[i], net) || resource_taken(path[i]) || !ctx->checkWireAvail(w))
             return;
         ctx->bindPip(path[i], net, STRENGTH_PLACER);
         laid.emplace_back(net, w);
@@ -518,7 +532,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
             }
             for (size_t j = first; j < path.size() && failed == arcs.size(); j++) {
                 WireId w = ctx->getPipDstWire(path[j]);
-                if (!ctx->checkPipAvailForNet(path[j], net) || !ctx->checkWireAvail(w)) {
+                if (!ctx->checkPipAvailForNet(path[j], net) || resource_taken(path[j]) || !ctx->checkWireAvail(w)) {
                     failed = i;
                     why = stringf("%s is taken", ctx->nameOfWire(w));
                 } else {
@@ -653,7 +667,7 @@ void GateMateImpl::repair_critical_routing(int rounds)
             WireId w = ctx->getPipDstWire(pip);
             if (c.net->wires.count(w))
                 continue;
-            if (!ctx->checkPipAvailForNet(pip, c.net) || !ctx->checkWireAvail(w)) {
+            if (!ctx->checkPipAvailForNet(pip, c.net) || resource_taken(pip) || !ctx->checkWireAvail(w)) {
                 bound = false;
                 break;
             }
