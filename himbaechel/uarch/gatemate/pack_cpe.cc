@@ -166,13 +166,14 @@ void GateMatePacker::dff_update_params()
     }
 }
 
+// second is placed together with first, so it takes the region of first unless it has another one
 void GateMatePacker::override_region(CellInfo *first, CellInfo *second)
 {
-    if (first->region) {
-        if (second->region && second->region->name != first->region->name) {
-            log_warning("Unable to place cell '%s' in '%s' region.\n", first->name.c_str(ctx),
-                        first->region->name.c_str(ctx));
-        }
+    if (!first->region)
+        return;
+    if (second->region && second->region->name != first->region->name) {
+        log_warning("Unable to place cell '%s' in '%s' region.\n", first->name.c_str(ctx),
+                    first->region->name.c_str(ctx));
     } else {
         second->region = first->region;
     }
@@ -788,7 +789,9 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
     if (o_net) {
         if (o_net != net_PACKER_GND && o_net != net_PACKER_VCC &&
             o_net->driver.cell->getPort(o_net->driver.port)->users.entries() == 1 &&
-            o_net->driver.cell->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_MX2 /*, id_CC_DFF, id_CC_DLT*/)) {
+            o_net->driver.cell->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_MX2 /*, id_CC_DFF, id_CC_DLT*/) &&
+            // A LUT taken into a fixed CPE outside its region would leave the region
+            (place || o_net->driver.cell->testRegion(ctx->getBelByLocation(Loc(cpe_loc.x, cpe_loc.y, cpe_loc.z - 4))))) {
             CellInfo &ci = *o_net->driver.cell;
             /* if (ci.type.in(id_CC_DFF, id_CC_DLT)) {
                 cpe_half = create_cell_ptr(id_CPE_L2T4, ctx->idf("%s$%s_cpe", cell->name.c_str(ctx), oPort.c_str(ctx)));

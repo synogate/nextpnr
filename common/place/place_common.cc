@@ -18,6 +18,7 @@
  */
 
 #include "place_common.h"
+#include <algorithm>
 #include <cmath>
 #include "fast_bels.h"
 #include "log.h"
@@ -168,7 +169,7 @@ class ConstraintLegaliseWorker
             return false;
 
         if (cell->cluster == ClusterId()) {
-            if (!ctx->isValidBelForCellType(cell->type, locBel))
+            if (!ctx->isValidBelForCellType(cell->type, locBel) || !cell->testRegion(locBel))
                 return false;
             if (!ctx->checkBelAvail(locBel)) {
                 CellInfo *confCell = ctx->getConflictingBelCell(locBel);
@@ -190,6 +191,8 @@ class ConstraintLegaliseWorker
                 return false;
             for (auto &p : placement) {
                 Loc p_loc = ctx->getBelLocation(p.second);
+                if (!p.first->testRegion(p.second))
+                    return false;
                 if (!ctx->checkBelAvail(p.second)) {
                     CellInfo *confCell = ctx->getConflictingBelCell(p.second);
                     if (confCell->belStrength >= STRENGTH_STRONG) {
@@ -429,10 +432,20 @@ class ConstraintLegaliseWorker
         for (auto &cell : ctx->cells) {
             oldLocations[cell.first] = cell.second->getLocation();
         }
-        for (auto &cell : ctx->cells) {
-            bool res = legalise_cell(cell.second.get());
+        // Largest clusters first: they have the fewest legal locations, and locations stop being legal
+        // for them as smaller clusters around get locked down
+        std::vector<CellInfo *> order;
+        for (auto &cell : ctx->cells)
+            order.push_back(cell.second.get());
+        auto cluster_size = [&](const CellInfo *ci) {
+            return ci->cluster == ClusterId() ? 1 : int(cluster2cells.at(ci->cluster).size());
+        };
+        std::stable_sort(order.begin(), order.end(),
+                         [&](const CellInfo *a, const CellInfo *b) { return cluster_size(a) > cluster_size(b); });
+        for (auto cell : order) {
+            bool res = legalise_cell(cell);
             if (!res) {
-                log_error("failed to place chain starting at cell '%s'\n", cell.first.c_str(ctx));
+                log_error("failed to place chain starting at cell '%s'\n", cell->name.c_str(ctx));
                 return -1;
             }
         }

@@ -174,12 +174,13 @@ class TimingOptimiser
                 std::vector<BelId> free_bels_at_loc;
                 std::vector<BelId> bound_bels_at_loc;
                 for (auto bel : ctx->getBelsByTile(curr_loc.x + dx, curr_loc.y + dy)) {
-                    if (!ctx->isValidBelForCellType(cell->type, bel))
+                    if (!ctx->isValidBelForCellType(cell->type, bel) || !cell->testRegion(bel))
                         continue;
                     CellInfo *bound = ctx->getBoundBelCell(bel);
                     if (bound == nullptr) {
                         free_bels_at_loc.push_back(bel);
-                    } else if (bound->belStrength <= STRENGTH_WEAK && bound->cluster == ClusterId()) {
+                    } else if (bound->belStrength <= STRENGTH_WEAK && bound->cluster == ClusterId() &&
+                               bound->testRegion(curr)) {
                         bound_bels_at_loc.push_back(bel);
                     }
                 }

@@ -199,7 +199,7 @@ struct GateMateImpl : HimbaechelAPI
     dict<IdString, int> die_to_index;
     dict<IdString, dict<IdString, IdString>> pass_backtrace;
     pool<IdString> scopenames;
-    pool<IdString> scopenames_used;
+    dict<IdString, IdString> scope_regions; // scope name -> floorplanning region
 
   private:
     bool getChildPlacement(const BaseClusterInfo *cluster, Loc root_loc,
@@ -210,6 +210,7 @@ struct GateMateImpl : HimbaechelAPI
     void parse_ccf(const std::string &filename);
 
     void assign_cell_info();
+    void check_regions();
     void route_clock();
     void route_mult();
     void reassign_bridges(NetInfo *start_net, const dict<WireId, PipMap> &net_wires, WireId start_wire,

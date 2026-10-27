@@ -641,6 +641,7 @@ void GateMatePacker::enables_into_luts(int min_fanout)
             continue;
         bool inverted = bool_or_default(ff->params, id_EN_INV, false);
         CellInfo *mux = ctx->createCell(ctx->idf("%s$enable", ff->name.c_str(ctx)), id_CC_MX2);
+        mux->region = ff->region;
         for (IdString port : {id_D0, id_D1, id_S0})
             mux->addInput(port);
         mux->addOutput(id_Y);
@@ -889,6 +890,7 @@ void GateMatePacker::merge_into_cpes(int level)
                 CellInfo *copy = ctx->createCell(ctx->idf("%s$cpe_copy%d", a->name.c_str(ctx), copied), a->type);
                 copy->params = a->params;
                 copy->attrs = a->attrs;
+                copy->region = a->region;
                 for (auto &port : a->ports) {
                     if (port.second.type == PORT_IN) {
                         copy->addInput(port.first);

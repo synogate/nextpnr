@@ -451,7 +451,7 @@ bool DetailPlacerThreadState::add_to_move(CellInfo *cell, BelId old_bel, BelId n
 {
     if (!bounds_check(old_bel) || !bounds_check(new_bel))
         return false;
-    if (!ctx->isValidBelForCellType(cell->type, new_bel))
+    if (!ctx->isValidBelForCellType(cell->type, new_bel) || !cell->testRegion(new_bel))
         return false;
     NPNR_ASSERT(!moved_cells.count(cell->name));
     moved_cells[cell->name] = std::make_pair(old_bel, new_bel);

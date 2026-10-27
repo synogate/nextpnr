@@ -17,6 +17,7 @@
  *
  */
 
+#include <algorithm>
 #include <fstream>
 #include <regex>
 #include <utility>
@@ -471,7 +472,16 @@ bool GateMateImpl::getChildPlacement(const BaseClusterInfo *cluster, Loc root_lo
     for (auto child : cluster->constr_children) {
         Loc child_loc;
         if (child->constr_z >= PLACE_DB_CONSTR) {
-            child_loc = getRelativeConstraint(root_loc, IdString(child->constr_z - PLACE_DB_CONSTR));
+            // Placers also probe root bels that do not have the constraint, which is just not a placement
+            auto constr = pin_to_constr.find(ctx->getBelByLocation(root_loc));
+            if (constr == pin_to_constr.end())
+                return false;
+            auto pin = constr->second.find(IdString(child->constr_z - PLACE_DB_CONSTR));
+            if (pin == constr->second.end())
+                return false;
+            child_loc.x = root_loc.x + pin->second->constr_x;
+            child_loc.y = root_loc.y + pin->second->constr_y;
+            child_loc.z = pin->second->constr_z;
         } else {
             child_loc.x = root_loc.x + child->constr_x;
             child_loc.y = root_loc.y + child->constr_y;
@@ -502,14 +512,63 @@ bool GateMateImpl::getClusterPlacement(ClusterId cluster, BelId root_bel,
         // Coerce root to absolute z constraint
         root_loc.z = root_cell->constr_z;
         root_bel = ctx->getBelByLocation(root_loc);
-        if (root_bel == BelId() || !this->isValidBelForCellType(root_cell->type, root_bel))
-            return false;
     }
+    if (root_bel == BelId() || !this->isValidBelForCellType(root_cell->type, root_bel))
+        return false;
     placement.emplace_back(root_cell, root_bel);
     return getChildPlacement(root_cell, root_loc, placement);
 }
 
-void GateMateImpl::prePlace() { assign_cell_info(); }
+void GateMateImpl::prePlace()
+{
+    assign_cell_info();
+    check_regions();
+}
+
+// Report how full the placement regions are, and stop if one can not hold its cells; the placers
+// would otherwise search for a long time or, for a region without any fitting bel, fail badly
+void GateMateImpl::check_regions()
+{
+    dict<std::pair<IdString, BelBucketId>, int> demand;
+    dict<std::pair<IdString, BelBucketId>, pool<IdString>> types;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->region && ci->region->constr_bels && !ci->isPseudo()) {
+            std::pair<IdString, BelBucketId> key{ci->region->name, ctx->getBelBucketForCellType(ci->type)};
+            demand[key]++;
+            types[key].insert(ci->type);
+        }
+    }
+    if (demand.empty())
+        return;
+    // The bels of the region that can take any of the cell types of the bucket
+    dict<std::pair<IdString, BelBucketId>, int> capacity;
+    for (auto &t : types) {
+        int &have = capacity[t.first];
+        for (BelId bel : ctx->region.at(t.first.first)->bels)
+            for (IdString type : t.second)
+                if (ctx->isValidBelForCellType(type, bel)) {
+                    have++;
+                    break;
+                }
+    }
+    std::vector<std::pair<IdString, BelBucketId>> keys;
+    for (auto &d : demand)
+        keys.push_back(d.first);
+    std::sort(keys.begin(), keys.end(), [&](const auto &a, const auto &b) {
+        return a.first == b.first ? a.second.str(ctx) < b.second.str(ctx) : a.first.str(ctx) < b.first.str(ctx);
+    });
+    log_info("Region utilisation:\n");
+    bool over = false;
+    for (auto &key : keys) {
+        int need = demand.at(key), have = capacity.at(key);
+        log_info("    %-30s %12s: %6d/%6d %5.1f%%\n", key.first.c_str(ctx), key.second.c_str(ctx), need, have,
+                 have ? 100.0 * need / have : 100.0 * need);
+        over |= need > have;
+    }
+    if (over)
+        log_error("A placement region is too small for its cells, see the utilisation above.\n");
+}
 
 void GateMateImpl::postPlace()
 {

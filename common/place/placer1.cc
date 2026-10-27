@@ -501,7 +501,8 @@ class SAPlacer
         if (!ctx->isValidBelForCellType(cell->type, newBel)) {
             return false;
         }
-        if (other_cell != nullptr && !ctx->isValidBelForCellType(other_cell->type, oldBel)) {
+        if (other_cell != nullptr &&
+            (!ctx->isValidBelForCellType(other_cell->type, oldBel) || !other_cell->testRegion(oldBel))) {
             return false;
         }
 

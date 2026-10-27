@@ -34,6 +34,7 @@
 #include "placer_heap.h"
 #include <Eigen/Core>
 #include <Eigen/IterativeLinearSolvers>
+#include <algorithm>
 #include <boost/optional.hpp>
 #include <chrono>
 #include <deque>
@@ -1151,6 +1152,14 @@ class HeAPPlacer
             placed = false;
             bestBel = BelId();
             best_inp_len = std::numeric_limits<int>::max();
+            // The search box of a cell in a region is clamped to it, so a larger radius finds nothing new
+            max_radius = std::max(p->max_x, p->max_y);
+            if (ci->region != nullptr) {
+                auto &r = p->constraint_region_bounds[ci->region->name];
+                auto &l = p->cell_locs.at(ci->udata);
+                max_radius = std::min(max_radius, std::max({std::abs(l.x - r.x0), std::abs(l.x - r.x1),
+                                                            std::abs(l.y - r.y0), std::abs(l.y - r.y1)}));
+            }
 
             total_iters++;
             total_iters_noreset++;
@@ -1210,8 +1219,8 @@ class HeAPPlacer
                 iter_at_radius++;
                 if (iter >= (10 * (radius + 1))) {
                     // No luck yet, increase radius
-                    radius = std::min(std::max(p->max_x, p->max_y), radius + 1);
-                    while (radius < std::max(p->max_x, p->max_y)) {
+                    radius = std::min(max_radius, radius + 1);
+                    while (radius < max_radius) {
                         // Keep increasing the radius until it will actually increase the number of cells we are
                         // checking (e.g. BRAM and DSP will not be in all cols/rows), so we don't waste effort
                         for (int x = std::max(0, p->cell_locs.at(ci->udata).x - radius);
@@ -1226,7 +1235,7 @@ class HeAPPlacer
                                     goto notempty;
                             }
                         }
-                        radius = std::min(std::max(p->max_x, p->max_y), radius + 1);
+                        radius = std::min(max_radius, radius + 1);
                     }
                 notempty:
                     iter_at_radius = 0;
@@ -1286,7 +1295,7 @@ class HeAPPlacer
 
         FastBels::FastBelsData *fb;
 
-        int radius, iter, iter_at_radius, total_iters_for_cell, need_to_explore;
+        int radius, max_radius, iter, iter_at_radius, total_iters_for_cell, need_to_explore;
         bool placed;
         BelId bestBel;
         int best_inp_len;
@@ -1371,6 +1380,10 @@ class HeAPPlacer
                                 continue;
                             input_len += std::abs(drv_loc.x - nx) + std::abs(drv_loc.y - ny);
                         }
+                        // Cells in a region can not spread out of it, so ripping up a cell for a shorter
+                        // wire there just starts a long chain of ripups; take any free bel first
+                        if (bound != nullptr && ci->region != nullptr)
+                            input_len += 1 << 24;
                         if (input_len < best_inp_len) {
                             best_inp_len = input_len;
                             bestBel = sz;
@@ -1423,7 +1436,8 @@ class HeAPPlacer
                             goto fail;
                         if (bound->belStrength > (p->cfg.chainRipup ? STRENGTH_STRONG : STRENGTH_WEAK))
                             goto fail;
-                        if (bound->cluster != ClusterId() && (!p->cfg.chainRipup || radius < chain_ripup_radius))
+                        if (bound->cluster != ClusterId() &&
+                            (!p->cfg.chainRipup || radius < std::min(chain_ripup_radius, max_radius)))
                             goto fail;
                     }
                 }
@@ -1447,7 +1461,9 @@ class HeAPPlacer
                         }
                     }
                     ctx->bindBel(target.second, target.first, STRENGTH_STRONG);
-                    moves_made[target.second] = bound;
+                    // Keep the entry if the bel was freed by ripping up a cluster above, otherwise
+                    // that cell would be neither restored on failure nor queued again
+                    moves_made.emplace(target.second, bound);
                 }
                 // Check that the move we have made is legal
                 for (auto &move : moves_made) {

@@ -302,16 +302,30 @@ struct GateMateCCFReader
                                         log_error("Placebox coordinates out of range '%s' in line %d.\n",
                                                   pb_position.c_str(), lineno);
 
-                                    IdString scopename(ctx, src_location.c_str());
                                     std::regex expr = pattern_to_regex(src_location);
                                     bool matched_any = false;
+
+                                    // One region per placebox, so that a cluster mixing cells of scopes in
+                                    // the same box is not split between regions
+                                    IdString region = ctx->idf("floorplan:%s", src_location.c_str());
+                                    if (ctx->region.count(region))
+                                        log_error("Scope pattern '%s' in line %d is already floorplanned.\n",
+                                                  src_location.c_str(), lineno);
+                                    ctx->createRectangularRegion(region, std::min(x1, x2), std::min(y1, y2),
+                                                                 std::max(x1, x2), std::max(y1, y2));
 
                                     for (const IdString &name : uarch->scopenames) {
                                         if (std::regex_match(name.str(ctx), expr)) {
                                             matched_any = true;
 
-                                            ctx->createRectangularRegion(name, x1, y1, x2, y2);
-                                            uarch->scopenames_used.emplace(name);
+                                            auto found = uarch->scope_regions.find(name);
+                                            if (found != uarch->scope_regions.end()) {
+                                                log_warning("Scope '%s' in line %d is already constrained to '%s', "
+                                                            "keeping that.\n",
+                                                            name.c_str(ctx), lineno, found->second.c_str(ctx));
+                                                continue;
+                                            }
+                                            uarch->scope_regions.emplace(name, region);
 
                                             log_info("    Constraining region '%s' to '%s'\n", name.c_str(ctx),
                                                      pb_position.c_str());

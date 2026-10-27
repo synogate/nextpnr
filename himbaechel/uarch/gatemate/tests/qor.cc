@@ -133,6 +133,8 @@ class GateMateQorTest : public GateMateTest
             ctx->place();
         } catch (const std::exception &e) {
             return ::testing::AssertionFailure() << "placement failed: " << errors.str();
+        } catch (const log_execution_error_exception &) {
+            return ::testing::AssertionFailure() << "placement failed: " << errors.str();
         }
         // (Again: the packer replaces some cells after placement)
         for (CellInfo *cell : cells_named(prefix)) {

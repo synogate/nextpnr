@@ -487,15 +487,9 @@ void GateMatePacker::remove_double_constrained()
 
 void GateMatePacker::recursiveAddToRegion(CellInfo *root, IdString die)
 {
-    if (root->region && root->region->name != die)
-        log_error("Trying to assign cell '%s' to multiple regions.\n", root->name.c_str(ctx));
     ctx->constrainCellToRegion(root->name, die);
-    for (auto cell : root->constr_children) {
-        if (cell->region && cell->region->name != die)
-            log_error("Trying to assign cell '%s' to multiple regions.\n", cell->name.c_str(ctx));
-        ctx->constrainCellToRegion(cell->name, die);
+    for (auto cell : root->constr_children)
         recursiveAddToRegion(cell, die);
-    }
 }
 
 void GateMatePacker::assign_clocks()
@@ -545,16 +539,17 @@ void GateMatePacker::assign_regions()
     log_info("Assign cell region based on attributes..\n");
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
-        IdString name = get_scopename(ctx, ci);
-        if (uarch->scopenames_used.count(name))
-            ctx->constrainCellToRegion(ci.name, name);
+        auto scope_region = uarch->scope_regions.find(get_scopename(ctx, ci));
+        if (scope_region != uarch->scope_regions.end())
+            ctx->constrainCellToRegion(ci.name, scope_region->second);
         if (ci.attrs.count(id_GATEMATE_DIE) != 0) {
             std::string die_name = str_or_default(ci.attrs, id_GATEMATE_DIE, "");
             IdString die = ctx->id(die_name);
             if (!uarch->die_to_index.count(die))
                 log_error("Trying to assign cell '%s' to non existing die '%s'.\n", ci.name.c_str(ctx), die.c_str(ctx));
             if (ci.region && ci.region->name != die)
-                log_error("Trying to assign cell '%s' to multiple regions.\n", ci.name.c_str(ctx));
+                log_error("Cell '%s' is floorplanned to '%s' but has to be on die '%s'.\n", ci.name.c_str(ctx),
+                          ci.region->name.c_str(ctx), die.c_str(ctx));
             ctx->constrainCellToRegion(ci.name, die);
         }
     }
@@ -563,12 +558,34 @@ void GateMatePacker::assign_regions()
 void GateMatePacker::fix_regions()
 {
     log_info("Fix cell assigned regions..\n");
+    // A cluster is placed as a whole, so all its cells need one region: a die if any cell has to be on
+    // one, else the region of the root, else that of the first child with one
+    dict<ClusterId, Region *> cluster_region;
+    auto is_die = [&](const Region *r) { return uarch->die_to_index.count(r->name) != 0; };
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
-        if (ci.region && ci.cluster != ClusterId()) {
-            CellInfo *root = ctx->getClusterRootCell(ci.cluster);
-            recursiveAddToRegion(root, ci.region->name);
+        if (!ci.region || ci.cluster == ClusterId())
+            continue;
+        Region *&r = cluster_region[ci.cluster];
+        if (!r || (is_die(ci.region) && !is_die(r)) ||
+            (is_die(ci.region) == is_die(r) && &ci == ctx->getClusterRootCell(ci.cluster)))
+            r = ci.region;
+    }
+    for (auto &cr : cluster_region) {
+        CellInfo *root = ctx->getClusterRootCell(cr.first);
+        std::vector<CellInfo *> cells{root};
+        for (size_t i = 0; i < cells.size(); i++)
+            cells.insert(cells.end(), cells[i]->constr_children.begin(), cells[i]->constr_children.end());
+        for (CellInfo *ci : cells) {
+            if (!ci->region || ci->region == cr.second)
+                continue;
+            if (is_die(ci->region))
+                log_error("Cell '%s' has to be on die '%s', but is placed with '%s' in '%s'.\n", ci->name.c_str(ctx),
+                          ci->region->name.c_str(ctx), root->name.c_str(ctx), cr.second->name.c_str(ctx));
+            log_warning("Cell '%s' is placed with '%s' in region '%s' instead of '%s'.\n", ci->name.c_str(ctx),
+                        root->name.c_str(ctx), cr.second->name.c_str(ctx), ci->region->name.c_str(ctx));
         }
+        recursiveAddToRegion(root, cr.second->name);
     }
 }
 

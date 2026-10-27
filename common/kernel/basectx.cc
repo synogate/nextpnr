@@ -113,22 +113,34 @@ void BaseCtx::addClock(IdString net, float freq)
 
 void BaseCtx::createRectangularRegion(IdString name, int x0, int y0, int x1, int y1)
 {
-    std::unique_ptr<Region> new_region(new Region());
-    new_region->name = name;
-    new_region->constr_bels = true;
-    new_region->constr_pips = false;
-    new_region->constr_wires = false;
-    for (int x = x0; x <= x1; x++) {
-        for (int y = y0; y <= y1; y++) {
+    // Cells may already point to a region of this name, so redefine it in place
+    auto &r = region[name];
+    if (!r)
+        r.reset(new Region());
+    r->name = name;
+    r->constr_bels = true;
+    r->constr_pips = false;
+    r->constr_wires = false;
+    r->bels.clear();
+    for (int x = std::max(x0, 0); x <= std::min(x1, getCtx()->getGridDimX() - 1); x++) {
+        for (int y = std::max(y0, 0); y <= std::min(y1, getCtx()->getGridDimY() - 1); y++) {
             for (auto bel : getCtx()->getBelsByTile(x, y))
-                new_region->bels.insert(bel);
+                r->bels.insert(bel);
         }
     }
-    region[name] = std::move(new_region);
 }
-void BaseCtx::addBelToRegion(IdString name, BelId bel) { region[name]->bels.insert(bel); }
+void BaseCtx::addBelToRegion(IdString name, BelId bel)
+{
+    auto found = region.find(name);
+    if (found == region.end() || !found->second)
+        log_error("Adding a bel to unknown region '%s'\n", nameOf(name));
+    found->second->bels.insert(bel);
+}
 void BaseCtx::constrainCellToRegion(IdString cell, IdString region_name)
 {
+    auto found = region.find(region_name);
+    if (found == region.end() || !found->second)
+        log_error("Constraining '%s' to unknown region '%s'\n", nameOf(cell), nameOf(region_name));
     // Support hierarchical cells as well as leaf ones
     bool matched = false;
     if (hierarchy.count(cell)) {
@@ -140,7 +152,7 @@ void BaseCtx::constrainCellToRegion(IdString cell, IdString region_name)
         matched = true;
     }
     if (cells.count(cell)) {
-        cells.at(cell)->region = region[region_name].get();
+        cells.at(cell)->region = found->second.get();
         matched = true;
     }
     if (!matched)

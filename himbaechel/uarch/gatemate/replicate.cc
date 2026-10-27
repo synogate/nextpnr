@@ -44,8 +44,9 @@ int GateMateImpl::replicate_drivers(int min_fanout, bool all)
         tmg.run();
     }
     auto loc_of = [&](CellInfo *ci) { return ctx->getBelLocation(ci->bel); };
-    // A free LUT tree position nearest to (x, y), in a CPE with nothing but LUT trees and registers
-    auto free_lut_bel = [&](float x, float y) {
+    // A free LUT tree position nearest to (x, y) in the region of ci, in a CPE with nothing but LUT trees
+    // and registers
+    auto free_lut_bel = [&](const CellInfo *ci, float x, float y) {
         int cx = int(std::lround(x)), cy = int(std::lround(y));
         for (int radius = 0; radius < 12; radius++)
             for (int dy = -radius; dy <= radius; dy++)
@@ -65,7 +66,8 @@ int GateMateImpl::replicate_drivers(int min_fanout, bool all)
                         continue;
                     for (int z : {CPE_LT_U_Z, CPE_LT_L_Z}) {
                         BelId bel = ctx->getBelByLocation(Loc(tx, ty, z));
-                        if (bel != BelId() && ctx->checkBelAvail(bel) && ctx->isValidBelForCellType(id_CPE_L2T4, bel))
+                        if (bel != BelId() && ctx->checkBelAvail(bel) && ctx->isValidBelForCellType(id_CPE_L2T4, bel) &&
+                            ci->testRegion(bel))
                             return bel;
                     }
                 }
@@ -157,11 +159,12 @@ int GateMateImpl::replicate_drivers(int min_fanout, bool all)
             for (size_t t = 0; t < tiles.size(); t++)
                 if (group_of[t] == g)
                     sinks.insert(sinks.end(), tiles[t].second.begin(), tiles[t].second.end());
-            BelId bel = sinks.empty() ? BelId() : free_lut_bel(centre[g].first, centre[g].second);
+            BelId bel = sinks.empty() ? BelId() : free_lut_bel(ci, centre[g].first, centre[g].second);
             if (bel == BelId())
                 continue;
             CellInfo *copy = ctx->createCell(ctx->idf("%s$replica%d", ci->name.c_str(ctx), g), ci->type);
             copy->params = ci->params;
+            copy->region = ci->region;
             for (auto &port : ci->ports) {
                 if (port.second.type == PORT_IN) {
                     copy->addInput(port.first);
