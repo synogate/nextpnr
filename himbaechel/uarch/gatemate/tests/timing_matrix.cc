@@ -483,12 +483,12 @@ TEST_P(GateMateTimingMatrixTest, path_is_timed)
 {
     Source source = GetParam().first;
     Sink sink = GetParam().second;
-    if (avoid(KnownBug::OUTPUT_PADS_NOT_TIMED) && !registered(sink))
-        GTEST_SKIP() << "output pads are not timing endpoints";
     if (avoid(KnownBug::FIFO_STATUS_NOT_TIMED) && source == Source::FIFO_STATUS)
         GTEST_SKIP() << "FIFO status outputs are not timing start points";
     if (avoid(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && source == Source::BIDIRECTIONAL_PAD)
         GTEST_SKIP() << "bidirectional pads have no input arc";
+    if (avoid(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && sink == Sink::TRISTATE_ENABLE)
+        GTEST_SKIP() << "an IOSEL with an output enable has no arc to it";
     auto launches = build_source(source);
     std::vector<std::vector<Event>> expected;
     for (int i = 0; i < int(launches.size()); i++)

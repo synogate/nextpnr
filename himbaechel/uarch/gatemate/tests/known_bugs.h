@@ -51,11 +51,6 @@ enum class KnownBug
     // Test: GateMateBramTest.fifo_read_pointer_outputs
     FIFO_READ_POINTER_SHARED_CPE,
 
-    // delay.cc getPortTimingClass: the inputs of the output buffers (CPE_OBUF etc. A and T) are
-    // TMG_IGNORE, so paths to output pads (and output enables) are not analysed.
-    // Tests: Stages/GateMateTimingPathTest.register_to_output_pad, input_pad_to_output_pad
-    OUTPUT_PADS_NOT_TIMED,
-
     // delay.cc getPortTimingClass: all RAM ports starting with 'F' are TMG_IGNORE, among them the
     // FIFO status outputs (F_EMPTY[0], F_FULL[0], ...) and pointers (FRD_ADDR, FWR_ADDR), so
     // paths from them are not analysed.

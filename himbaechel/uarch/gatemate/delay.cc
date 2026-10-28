@@ -369,14 +369,11 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
         if (port.in(id_COMB1, id_COMB2))
             return TMG_COMB_INPUT;
         return TMG_COMB_OUTPUT;
-    } else if (cell->type.in(id_CPE_IBUF, id_CPE_OBUF, id_CPE_TOBUF, id_CPE_IOBUF)) {
-        if (port.in(id_O))
-            return TMG_ENDPOINT;
-        if (port.in(id_Y))
-            return TMG_STARTPOINT;
-        return TMG_IGNORE;
-    } else if (cell->type.in(id_CPE_LVDS_IBUF, id_CPE_LVDS_OBUF, id_CPE_LVDS_TOBUF, id_CPE_LVDS_IOBUF)) {
-        if (port.in(id_O_P, id_O_N))
+    } else if (cell->type.in(id_CPE_IBUF, id_CPE_OBUF, id_CPE_TOBUF, id_CPE_IOBUF, id_CPE_LVDS_IBUF,
+                              id_CPE_LVDS_OBUF, id_CPE_LVDS_TOBUF, id_CPE_LVDS_IOBUF)) {
+        // Paths end at the buffer's data and enable inputs from the fabric (the pad side has no sink
+        // to end at) and begin at its output into the fabric
+        if (port.in(id_A, id_T))
             return TMG_ENDPOINT;
         if (port.in(id_Y))
             return TMG_STARTPOINT;
