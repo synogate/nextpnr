@@ -28,11 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // pack_cpe.cc pack_addf: a carry out that feeds the carry inputs of two adders is rejected
-    // ("Only one other ADDF can be connected") instead of being packed.
-    // Test: GateMateAdderTest.carry_feeding_two_carry_inputs
-    CARRY_TO_SEVERAL_CARRY_INPUTS,
-
     // pack_io.cc pack_io: pins assigned through PIN_NAME parameters of IO buffers (not through the
     // CCF) are not taken out of the pool for unconstrained IOs, so an unconstrained IO can get the
     // same pin ("Can't place ... because it's already taken by ...").

@@ -162,9 +162,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         bool avoiding = GetParam().avoid_known_bugs;
         bool with_rams = GetParam().rams;
         auto avoiding_bug = [&](KnownBug bug) { return avoiding && avoid(bug); };
-        // Constants in LUT inputs, and constants created while the packer simplifies the netlist
-        // A net on the carry inputs of several adders
-        bool no_shared_carry_inputs = avoiding_bug(KnownBug::CARRY_TO_SEVERAL_CARRY_INPUTS);
         std::mt19937 rng(seed);
         auto pick = [&](int n) { return int(rng() % unsigned(n)); };
         NetInfo *clk = global_clock("clk");
@@ -181,8 +178,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         std::vector<NetInfo *> nets;
         for (int i = 0; i < 8; i++)
             nets.push_back(input(stringf("in%d", i)));
-        // Nets used as an adder carry input
-        std::set<NetInfo *> carry_inputs;
         // A net of the netlist, sometimes a constant
         auto operand = [&]() -> NetInfo * {
             int r = pick(20);
@@ -344,11 +339,8 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
             case 5: {
                 // A short carry chain
                 NetInfo *carry = other_input();
-                while (no_shared_carry_inputs && carry_inputs.count(carry))
-                    carry = other_input();
                 int width = 1 + pick(4);
                 for (int i = 0; i < width; i++) {
-                    carry_inputs.insert(carry);
                     auto in = inputs(2, false);
                     auto [s, co] = addf(stringf("%s_%d", name.c_str(), i), in[0], in[1], carry);
                     nets.push_back(s);

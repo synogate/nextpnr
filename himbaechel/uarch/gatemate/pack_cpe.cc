@@ -445,6 +445,37 @@ void GateMatePacker::pack_addf()
 {
     log_info("Packing ADDFs..\n");
 
+    // A carry chain continues to one adder only: a carry out feeding the carry inputs of more adders
+    // goes on to the others through a LUT, which makes each of them the start of its own chain
+    std::vector<CellInfo *> adders;
+    for (auto &cell : ctx->cells)
+        if (cell.second->type == id_CC_ADDF)
+            adders.push_back(cell.second.get());
+    int buffered = 0;
+    for (CellInfo *addf : adders) {
+        NetInfo *co_net = addf->getPort(id_CO);
+        if (!co_net)
+            continue;
+        std::vector<PortRef> carry_users;
+        for (auto &usr : co_net->users)
+            if (usr.cell->type == id_CC_ADDF && usr.port == id_CI)
+                carry_users.push_back(usr);
+        for (size_t i = 1; i < carry_users.size(); i++) {
+            CellInfo *buf = ctx->createCell(ctx->idf("%s$ci_buf%d", addf->name.c_str(ctx), int(i)), id_CC_LUT1);
+            buf->addInput(id_I0);
+            buf->addOutput(id_O);
+            buf->params[id_INIT] = Property(0b10, 2);
+            buf->connectPort(id_I0, co_net);
+            NetInfo *out = ctx->createNet(ctx->idf("%s$ci_buf%d", co_net->name.c_str(ctx), int(i)));
+            buf->connectPort(id_O, out);
+            carry_users[i].cell->disconnectPort(id_CI);
+            carry_users[i].cell->connectPort(id_CI, out);
+            buffered++;
+        }
+    }
+    if (buffered)
+        log_info("    %d carry inputs fed through a LUT (their carry out feeds more adders)\n", buffered);
+
     std::vector<CellInfo *> root_cys;
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
