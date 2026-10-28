@@ -614,7 +614,14 @@ void GateMatePacker::fix_regions()
 void GateMateImpl::pack()
 {
     const ArchArgs &args = ctx->args;
+    if (bool_or_default(ctx->settings, ctx->id("pack")))
+        log_error("The design was packed already (a placed and routed JSON?), which can not be packed again. To reuse "
+                  "a placed and routed design, implement it with --vopt as-partition and import it into another "
+                  "design with --vopt partition (docs/partitions.md).\n");
     GateMatePacker packer(ctx, this);
+    import_partitions();
+    if (as_partition)
+        ctx->settings[ctx->id("as-partition")] = 1;
     packer.find_regions();
     if (args.options.count("ccf")) {
         parse_ccf(args.options["ccf"].as<std::string>());
@@ -672,6 +679,7 @@ void GateMateImpl::pack()
     packer.insert_clocking();
     packer.pack_pll();
     packer.pack_bufg();
+    packer.reassign_partition_clocks();
     packer.pack_io_sel(); // merge in FF and DDR
     packer.pack_misc();
     packer.pack_ram();

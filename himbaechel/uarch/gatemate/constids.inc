@@ -3230,3 +3230,9 @@ X(timing_pll_clock_core0_i_clk_core90_o)
 X(timing_pll_locked_steady_reset_i_pll_locked_steady_o)
 
 X(RESOURCE)
+
+X(NEXTPNR_BEL)
+X(BEL_STRENGTH)
+X(GATEMATE_MULT)
+X(GATEMATE_CONSTR_X)
+X(GATEMATE_PORT_OFFSETS)

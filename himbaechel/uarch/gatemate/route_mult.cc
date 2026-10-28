@@ -867,6 +867,8 @@ void GateMateImpl::route_mult()
     // Unfortunately, this is the easiest way to describe the specific routing required.
     // Myrtle, please forgive me.
     for (auto a_passthru_lower : this->multiplier_a_passthru_lowers) {
+        if (partition_cells.count(a_passthru_lower))
+            continue; // imported with its routing
         auto *lower = ctx->cells.at(a_passthru_lower).get();
         auto *lower_out = lower->ports.at(id_OUT).net;
 
@@ -897,6 +899,8 @@ void GateMateImpl::route_mult()
     }
 
     for (auto a_passthru_upper : this->multiplier_a_passthru_uppers) {
+        if (partition_cells.count(a_passthru_upper))
+            continue; // imported with its routing
         auto *upper = ctx->cells.at(a_passthru_upper).get();
         auto *upper_out = upper->ports.at(id_OUT).net;
 
@@ -940,6 +944,8 @@ void GateMateImpl::route_mult()
     }
 
     for (auto zero_driver_name : this->multiplier_zero_drivers) {
+        if (partition_cells.count(zero_driver_name))
+            continue; // imported with its routing
         auto *zero_driver = ctx->cells.at(zero_driver_name).get();
         auto *out = zero_driver->ports.at(id_OUT).net;
 

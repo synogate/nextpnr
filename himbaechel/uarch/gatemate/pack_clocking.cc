@@ -204,9 +204,11 @@ void GateMatePacker::pack_bufg()
             int glb_mux = 0;
             NetInfo *in_net = ci.getPort(id_I);
             copy_constraint(in_net, ci.getPort(id_O));
-            if (in_net->driver.cell) {
+            // The clock inputs of a partition are driven from outside later; the user path takes any number of
+            // them, SER_CLK only one
+            if (in_net->driver.cell || uarch->as_partition) {
                 bool user_glb = true;
-                if (ctx->getBelBucketForCellType(in_net->driver.cell->type) == id_IOSEL) {
+                if (in_net->driver.cell && ctx->getBelBucketForCellType(in_net->driver.cell->type) == id_IOSEL) {
                     auto pad_info = uarch->bel_to_pad[in_net->driver.cell->bel];
                     if (pad_info->flags) {
                         uarch->clkin[die]->params[ctx->idf("REF%d", i)] = Property(pad_info->flags - 1, 3);
@@ -221,7 +223,7 @@ void GateMatePacker::pack_bufg()
                         user_glb = false;
                     }
                 }
-                if (ctx->getBelBucketForCellType(in_net->driver.cell->type) == id_PLL) {
+                if (in_net->driver.cell && ctx->getBelBucketForCellType(in_net->driver.cell->type) == id_PLL) {
                     CellInfo *pll = in_net->driver.cell;
                     int pll_index = ctx->getBelLocation(pll->bel).z - 2;
                     int pll_out = 0;
@@ -1024,6 +1026,46 @@ void GateMatePacker::reassign_clocks()
             log_info("    reassign %d net '%s' users\n", count, net->name.c_str(ctx));
     }
     flush_cells();
+}
+
+void GateMatePacker::reassign_partition_clocks()
+{
+    // The RAMs of imported partitions were packed with stand-in global clocks (pack_io); connect them to the
+    // global clocks their clock nets are in this design
+    static const IdString clock_ports[] = {id_CLOCK1, id_CLOCK2, id_CLOCK3, id_CLOCK4};
+    for (auto name : uarch->partition_cells) {
+        CellInfo *ci = ctx->cells.at(name).get();
+        if (ci->type != id_RAM)
+            continue;
+        dict<IdString, NetInfo *> clocks;
+        for (IdString port : clock_ports)
+            if (NetInfo *net = ci->getPort(port)) {
+                clocks[port] = net;
+                ci->disconnectPort(port);
+            }
+        dict<int, int> config;
+        for (auto &clock : clocks) {
+            auto glob = uarch->global_signals.find(clock.second);
+            if (glob == uarch->global_signals.end())
+                log_error("Clock '%s' of RAM '%s' in a partition is not a global clock in this design.\n",
+                          ctx->nameOf(clock.second), ctx->nameOf(ci));
+            IdString port = clock_ports[glob->second & 3];
+            if (!ci->ports.count(port))
+                ci->addInput(port);
+            if (ci->getPort(port) == nullptr)
+                ci->connectPort(port, clock.second);
+            else if (ci->getPort(port) != clock.second)
+                log_error("RAM '%s' in a partition has two clocks on global clock %d.\n", ctx->nameOf(ci),
+                          glob->second);
+            config[clk_config_val(clock.first)] = clk_config_val(port);
+        }
+        for (IdString param : {id_RAM_cfg_forward_a0_clk, id_RAM_cfg_forward_a1_clk, id_RAM_cfg_forward_b0_clk,
+                               id_RAM_cfg_forward_b1_clk}) {
+            auto found = config.find(int_or_default(ci->params, param, 0));
+            if (found != config.end())
+                ci->params[param] = Property(found->second, 8);
+        }
+    }
 }
 
 NEXTPNR_NAMESPACE_END
