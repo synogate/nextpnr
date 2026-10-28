@@ -492,6 +492,9 @@ class SAPlacer
             (other_cell->cluster != ClusterId() || other_cell->belStrength > STRENGTH_WEAK)) {
             return false;
         }
+        // Fixed and locked cells must not be displaced either once moves have to be legal
+        if (other_cell != nullptr && other_cell->belStrength > STRENGTH_STRONG)
+            return false;
         int old_dist = get_constraints_distance(ctx, cell);
         int new_dist;
         if (other_cell != nullptr)

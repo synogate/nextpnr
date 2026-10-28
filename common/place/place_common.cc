@@ -216,10 +216,11 @@ class ConstraintLegaliseWorker
     // Set the strength to locked on all cells in chain
     void lockdown_chain(CellInfo *root)
     {
-        root->belStrength = STRENGTH_STRONG;
+        // Only ever raise the strength: fixed cells (pads, for example) must stay fixed
+        root->belStrength = std::max(root->belStrength, STRENGTH_STRONG);
         if (root->cluster != ClusterId())
             for (auto child : cluster2cells.at(root->cluster))
-                child->belStrength = STRENGTH_STRONG;
+                child->belStrength = std::max(child->belStrength, STRENGTH_STRONG);
     }
 
     // Legalise placement constraints on a cell
@@ -228,6 +229,9 @@ class ConstraintLegaliseWorker
         if (cell->cluster != ClusterId() && ctx->getClusterRootCell(cell->cluster) != cell)
             return true; // Only process chain roots
         if (cell->isPseudo())
+            return true;
+        // A fixed root can not be moved; if its cluster does not fit there, the final check reports it
+        if (cell->belStrength > STRENGTH_STRONG)
             return true;
         if (constraints_satisfied(cell)) {
             if (cell->cluster != ClusterId())
@@ -432,16 +436,29 @@ class ConstraintLegaliseWorker
         for (auto &cell : ctx->cells) {
             oldLocations[cell.first] = cell.second->getLocation();
         }
-        // Largest clusters first: they have the fewest legal locations, and locations stop being legal
-        // for them as smaller clusters around get locked down
+        // Clusters with the fewest legal locations first, as locations stop being legal for them when
+        // the clusters around get locked down: those whose root fits the fewest bels (RAMs before
+        // carry chains in the logic fabric), then the largest
         std::vector<CellInfo *> order;
-        for (auto &cell : ctx->cells)
+        dict<IdString, int> bels_for_type;
+        for (auto &cell : ctx->cells) {
             order.push_back(cell.second.get());
+            bels_for_type.emplace(cell.second->type, 0);
+        }
+        for (BelId bel : ctx->getBels())
+            for (auto &t : bels_for_type)
+                if (ctx->isValidBelForCellType(t.first, bel))
+                    t.second++;
         auto cluster_size = [&](const CellInfo *ci) {
             return ci->cluster == ClusterId() ? 1 : int(cluster2cells.at(ci->cluster).size());
         };
-        std::stable_sort(order.begin(), order.end(),
-                         [&](const CellInfo *a, const CellInfo *b) { return cluster_size(a) > cluster_size(b); });
+        auto root_bels = [&](const CellInfo *ci) {
+            return bels_for_type.at(ci->cluster == ClusterId() ? ci->type : ctx->getClusterRootCell(ci->cluster)->type);
+        };
+        std::stable_sort(order.begin(), order.end(), [&](const CellInfo *a, const CellInfo *b) {
+            int ra = root_bels(a), rb = root_bels(b);
+            return ra != rb ? ra < rb : cluster_size(a) > cluster_size(b);
+        });
         for (auto cell : order) {
             bool res = legalise_cell(cell);
             if (!res) {
@@ -498,13 +515,21 @@ int get_constraints_distance(const Context *ctx, const CellInfo *cell)
                 }
             }
         } else {
-            // child
+            // child: where the placement of the cluster at its root puts it (getClusterOffset is only
+            // relative to the parent for nested clusters, and some arches derive child locations from
+            // the root bel)
             if (root->bel == BelId())
                 return 100000;
-            Loc root_loc = ctx->getBelLocation(root->bel);
-            Loc offset = ctx->getClusterOffset(cell);
-            dist += std::abs((root_loc.x + offset.x) - loc.x);
-            dist += std::abs((root_loc.y + offset.y) - loc.y);
+            std::vector<std::pair<CellInfo *, BelId>> placement;
+            if (!ctx->getClusterPlacement(cell->cluster, root->bel, placement))
+                return 100000;
+            auto found = std::find_if(placement.begin(), placement.end(),
+                                      [&](const std::pair<CellInfo *, BelId> &p) { return p.first == cell; });
+            if (found == placement.end())
+                return 100000;
+            Loc target = ctx->getBelLocation(found->second);
+            dist += std::abs(target.x - loc.x);
+            dist += std::abs(target.y - loc.y);
         }
     }
 
