@@ -98,15 +98,16 @@ constexpr float BRIDGE_X0 = 0.565f, BRIDGE_X1 = 0.585f, BRIDGE_Y = 0.478f;
 constexpr float CLK_LANE = 0.668f, EN_LANE = 0.674f, SR_LANE = 0.68f, D_JOG = 0.686f;
 constexpr float FF_X0 = 0.692f, FF_X1 = 0.737f;
 constexpr float CPOUT_JOG = 0.744f, MUXOUT_JOG = 0.749f, BYPASS_JOG = 0.753f;
-constexpr float OMUX_X0 = 0.758f, OMUX_X1 = 0.783f, OUT_X = 0.8f, OUT2_IN_X = 0.806f, OUT1_IN_X = 0.81f;
+constexpr float OMUX_X0 = 0.758f, OMUX_X1 = 0.783f, OUT_X = 0.8f;
 // The RAM I/O port above the output mux: its input I is the output mux's output (coming up at
 // RAMIO_IN_X), its output OUT drives the CPE output instead (going down at RAMIO_OUT_X)
 constexpr float RAMIO_X0 = 0.758f, RAMIO_X1 = 0.795f, RAMIO_IN_X = 0.786f, RAMIO_OUT_X = 0.792f;
 constexpr float RAMIO_Y0 = 0.07f, RAMIO_Y1 = 0.105f, RAMIO_O_Y = 0.098f, RAMIO_I_Y = 0.084f;
-// The comparator, below the output muxes: its inputs (the LUT2 trees' results, COMBIN1/2) on its
-// left, its output on its right
-constexpr float CMP_X0 = 0.755f, CMP_X1 = 0.78f, CMP_Y0 = 0.285f, CMP_Y1 = 0.315f;
-constexpr float CMP_IN1_Y = 0.29f, CMP_IN2_Y = 0.31f;
+// The comparator, between the output muxes (above the lower RAM I/O port) and left of the carry
+// logic: its inputs (the LUT2 trees' results, COMBIN1/2) on its left, its output on its right
+// (across into the carry logic, see CL_RAIL_OUT2)
+constexpr float CMP_X0 = 0.765f, CMP_X1 = 0.79f, CMP_Y0 = 0.745f, CMP_Y1 = 0.775f;
+constexpr float CMP_IN1_Y = 0.75f, CMP_IN2_Y = 0.77f, CMP_OUT_Y = 0.76f;
 // The lanes of the CPE's outputs and RAM port pins, each its own
 constexpr float OUT2_LANE = 0.818f, OUT1_LANE = 0.822f, RAM_O2_LANE = 0.826f, RAM_O1_LANE = 0.83f;
 constexpr float RAM_I2_LANE = 0.834f, RAM_I1_LANE = 0.838f;
@@ -118,13 +119,33 @@ constexpr float OMUX_COMB = 0.03f, OMUX_DOUT = 0, OMUX_CPOUT = -0.02f, OMUX_MUXO
 constexpr float BYPASS_DY = 0.045f, CPOUT_DY = -0.05f;
 // Carry column: x of each line; the carry in at the bottom, out at the top; X lines in a band
 // between the bottom channel and the entities
-constexpr float CX = 0.85f, PX = 0.862f, CY1 = 0.88f, PY1 = 0.898f, CY2 = 0.916f, PY2 = 0.934f;
+constexpr float CY1 = 0.944f, PY1 = 0.958f, CY2 = 0.972f, PY2 = 0.986f;
 constexpr float CARRY_IN_Y = 0.205f, CARRY_OUT_Y = 0.995f, CX_BAND = 0.188f, PX_BAND = 0.176f;
+// The track below the CPE along which CINY1 goes to a LUT2 in a carry-in mode (see drawBel)
+constexpr float CIN_TRACK_Y = 0.228f;
 // The 2:1 mux where a Y line leaves, below its end: its output is where the line leaves (COUTY1, ...,
 // CMUX_OUT_DY below CARRY_OUT_Y, where the line to the next CPE starts), its inputs CMUX_IN_DY
 // below that; its width each side of the line (reaching the line's _VAL) and the half width of its
 // output
-constexpr float CMUX_OUT_DY = 0.017f, CMUX_IN_DY = 0.007f, CMUX_W = 0.0065f, CMUX_PAD = 0.0015f;
+constexpr float CMUX_OUT_DY = 0.017f, CMUX_IN_DY = 0.007f, CMUX_W = 0.005f, CMUX_PAD = 0.0015f;
+// The carry logic (CPE_CPLINES), right of the output muxes, between OUT2 above and OUT1 below and
+// left of the Y lines: a row for each line, from the bottom PX, CX, PY2, CY2, PY1, CY1, so that the
+// ways out to the lines do not cross (right, and the X lines' down to their band, the Y lines' up
+// beside their line). In a row, two 2:1 muxes (_OUT: OUT1 above or OUT2; _OUT2: the comparator
+// above or a carry or propagate input) and the 2:1 mux choosing between them (_VAL). Their inputs
+// come along rails on the left: OUT2 from above, OUT1, the comparator's output, CINX and PINX from
+// below, and CIY12 and PIY12 from their muxes below the rows (C_Y12: CINY1 above or CINY2, PINY1
+// above or PINY2).
+constexpr float CL_RAIL_OUT2 = 0.846f, CL_RAIL_OUT1 = 0.85f, CL_RAIL_COMP = 0.854f, CL_RAIL_CINX = 0.858f,
+                CL_RAIL_PINX = 0.862f, CL_RAIL_CIY12 = 0.866f, CL_RAIL_PIY12 = 0.87f;
+constexpr float CL_SEL_X0 = 0.876f, CL_SEL_X1 = 0.884f, CL_VAL_X0 = 0.89f, CL_VAL_X1 = 0.898f;
+constexpr float CL_ROW0 = 0.65f, CL_ROW_DY = 0.03f, CL_SEL_DY = 0.008f, CL_IN_DY = 0.003f;
+constexpr float CL_X_DOWN_PX = 0.92f, CL_X_DOWN_CX = 0.93f; // where the X lines' ways go down
+constexpr float CIY12_X0 = 0.892f, CIY12_X1 = 0.882f, CIY12_Y = 0.6f, PIY12_X0 = 0.892f, PIY12_X1 = 0.882f,
+                PIY12_Y = 0.585f;
+// The 2:1 muxes where the X lines leave, on their band near the right edge (COUTX, POUTX at their
+// output); the carry logic comes in above the band
+constexpr float COUTX_X0 = 0.945f, COUTX_X1 = 0.955f, POUTX_X0 = 0.925f, POUTX_X1 = 0.935f, XMUX_IN_DY = 0.004f;
 // Block RAMs: each RAM column of the chip (beside a CPE column) is drawn as a column of its own,
 // right of that CPE column (see gui_column). In it, a RAM is a block 16 tiles high with its pins
 // on its left and their lanes in front of it.
@@ -196,6 +217,16 @@ bool ends_with(const std::string &s, const char *suffix)
 {
     size_t n = strlen(suffix);
     return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+// The row of a line's carry logic (n starts with the line's name, see CL_RAIL_OUT2)
+float carry_row(const std::string &n)
+{
+    const char *order[] = {"PX", "CX", "PY2", "CY2", "PY1", "CY1"};
+    for (int i = 0; i < 6; i++)
+        if (starts_with(n, order[i]))
+            return CL_ROW0 + i * CL_ROW_DY;
+    return CL_ROW0;
 }
 
 // Number after a prefix, e.g. num("P09.Y", 1) == 9
@@ -335,13 +366,13 @@ Anchor cpe_anchor(const std::string &n)
         return make(Pt{OUT_X, ml()}, OUT1_LANE, 0, E_CPE);
     // The outputs back into the carry logic
     if (n == "OUT2_IN_int")
-        return cpe(OUT2_IN_X, mu() - 0.01f);
+        return cpe(CL_RAIL_OUT2, mu());
     if (n == "OUT1_IN_int")
-        return cpe(OUT1_IN_X, ml() - 0.01f);
+        return cpe(CL_RAIL_OUT1, ml());
     if (n == "COMPOUT_int")
-        return cpe(OUT_X - 0.02f, 0.30f);
+        return cpe(CMP_X1, CMP_OUT_Y);
     if (n == "COMPOUT_IN_int")
-        return cpe(OUT_X, 0.30f);
+        return cpe(CL_RAIL_COMP, CMP_OUT_Y);
     // The RAM pin paths: RAM_O drives a RAM input, RAM_I takes a RAM output
     if (n == "RAM_O2" || n == "RAM_O1")
         return make(Pt{RAMIO_X1, (n == "RAM_O2" ? mu() : ml()) + RAMIO_O_Y}, n == "RAM_O2" ? RAM_O2_LANE : RAM_O1_LANE,
@@ -361,48 +392,34 @@ Anchor cpe_anchor(const std::string &n)
     if (n == "PINX")
         return carry(CPE_PIN, PX_BAND);
     if (n == "COUTX")
-        return carry(1.0f, CX_BAND);
+        return carry(COUTX_X1, CX_BAND);
     if (n == "POUTX")
-        return carry(1.0f, PX_BAND);
+        return carry(POUTX_X1, PX_BAND);
     auto column = [](const std::string &s) {
-        // CX, PX, CY1, PY1, CY2, PY2 at the start of s
+        // CY1, PY1, CY2, PY2 at the start of s
         if (starts_with(s, "CY1"))
             return CY1;
         if (starts_with(s, "PY1"))
             return PY1;
         if (starts_with(s, "CY2"))
             return CY2;
-        if (starts_with(s, "PY2"))
-            return PY2;
-        if (starts_with(s, "CX"))
-            return CX;
-        return PX;
+        return PY2;
     };
     if (starts_with(n, "CINY") || starts_with(n, "PINY"))
         return carry(column(std::string(1, n[0]) + "Y" + n.substr(4)), CARRY_IN_Y);
     if (starts_with(n, "COUTY") || starts_with(n, "POUTY"))
         return carry(column(std::string(1, n[0]) + "Y" + n.substr(5)), CARRY_OUT_Y - CMUX_OUT_DY);
+    // The carry logic (see CL_RAIL_OUT2): the outputs of its muxes
     if (n == "CIY12")
-        return cpe(mid(CY1, PY1), 0.24f);
+        return cpe(CIY12_X1, CIY12_Y);
     if (n == "PIY12")
-        return cpe(mid(PY1, CY2), 0.24f);
-    // The carry logic of each line (_OUT2, _OUT into _VAL), just right of the line itself (which may
-    // pass straight through); _VAL nearest to where the line leaves: the X lines along the bottom,
-    // the Y lines at the top. Each line's a little higher than the one before, so that the
-    // connections into them run at heights of their own.
-    bool x_line = starts_with(n, "CX") || starts_with(n, "PX");
-    float shift = 0.006f * (starts_with(n, "PX")    ? 1
-                            : starts_with(n, "CY1") ? 2
-                            : starts_with(n, "PY1") ? 3
-                            : starts_with(n, "CY2") ? 4
-                            : starts_with(n, "PY2") ? 5
-                                                    : 0);
+        return cpe(PIY12_X1, PIY12_Y);
     if (ends_with(n, "_OUT2"))
-        return cpe(column(n) + 0.005f, shift + (x_line ? 0.325f : 0.25f));
+        return cpe(CL_SEL_X1, carry_row(n) - CL_SEL_DY);
     if (ends_with(n, "_OUT"))
-        return cpe(column(n) + 0.005f, shift + (x_line ? 0.285f : 0.29f));
+        return cpe(CL_SEL_X1, carry_row(n) + CL_SEL_DY);
     if (ends_with(n, "_VAL"))
-        return cpe(column(n) + 0.005f, shift + (x_line ? 0.245f : 0.33f));
+        return cpe(CL_VAL_X1, carry_row(n));
     Pt p = spread("CPE." + n);
     return cpe(p.x, p.y);
 }
@@ -892,13 +909,59 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         path({S, Pt{down, S.y}, Pt{down, D.y}, D});
         return;
     }
-    // A Y line's carry logic into the 2:1 mux where the line leaves, and across it
+    // The carry logic (see CL_RAIL_OUT2). OUT1, OUT2 and the comparator into it: straight to their
+    // rails
+    if (dn == "OUT1_IN_int" || dn == "OUT2_IN_int" || dn == "COMPOUT_IN_int") {
+        path({S, D});
+        return;
+    }
+    // Into the first muxes of a row: down or up the input's rail (CINX and PINX along their band to
+    // it first, CIY12 and PIY12 from their muxes) and across to the mux input
+    if (ends_with(dn, "_OUT") || ends_with(dn, "_OUT2")) {
+        bool upper = ends_with(dn, "_OUT2") ? sn == "COMPOUT_IN_int" : sn == "OUT1_IN_int";
+        float in_y = D.y + (upper ? CL_IN_DY : -CL_IN_DY);
+        std::vector<Pt> pts{S};
+        if (sn == "CINX" || sn == "PINX" || sn == "CIY12" || sn == "PIY12") {
+            float rail = sn == "CINX"    ? CL_RAIL_CINX
+                         : sn == "PINX"  ? CL_RAIL_PINX
+                         : sn == "CIY12" ? CL_RAIL_CIY12
+                                         : CL_RAIL_PIY12;
+            pts.push_back(Pt{rail, S.y});
+            pts.push_back(Pt{rail, in_y});
+        } else {
+            pts.push_back(Pt{S.x, in_y});
+        }
+        through_mux(pts, CL_SEL_X0, in_y);
+        return;
+    }
+    // From a first mux straight into the row's _VAL mux, whose inputs are at their heights
+    if (ends_with(dn, "_VAL")) {
+        through_mux({S}, CL_VAL_X0, S.y);
+        return;
+    }
+    // The C_Y12 muxes: up the Y line from its start, and along to the mux input
+    if (dn == "CIY12" || dn == "PIY12") {
+        bool upper = sn == "CINY1" || sn == "PINY1";
+        float in_y = D.y + (upper ? CL_IN_DY : -CL_IN_DY);
+        through_mux({S, Pt{S.x, in_y}}, dn == "CIY12" ? CIY12_X0 : PIY12_X0, in_y);
+        return;
+    }
+    // A Y line's carry logic out to its line, up beside it (left) into the 2:1 mux where it leaves,
+    // and across it
     if (ends_with(sn, "_VAL") && (starts_with(dn, "COUTY") || starts_with(dn, "POUTY"))) {
-        path({S, Pt{S.x, D.y - CMUX_IN_DY}, D});
+        float up = D.x - 0.0035f;
+        path({S, Pt{up, S.y}, Pt{up, D.y - CMUX_IN_DY}, D});
+        return;
+    }
+    // An X line's: along to the right, down to just above its band and into the 2:1 mux there
+    if (ends_with(sn, "_VAL") && (dn == "COUTX" || dn == "POUTX")) {
+        float x0 = dn == "COUTX" ? COUTX_X0 : POUTX_X0, in_y = D.y + XMUX_IN_DY;
+        float down = dn == "COUTX" ? CL_X_DOWN_CX : CL_X_DOWN_PX;
+        path({S, Pt{down, S.y}, Pt{down, in_y}, Pt{x0, in_y}, D});
         return;
     }
     // The carry logic: along the band below the CPE, and up and down the carry column
-    bool sc = S.x >= CX - 0.01f, dc = D.x >= CX - 0.01f;
+    bool sc = S.x >= CY1 - 0.01f, dc = D.x >= CY1 - 0.01f;
     bool sb = S.y < CARRY_IN_Y - 0.001f, db = D.y < CARRY_IN_Y - 0.001f;
     if (sb && (dc || db)) {
         path({S, Pt{D.x, S.y}, D});
@@ -1130,6 +1193,19 @@ static bool cpe_mux_symbol(std::vector<GraphicElement> &g, GraphicElement::style
         mux(g, style, x + OMUX_X0, x + OMUX_X1, my, 0.045f, 0.015f);
     else if (n == "MUXOUT_int")
         mux(g, style, x + BRIDGE_X0, x + BRIDGE_X1, my, 0.011f, 0.005f);
+    else if (ends_with(n, "_OUT") || ends_with(n, "_OUT2"))
+        // the carry logic's first muxes, and its _VAL muxes (see CL_RAIL_OUT2)
+        mux(g, style, x + CL_SEL_X0, x + CL_SEL_X1, my, CL_IN_DY + 0.0015f, 0.0015f);
+    else if (ends_with(n, "_VAL"))
+        mux(g, style, x + CL_VAL_X0, x + CL_VAL_X1, my, CL_SEL_DY + 0.0015f, 0.002f);
+    else if (n == "CIY12" || n == "PIY12")
+        // inputs on the right, from the Y lines
+        mux(g, style, x + (n == "CIY12" ? CIY12_X0 : PIY12_X0), x + cpe_anchor(n).p.x, my, CL_IN_DY + 0.0015f,
+            0.0015f);
+    else if (n == "COUTX" || n == "POUTX")
+        // where an X line leaves: the line passing through along its band, or its carry logic from above
+        mux(g, style, x + (n == "COUTX" ? COUTX_X0 : POUTX_X0), x + cpe_anchor(n).p.x, my, XMUX_IN_DY + 0.0015f,
+            0.0015f);
     else if (starts_with(n, "COUTY") || starts_with(n, "POUTY")) {
         // The 2:1 mux where a Y line leaves (C_CY1_I, ...): the line passing through from below, or
         // its carry logic (_VAL, right of it), up into the line; upright and centred on the line
@@ -1246,8 +1322,8 @@ static void cpe_port_labels(std::vector<GraphicElement> &g)
     for (auto &col : {std::make_pair(CY1, "CINY1"), std::make_pair(PY1, "PINY1"), std::make_pair(CY2, "CINY2"),
                       std::make_pair(PY2, "PINY2")}) {
         std::string in = col.second, out = in.substr(0, 1) + "OUT" + in.substr(3);
-        port(col.first + 0.0008f, CARRY_IN_Y - 0.0095f, col.first + 0.0168f, CARRY_IN_Y - 0.0015f, in);
-        port(col.first + 0.0008f, CARRY_OUT_Y - 0.0095f, col.first + 0.0168f, CARRY_OUT_Y - 0.0015f, out);
+        port(col.first + 0.0008f, CARRY_IN_Y - 0.0095f, col.first + 0.0128f, CARRY_IN_Y - 0.0015f, in);
+        port(col.first + 0.0008f, CARRY_OUT_Y - 0.0095f, col.first + 0.0128f, CARRY_OUT_Y - 0.0015f, out);
     }
 }
 
@@ -1657,7 +1733,8 @@ void GateMateImpl::mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicEleme
         int index = tile_wire_index(ctx, tile, std::string("CPE.") + name);
         return index >= 0 && ctx->getBoundWireNet(ctx->normalise_wire(tile, index)) != nullptr;
     };
-    constexpr float TEXT_X0 = 0.942f, TEXT_X1 = 0.998f, TEXT_H = 0.008f;
+    // (left of the lines, which are at the right edge)
+    constexpr float TEXT_X0 = 0.88f, TEXT_X1 = 0.936f, TEXT_H = 0.008f;
     struct
     {
         const char *name;
@@ -1673,16 +1750,16 @@ void GateMateImpl::mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicEleme
     for (auto &l : y_lines) {
         if (!used(l.name))
             continue;
-        line(g, GraphicElement::STYLE_FRAME, x + l.column, y + ty, x + TEXT_X0, y + ty);
+        line(g, GraphicElement::STYLE_FRAME, x + l.column, y + ty, x + TEXT_X1, y + ty);
         label(g, style, x + TEXT_X0, y + ty - TEXT_H / 2, x + TEXT_X1, y + ty + TEXT_H / 2, l.text, LOD_PORTS);
         ty -= TEXT_H + 0.002f;
     }
-    // (left of the names of the lines at the right edge)
+    // (between the 2:1 mux where the line leaves and its name at the right edge)
     const std::pair<const char *, float> x_lines[] = {{"COUTX", CX_BAND}, {"POUTX", PX_BAND}};
     for (auto &l : x_lines)
         if (used(l.first))
-            label(g, style, x + TEXT_X0, y + l.second + 0.001f, x + 0.966f, y + l.second + 0.001f + TEXT_H, "sum",
-                  LOD_PORTS);
+            label(g, style, x + COUTX_X1 + 0.002f, y + l.second + 0.001f, x + 0.974f, y + l.second + 0.001f + TEXT_H,
+                  "sum", LOD_PORTS);
 }
 
 void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style_t style, IdString bel_type, Loc loc)
@@ -1714,11 +1791,45 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         float ly = label_y < 0 ? mid(y0, y1) : label_y;
         label(g, s, x + x0 + 0.003f, y + ly - 0.012f, x + x1 - 0.003f, y + ly + 0.012f, f);
     };
-    // From the output of a LUT2 to the next one: grey from a constant
+    // A lower half in a carry-in mode takes the carry input (CINY1, or CINX with C_HORIZ) in place
+    // of a LUT2's output (see pack_mult.cc): C_ADDCIN in place of L11's into L20, C_EN_CIN in place
+    // of L03's into L11. Which one (5: L11, 3: L03, -1: none), and whether the carry input is used.
+    int cin_into = -1;
+    bool cin_x = false, cin_used = false;
+    if (used && (bel_type == id_CPE_LT_L || bel_type == id_CPE_LT_FULL)) {
+        BelId bel = ctx->getBelByLocation(loc);
+        if (const CellInfo *cell = ctx->getBoundBelCell(bel)) {
+            int function = int_or_default(cell->params, id_C_FUNCTION, 0);
+            cin_into = function == C_ADDCIN ? 5 : function == C_EN_CIN ? 3 : -1;
+            cin_x = int_or_default(cell->params, id_C_HORIZ, 0) != 0;
+            int w = tile_wire_index(ctx, bel.tile, cin_x ? "CPE.CINX" : "CPE.CINY1");
+            cin_used = w >= 0 && ctx->getBoundWireNet(ctx->normalise_wire(bel.tile, w)) != nullptr;
+        }
+    }
+    // From the output of a LUT2 to the next one: grey from a constant, or where the carry input
+    // takes its place
     auto link = [&](size_t index, float x0, float x1, float h) {
         std::string f = text(index);
-        bool constant = used && (f == "0" || f == "1");
-        line(g, constant ? GraphicElement::STYLE_INACTIVE : style, x + x0, y + h, x + x1, y + h);
+        bool idle_link = used && (f == "0" || f == "1" || int(index) == cin_into);
+        line(g, idle_link ? GraphicElement::STYLE_INACTIVE : style, x + x0, y + h, x + x1, y + h);
+    };
+    // The carry input into the LUT2 input it takes: from the start of CINY1 along a track below
+    // the CPE (CINX along its band), and up a lane just left of the LUT2
+    auto carry_in = [&]() {
+        if (cin_into < 0)
+            return;
+        float to_x = cin_into == 5 ? L20_X0 : L2_X0, to_y = cin_into == 5 ? ml() : m78(), lane = to_x - 0.004f;
+        std::vector<Pt> pts;
+        if (cin_x) {
+            pts = {Pt{CPE_PIN, CX_BAND}, Pt{lane, CX_BAND}};
+        } else {
+            pts = {Pt{CY1, CARRY_IN_Y}, Pt{CY1, CIN_TRACK_Y}, Pt{lane, CIN_TRACK_Y}};
+        }
+        pts.push_back(Pt{lane, to_y});
+        pts.push_back(Pt{to_x, to_y});
+        for (auto &p : pts)
+            p = Pt{x + p.x, y + p.y};
+        polyline(g, cin_used ? style : GraphicElement::STYLE_INACTIVE, pts);
     };
     // LUT2 L00 (IN1, IN2) and L01 (IN3, IN4) into L10
     auto upper_tree = [&]() {
@@ -1740,6 +1851,7 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         link(2, L1_X1, L2_X0, m56());
         link(3, L1_X1, L2_X0, m78());
         link(5, L2_X1, L20_X0, ml());
+        carry_in();
         lod(g, from, LOD_DETAIL);
     };
     // Zoomed out, a used half of the CPE logic is a box in place of its LUT2s
@@ -1855,16 +1967,23 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         port_name(RAMIO_X1 + 0.0008f, m + RAMIO_I_Y + 0.0005f, RAMIO_X1 + 0.0168f, m + RAMIO_I_Y + 0.0055f, "RAM_I");
         break;
     }
-    case id_CPE_CPLINES.index:
-        simple(CX - 0.008f, 0.235f, PY2 + 0.008f, 0.375f);
-        name(CX, 0.377f, PY2, 0.387f, "CARRY", LOD_PORTS);
+    case id_CPE_CPLINES.index: {
+        // The carry logic (see CL_RAIL_OUT2), and the name of each row's line
+        float top = CL_ROW0 + 5 * CL_ROW_DY + 0.016f;
+        simple(CL_RAIL_OUT2 - 0.004f, CL_ROW0 - 0.016f, CL_VAL_X1 + 0.016f, top);
+        name(CL_RAIL_OUT2, top + 0.002f, CL_VAL_X1 + 0.012f, top + 0.01f, "CARRY", LOD_PORTS);
+        for (const char *line : {"PX", "CX", "PY2", "CY2", "PY1", "CY1"}) {
+            float r = carry_row(line);
+            port_name(CL_VAL_X1 + 0.002f, r + 0.001f, CL_VAL_X1 + 0.014f, r + 0.006f, line);
+        }
         break;
+    }
     case id_CPE_COMP.index:
         simple(CMP_X0, CMP_Y0, CMP_X1, CMP_Y1);
-        name(CMP_X0 + 0.001f, 0.294f, CMP_X1 - 0.001f, 0.306f, "CMP", LOD_PORTS);
+        name(CMP_X0 + 0.001f, CMP_OUT_Y - 0.006f, CMP_X1 - 0.001f, CMP_OUT_Y + 0.006f, "CMP", LOD_PORTS);
         port_name(CMP_X0 - 0.016f, CMP_IN2_Y + 0.0005f, CMP_X0 - 0.001f, CMP_IN2_Y + 0.0055f, "COMB2");
         port_name(CMP_X0 - 0.016f, CMP_IN1_Y + 0.0005f, CMP_X0 - 0.001f, CMP_IN1_Y + 0.0055f, "COMB1");
-        port_name(CMP_X1 + 0.001f, 0.3005f, CMP_X1 + 0.019f, 0.3055f, "COMPOUT");
+        port_name(CMP_X1 + 0.001f, CMP_OUT_Y + 0.0005f, OUT2_LANE - 0.001f, CMP_OUT_Y + 0.0055f, "COMPOUT");
         break;
     case id_RAM.index: {
         // In the RAM column: a block 16 tiles high at any zoom (an unused one from a little zoomed
