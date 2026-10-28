@@ -163,6 +163,8 @@ struct HimbaechelAPI
     virtual void postPlace() {};
     virtual void preRoute() {};
     virtual void postRoute() {};
+    // Called at the end of Arch::assignArchInfo, e.g. after a placed and routed design was loaded
+    virtual void assignArchInfo() {};
 
     // For custom placer configuration
     virtual void configurePlacerHeap(PlacerHeapCfg &cfg) {};

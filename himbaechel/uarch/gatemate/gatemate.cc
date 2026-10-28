@@ -618,6 +618,9 @@ void GateMateImpl::check_regions()
         log_error("A placement region is too small for its cells, see the utilisation above.\n");
 }
 
+// (also after a placed and routed design was loaded, and after routing, see postRoute)
+void GateMateImpl::assignArchInfo() { update_gui_labels(); }
+
 void GateMateImpl::postPlace()
 {
     release_partitions();
@@ -1366,7 +1369,6 @@ void GateMateImpl::postRoute()
         }
     }
     ctx->assignArchInfo();
-    update_gui_labels();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {

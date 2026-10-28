@@ -58,6 +58,7 @@ struct GateMateImpl : HimbaechelAPI
     void postPlace() override;
     void preRoute() override;
     void postRoute() override;
+    void assignArchInfo() override;
 
     virtual std::string getDefaultRouter() const override { return "router2"; };
 
@@ -189,6 +190,9 @@ struct GateMateImpl : HimbaechelAPI
     void draw_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip, bool assigned) const;
     void draw_route_from_driver(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire,
                                 const PlacedAnchor &to, bool assigned) const;
+    void configured_cpe_paths(std::vector<GraphicElement> &g, int tile, float x, float y) const;
+    void mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicElement::style_t style, BelId bel, float x,
+                          float y) const;
 
     bool getClusterPlacement(ClusterId cluster, BelId root_bel,
                              std::vector<std::pair<CellInfo *, BelId>> &placement) const override;

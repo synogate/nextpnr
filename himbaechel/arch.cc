@@ -331,6 +331,7 @@ void Arch::assignArchInfo()
     for (auto &net : nets) {
         net.second->flat_index = net_idx++;
     }
+    uarch->assignArchInfo();
 }
 
 WireId Arch::getWireByName(IdStringList name) const
