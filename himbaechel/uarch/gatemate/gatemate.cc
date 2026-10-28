@@ -733,6 +733,10 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
     if (!pip_allowed_by_options(pip))
         return false;
     const auto &extra_data = *pip_extra_data(pip);
+    // The masks and used CPEs are set up by postPlace: not yet, or not at all for a design loaded
+    // placed and routed (as when the GUI shows a pip of one)
+    if (pip.tile >= int(pip_mask.size()))
+        return true;
     if (extra_data.type == PipExtra::PIP_EXTRA_MUX && (extra_data.block != 0)) {
         if (pip_mask[pip.tile] & extra_data.block) {
             return false;
