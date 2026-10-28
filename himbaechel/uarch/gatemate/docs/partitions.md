@@ -89,9 +89,12 @@ again, and the log reports how many there are (`--verbose` names them and gives 
   them or routes into them, but placing its area along the IO ring still narrows the routing there.
 
 With `--vopt partition-open` the design may also place cells in the free tiles of a partition's rectangle, but
-only where the partition's locked routing leaves a way into every CPE input there (a short search back from
-each input over free wires). Partitions route densely inside their area, so few tiles open: on the dmg_soc,
-0 to 250 of about 1400 for a CPU partition, and the timing did not change.
+only where the partition's locked routing leaves a way into every CPE input there: a flood over the free wires,
+starting from the outputs of all bels outside the partitions' cells, has to reach each input. Without it, a
+partition without region closes most of the device. With it, on the dmg_soc, a partition of everything but
+the pixel pipeline left 10041 of 10402 tiles of its rectangle open; the closed ones hold bridges of its
+routing. Multipliers never go into tiles that the locked routing of a partition passes through, since their
+fixed routing could not get through there.
 
 ## Timing
 
@@ -102,6 +105,14 @@ connect to will be, and the design around keeps out of its rectangle. On the dmg
 pixel pipeline as partitions, the 33 MHz clock went from 31.1 MHz (flat) to about 25 MHz, the critical path
 being the same one with longer connections around the CPU. Floorplan partitions where their neighbours will
 be, and register the signals that cross their edges where timing matters.
+
+In step 1 a port's stand-in is not clocked, so paths that end or start at a port are not timed there. Logic
+in the partition that feeds an IO register of the design is then placed and sized as if it had all the time,
+and far from the IO. On the dmg_soc, with everything but the pixel pipeline as one partition without region,
+step 1 reached 30.7 MHz (flat 31.1), but in the whole design the critical path became one from a RAM in the
+partition, 15.8 ns through its logic, to a DDR output register of the HyperBus PHY on the falling edge (half
+a period), with 4.7 ns from the partition to the IO: 21.4 MHz. Keep logic that feeds IO registers out of
+partitions, or register it at the partition's edge.
 
 ## Limits
 

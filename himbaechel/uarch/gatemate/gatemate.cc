@@ -419,6 +419,11 @@ bool GateMateImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
     // in a gap would be closed in by their locked routing. Cells fixed by packing (next to the IOs) stay.
     if (partition_tiles.count(bel.tile) && cell->belStrength < STRENGTH_FIXED && !partition_cells.count(cell->name))
         return false;
+    if (partition_routed_tiles.count(bel.tile) && multiplier_clusters.count(cell->cluster))
+        return false;
+    // A partition keeps the CPEs next to IOs and the clocking free for the design importing it
+    if (as_partition && partition_io_tiles.count(bel.tile) && cell->belStrength < STRENGTH_FIXED)
+        return false;
 
     if (getBelBucketForBel(bel) == id_CPE_FF) {
         Loc loc = ctx->getBelLocation(bel);

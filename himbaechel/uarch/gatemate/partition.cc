@@ -483,6 +483,11 @@ void GateMateImpl::import_partition(const std::string &spec)
             }
         }
         if (why.empty()) {
+            for (auto &w : net->wires) {
+                partition_routed_tiles.insert(w.first.tile);
+                if (w.second.pip != PipId())
+                    partition_routed_tiles.insert(w.second.pip.tile);
+            }
             locked++;
             continue;
         }
@@ -501,39 +506,44 @@ void GateMateImpl::import_partition(const std::string &spec)
 void GateMateImpl::open_partition_area(const BoundingBox &area)
 {
     // The free tiles of the area are opened to the design where the partition's locked routing leaves a way to
-    // every CPE input: a short search back from each input over free wires has to get a few muxes away
+    // every CPE input: a flood over the free wires from the outputs of all bels outside the partitions' cells has
+    // to reach each of them
     pool<int> used;
     for (auto &name : partition_cells) {
         const CellInfo *ci = ctx->cells.at(name).get();
         if (ci->bel == BelId())
             continue;
-        Loc loc = ctx->getBelLocation(ci->bel);
-        if (loc.x < area.x0 || loc.x > area.x1 || loc.y < area.y0 || loc.y > area.y1)
-            continue;
         used.insert(ci->bel.tile);
         if (ci->type == id_RAM) // the RAM's bel pins span its second half's tile too
             used.insert(rel_tile(ctx->chip_info, ci->bel.tile, 0, 8));
     }
-    auto reachable = [&](WireId pin) {
-        const int depth = 4;
-        std::vector<WireId> level{pin};
-        pool<WireId> seen{pin};
-        for (int d = 0; d < depth && !level.empty(); d++) {
-            std::vector<WireId> next;
-            for (WireId w : level)
-                for (PipId pip : ctx->getPipsUphill(w)) {
-                    WireId src = ctx->getPipSrcWire(pip);
-                    if (seen.count(src) || ctx->getBoundWireNet(src) != nullptr || !pip_allowed_by_options(pip))
-                        continue;
-                    seen.insert(src);
-                    next.push_back(src);
-                    if (seen.size() > 64)
-                        return true;
+    auto is_cpe = [&](BelId bel) { return ctx->getBelType(bel).str(ctx).rfind("CPE", 0) == 0; };
+    pool<WireId> reached;
+    std::vector<WireId> queue;
+    for (int y = 0; y < ctx->getGridDimY(); y++)
+        for (int x = 0; x < ctx->getGridDimX(); x++) {
+            if (used.count(tile_by_xy(ctx->chip_info, x, y)))
+                continue;
+            for (BelId bel : ctx->getBelsByTile(x, y)) {
+                for (IdString pin : ctx->getBelPins(bel)) {
+                    WireId wire = ctx->getBelPinWire(bel, pin);
+                    if (ctx->getBelPinType(bel, pin) == PORT_OUT && wire != WireId() &&
+                        ctx->getBoundWireNet(wire) == nullptr && reached.insert(wire).second)
+                        queue.push_back(wire);
                 }
-            level = std::move(next);
+            }
         }
-        return !level.empty();
-    };
+    while (!queue.empty()) {
+        WireId wire = queue.back();
+        queue.pop_back();
+        for (PipId pip : ctx->getPipsDownhill(wire)) {
+            WireId dst = ctx->getPipDstWire(pip);
+            if (!reached.count(dst) && ctx->getBoundWireNet(dst) == nullptr && pip_allowed_by_options(pip)) {
+                reached.insert(dst);
+                queue.push_back(dst);
+            }
+        }
+    }
     int opened = 0, closed = 0;
     for (int y = area.y0; y <= area.y1; y++)
         for (int x = area.x0; x <= area.x1; x++) {
@@ -542,13 +552,14 @@ void GateMateImpl::open_partition_area(const BoundingBox &area)
                 continue;
             bool open = true;
             for (BelId bel : ctx->getBelsByTile(x, y)) {
-                if (ctx->getBelType(bel).str(ctx).rfind("CPE", 0) != 0)
+                if (!is_cpe(bel))
                     continue;
                 for (IdString pin : ctx->getBelPins(bel)) {
-                    if (ctx->getBelPinType(bel, pin) != PORT_IN)
+                    // (RAM_I comes the dedicated way from its RAM)
+                    if (ctx->getBelPinType(bel, pin) != PORT_IN || pin.str(ctx).rfind("RAM_I", 0) == 0)
                         continue;
                     WireId wire = ctx->getBelPinWire(bel, pin);
-                    if (wire != WireId() && ctx->getBoundWireNet(wire) == nullptr && !reachable(wire)) {
+                    if (wire != WireId() && !reached.count(wire)) {
                         open = false;
                         break;
                     }
@@ -641,44 +652,20 @@ void GateMateImpl::find_partition_area()
             partition_area.y1 = std::max(partition_area.y1, loc.y);
         }
     }
-    if (partition_area.x0 < 0) {
-        log_warning("The partition is not floorplanned; it will take the rectangle its cells and routing happen to "
-                    "cover.\n");
-        return;
-    }
     // The CPEs fixed next to IOs and the clocking (by getRelativeConstraint) are kept free for the design
     // importing the partition, which may use any of them
     for (auto &constr : pin_to_constr) {
-        if (constr.second.empty() || ctx->getBelType(constr.first).in(id_RAM, id_RAM_HALF_L))
+        // (the SERDES, configuration and reset bels are left to the partition; their CPEs are those of RAMs too)
+        IdString type = ctx->getBelType(constr.first);
+        if (constr.second.empty() || !type.in(id_GPIO, id_IOSEL, id_GLBOUT, id_CLKIN, id_PLL))
             continue;
+        if (!partition_ccf_tiles.empty() && type.in(id_GPIO, id_IOSEL) && !partition_ccf_tiles.count(constr.first.tile))
+            continue; // an IO the importing design does not use
         Loc root = ctx->getBelLocation(constr.first);
         for (auto &pin : constr.second) {
             int x = root.x + pin.second->constr_x, y = root.y + pin.second->constr_y;
             if (x >= 0 && y >= 0 && x < ctx->getGridDimX() && y < ctx->getGridDimY())
                 partition_io_tiles.insert(tile_by_xy(ctx->chip_info, x, y));
-        }
-    }
-    // Their bel pins and the input muxes in front of them stay free of the partition's routing; the switch boxes
-    // of their tiles serve the CPEs next to them too
-    for (int tile : partition_io_tiles) {
-        int x, y;
-        tile_xy(ctx->chip_info, tile, x, y);
-        for (BelId bel : ctx->getBelsByTile(x, y)) {
-            for (IdString pin : ctx->getBelPins(bel)) {
-                WireId wire = ctx->getBelPinWire(bel, pin);
-                if (wire == WireId())
-                    continue;
-                partition_io_wires.insert(wire);
-                for (PipId up : ctx->getPipsUphill(wire)) {
-                    WireId src = ctx->getPipSrcWire(up);
-                    if (src.tile != tile)
-                        continue;
-                    partition_io_wires.insert(src);
-                    for (PipId up2 : ctx->getPipsUphill(src))
-                        if (ctx->getPipSrcWire(up2).tile == tile)
-                            partition_io_wires.insert(ctx->getPipSrcWire(up2));
-                }
-            }
         }
     }
     for (auto &region : ctx->region) {
@@ -690,6 +677,11 @@ void GateMateImpl::find_partition_area()
                 taken.push_back(bel);
         for (BelId bel : taken)
             region.second->bels.erase(bel);
+    }
+    if (partition_area.x0 < 0) {
+        log_warning("The partition is not floorplanned; it will take the rectangle its cells and routing happen to "
+                    "cover.\n");
+        return;
     }
     // A CPE's inputs come from the switch boxes around it, so the routing gets a margin of a 2x2 block
     const int margin = 2;
@@ -716,17 +708,23 @@ void GateMateImpl::find_partition_free_nets()
 
 bool GateMateImpl::checkPipAvailForNet(PipId pip, const NetInfo *net) const
 {
-    if (partition_area.x0 >= 0 && net && !partition_free_nets.count(net->name)) {
-        int x, y;
-        tile_xy(ctx->chip_info, pip.tile, x, y);
-        if (x < partition_area.x0 || x > partition_area.x1 || y < partition_area.y0 || y > partition_area.y1)
-            return false;
+    if (as_partition && net && !partition_free_nets.count(net->name)) {
+        // No bridges through the CPEs kept free for IOs (their inputs get no other load: no cells go there)
+        if (partition_io_tiles.count(pip.tile)) {
+            const auto &extra_data = *pip_extra_data(pip);
+            if (extra_data.type == PipExtra::PIP_EXTRA_MUX && (extra_data.flags & MUX_ROUTING))
+                return false;
+        }
         WireId dst = ctx->getPipDstWire(pip);
-        tile_xy(ctx->chip_info, dst.tile, x, y);
-        if (x < partition_area.x0 || x > partition_area.x1 || y < partition_area.y0 || y > partition_area.y1)
-            return false;
-        if (partition_io_wires.count(dst))
-            return false;
+        if (partition_area.x0 >= 0) {
+            int x, y;
+            tile_xy(ctx->chip_info, pip.tile, x, y);
+            if (x < partition_area.x0 || x > partition_area.x1 || y < partition_area.y0 || y > partition_area.y1)
+                return false;
+            tile_xy(ctx->chip_info, dst.tile, x, y);
+            if (x < partition_area.x0 || x > partition_area.x1 || y < partition_area.y0 || y > partition_area.y1)
+                return false;
+        }
     }
     return checkPipAvail(pip);
 }

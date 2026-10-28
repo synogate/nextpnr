@@ -182,6 +182,7 @@ struct GateMateImpl : HimbaechelAPI
     pool<IdString> multiplier_a_passthru_lowers;
     pool<IdString> multiplier_a_passthru_uppers;
     pool<IdString> multiplier_zero_drivers;
+    pool<ClusterId> multiplier_clusters;
     std::vector<bool> used_cpes;
     std::vector<uint32_t> pip_data;
     std::vector<uint32_t> pip_mask;
@@ -221,9 +222,10 @@ struct GateMateImpl : HimbaechelAPI
     // nets that may, as they are taken out after routing
     BoundingBox partition_area{-1, -1, -1, -1};
     pool<IdString> partition_free_nets;
-    // The tiles of the CPEs fixed next to IOs and clocking, which a partition keeps free, and the wires into them
+    // The tiles of the CPEs fixed next to IOs and clocking, which a partition keeps free
     pool<int> partition_io_tiles;
-    pool<WireId> partition_io_wires;
+    // The IOs a partition's CCF (that of the design importing it) names; only their CPEs are kept free then
+    pool<int> partition_ccf_tiles;
     void find_partition_area();
     void find_partition_free_nets();
     // With partition_open the design may place cells in the free tiles of the partitions' areas too
@@ -231,6 +233,8 @@ struct GateMateImpl : HimbaechelAPI
     // Cells imported from partitions, and the tiles of the rectangles they cover, where no other cell may go
     pool<IdString> partition_cells;
     pool<int> partition_tiles;
+    // Tiles the locked routing of partitions passes through, where the fixed multiplier paths may be taken
+    pool<int> partition_routed_tiles;
 
   private:
     bool getChildPlacement(const BaseClusterInfo *cluster, Loc root_loc,
