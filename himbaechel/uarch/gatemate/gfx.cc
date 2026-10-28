@@ -120,6 +120,11 @@ constexpr float BYPASS_DY = 0.045f, CPOUT_DY = -0.05f;
 // between the bottom channel and the entities
 constexpr float CX = 0.85f, PX = 0.862f, CY1 = 0.88f, PY1 = 0.898f, CY2 = 0.916f, PY2 = 0.934f;
 constexpr float CARRY_IN_Y = 0.205f, CARRY_OUT_Y = 0.995f, CX_BAND = 0.188f, PX_BAND = 0.176f;
+// The 2:1 mux where a Y line leaves, below its end: its output is where the line leaves (COUTY1, ...,
+// CMUX_OUT_DY below CARRY_OUT_Y, where the line to the next CPE starts), its inputs CMUX_IN_DY
+// below that; its width each side of the line (reaching the line's _VAL) and the half width of its
+// output
+constexpr float CMUX_OUT_DY = 0.017f, CMUX_IN_DY = 0.007f, CMUX_W = 0.0065f, CMUX_PAD = 0.0015f;
 // Block RAMs: each RAM column of the chip (beside a CPE column) is drawn as a column of its own,
 // right of that CPE column (see gui_column). In it, a RAM is a block 16 tiles high with its pins
 // on its left and their lanes in front of it.
@@ -376,7 +381,7 @@ Anchor cpe_anchor(const std::string &n)
     if (starts_with(n, "CINY") || starts_with(n, "PINY"))
         return carry(column(std::string(1, n[0]) + "Y" + n.substr(4)), CARRY_IN_Y);
     if (starts_with(n, "COUTY") || starts_with(n, "POUTY"))
-        return carry(column(std::string(1, n[0]) + "Y" + n.substr(5)), CARRY_OUT_Y);
+        return carry(column(std::string(1, n[0]) + "Y" + n.substr(5)), CARRY_OUT_Y - CMUX_OUT_DY);
     if (n == "CIY12")
         return cpe(mid(CY1, PY1), 0.24f);
     if (n == "PIY12")
@@ -501,8 +506,14 @@ Anchor wire_anchor(const std::string &tile_type, std::string name)
     if (kind == "SB_BIG" || kind == "SB_SML") {
         int plane = num(rest, 1);
         size_t d = rest.find('.');
-        if (plane > 0 && d != std::string::npos)
-            return sb_anchor(plane, rest.substr(d + 1));
+        if (plane > 0 && d != std::string::npos) {
+            std::string port = rest.substr(d + 1);
+            // A big switch box's Y1..Y4 and YDIAG are its muxes' outputs (a small one's Y*_int): at
+            // the mux, where the pips into them end (see sb_mux_output)
+            if (kind == "SB_BIG" && starts_with(port, "Y") && !ends_with(port, "_int"))
+                port += "_int";
+            return sb_anchor(plane, port);
+        }
     }
     if (kind == "SB_DRIVE") {
         // SB_DRIVE.Pxx.D{i}.{IN,OUT,OUT_NOINV}: the driver behind output Y{i}, in its output lane
@@ -739,6 +750,14 @@ static const std::string &tile_wire_name(const Context *ctx, int tile, int index
     return gfx_data(ctx).names.at(tile_type_of(ctx, tile)).at(index);
 }
 
+// The index of the tile wire called name in a tile, or -1
+static int tile_wire_index(const Context *ctx, int tile, const std::string &name)
+{
+    const auto &names = gfx_data(ctx).names.at(tile_type_of(ctx, tile));
+    auto it = std::find(names.begin(), names.end(), name);
+    return it == names.end() ? -1 : int(it - names.begin());
+}
+
 // The tile wire that drives a node: the one with pips uphill in its own tile, or for a node driven
 // by a bel pin, the one that does not arrive from another tile
 static WireId node_driver(const Context *ctx, WireId node, int except_tile, int except_index)
@@ -873,6 +892,11 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         path({S, Pt{down, S.y}, Pt{down, D.y}, D});
         return;
     }
+    // A Y line's carry logic into the 2:1 mux where the line leaves, and across it
+    if (ends_with(sn, "_VAL") && (starts_with(dn, "COUTY") || starts_with(dn, "POUTY"))) {
+        path({S, Pt{S.x, D.y - CMUX_IN_DY}, D});
+        return;
+    }
     // The carry logic: along the band below the CPE, and up and down the carry column
     bool sc = S.x >= CX - 0.01f, dc = D.x >= CX - 0.01f;
     bool sb = S.y < CARRY_IN_Y - 0.001f, db = D.y < CARRY_IN_Y - 0.001f;
@@ -897,6 +921,23 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
     path({S, Pt{turn, S.y}, Pt{turn, D.y}, D});
 }
 
+// The output of a first-stage mux of a switch box (Y1..Y4, YDIAG), where its pips end: in a small
+// switch box the *_int wire, which drives Y1..Y4 or YDIAG on the right edge. A big switch box has
+// no such stage, its Y1..Y4 and YDIAG are the mux outputs themselves, placed where a small one's
+// *_int wires are (see wire_anchor); its output drivers (SB_DRIVE) are on the right edge.
+static bool sb_mux_output(const PlacedAnchor &pa, Pt &p)
+{
+    const std::string &n = *pa.name;
+    bool big = starts_with(n, "SB_BIG.");
+    if (!big && !starts_with(n, "SB_SML."))
+        return false;
+    std::string port = n.substr(n.find('.', 7) + 1);
+    if (port.empty() || port[0] != 'Y' || (!big && !ends_with(port, "_int")))
+        return false;
+    p = pa.pos();
+    return true;
+}
+
 // A pip inside a switch box, input mux or output mux: across the mux, from the input it selects
 // to the output. In a switch box, the first stage (Y1_int..Y4_int, YDIAG_int) feeds the output
 // drivers on the right edge, and the diagonal mux and the others feed each other beside them.
@@ -904,19 +945,21 @@ static void mux_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
                          const PlacedAnchor &d)
 {
     Pt S = s.pos(), D = d.pos();
-    bool sb = s.a.entity >= E_SB && s.a.entity <= E_SB + 12;
-    if (sb && ends_with(*s.name, "_int") && ends_with(*d.name, "_int")) {
-        float x = s.tx, r = s.ty + row(s.a.plane);
-        if (ends_with(*s.name, "YDIAG_int"))
-            // The diagonal mux into a Y mux: up the bus beside them, and across the Y mux
-            polyline(g, style, {S, Pt{x + SB_BUS_X, S.y}, Pt{x + SB_BUS_X, D.y - 0.002f}, D});
-        else
-            // A Y mux back into the diagonal mux: round the bottom of the box, into the diagonal mux's
-            // input side and across it
-            polyline(g, style,
-                     {S, Pt{x + SB_BACK_X, S.y}, Pt{x + SB_BACK_X, r + SB_BACK_Y}, Pt{x + SB_BACK_IN_X, r + SB_BACK_Y},
-                      Pt{x + SB_BACK_IN_X, r + SB_BACK_IN_Y}, Pt{x + SB_DIAG_X0, r + SB_BACK_IN_Y}, D});
-        return;
+    if (sb_mux_output(d, D)) {
+        if (sb_mux_output(s, S)) {
+            float x = s.tx, r = s.ty + row(s.a.plane);
+            if (s.name->find("YDIAG") != std::string::npos)
+                // The diagonal mux into a Y mux: up the bus beside them, and across the Y mux
+                polyline(g, style, {S, Pt{x + SB_BUS_X, S.y}, Pt{x + SB_BUS_X, D.y - 0.002f}, D});
+            else
+                // A Y mux back into the diagonal mux: round the bottom of the box, into the diagonal
+                // mux's input side and across it
+                polyline(g, style,
+                         {S, Pt{x + SB_BACK_X, S.y}, Pt{x + SB_BACK_X, r + SB_BACK_Y},
+                          Pt{x + SB_BACK_IN_X, r + SB_BACK_Y}, Pt{x + SB_BACK_IN_X, r + SB_BACK_IN_Y},
+                          Pt{x + SB_DIAG_X0, r + SB_BACK_IN_Y}, D});
+            return;
+        }
     }
     line(g, style, S.x, S.y, D.x, D.y);
 }
@@ -1087,7 +1130,15 @@ static bool cpe_mux_symbol(std::vector<GraphicElement> &g, GraphicElement::style
         mux(g, style, x + OMUX_X0, x + OMUX_X1, my, 0.045f, 0.015f);
     else if (n == "MUXOUT_int")
         mux(g, style, x + BRIDGE_X0, x + BRIDGE_X1, my, 0.011f, 0.005f);
-    else
+    else if (starts_with(n, "COUTY") || starts_with(n, "POUTY")) {
+        // The 2:1 mux where a Y line leaves (C_CY1_I, ...): the line passing through from below, or
+        // its carry logic (_VAL, right of it), up into the line; upright and centred on the line
+        float c = x + cpe_anchor(n).p.x, in_y = my - CMUX_IN_DY, out_y = my;
+        line(g, style, c - CMUX_W, in_y, c + CMUX_W, in_y);
+        line(g, style, c - CMUX_PAD, out_y, c + CMUX_PAD, out_y);
+        line(g, style, c - CMUX_W, in_y, c - CMUX_PAD, out_y);
+        line(g, style, c + CMUX_W, in_y, c + CMUX_PAD, out_y);
+    } else
         return false;
     return true;
 }
@@ -1357,9 +1408,16 @@ static const TileSchematic &tile_schematic(const Context *ctx, int tile_type)
                         port(SB_X1 + 0.0015f, row(plane) + SB_H - 0.006f, SB_X1 + 0.03f, row(plane) + SB_H,
                              "SB P" + std::string(plane < 10 ? "0" : "") + std::to_string(plane));
                     }
-                    if (port_name[0] == 'Y' && ends_with(port_name, "_int"))
+                    Pt m;
+                    if (sb_mux_output(anchor(w), m)) {
                         sb_mux_symbol(sch.graphics, GraphicElement::STYLE_INACTIVE, rest, 0, row(plane));
-                    else if (port_name[0] == 'Y')
+                        if (kind == "SB_BIG") {
+                            // (on to the right edge, which a small switch box's Y*_int -> Y* pip draws)
+                            Pt e = sb_anchor(plane, port_name).p;
+                            line(sch.graphics, GraphicElement::STYLE_INACTIVE, m.x, m.y, e.x, e.y);
+                        }
+                    }
+                    if (port_name[0] == 'Y' && !ends_with(port_name, "_int"))
                         port(SB_X1 - 0.0135f, p.y + 0.0004f, SB_X1 - 0.0005f, p.y + 0.0038f,
                              sb_output_label(port_name));
                     else if (port_name[0] == 'X')
@@ -1457,6 +1515,176 @@ std::vector<PipId> GateMateImpl::getDetailPips(DecalId decal, float x, float y) 
     return pips;
 }
 
+// The connections in a CPE that its configuration makes rather than its routing: where a cell's
+// pin is a carry or propagate line (PINY1 into a LUT2 through its 2:1 mux), or the cell takes the
+// whole CPE (IN1..IN8 as its pins), or the carry logic (CPE_CPLINES) sends the outputs on along the
+// carry and propagate lines. These muxes are set by the cells' parameters (C_I1, C_SELY1, C_CY1_I,
+// ...; a first-level LUT2's inputs are not swapped): their selected pips that are not routed and
+// lie on a way from a used wire to another or to a pin of a used bel are drawn, as used.
+void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile, float x, float y) const
+{
+    // The parameters of the cells in the CPE, and the wires of their bels' pins
+    dict<IdString, int> params;
+    pool<int> live;
+    const auto &tdata = chip_tile_info(ctx->chip_info, tile);
+    for (int b = 0; b < tdata.bels.ssize(); b++) {
+        BelId bel(tile, b);
+        const CellInfo *cell = ctx->getBoundBelCell(bel);
+        if (cell == nullptr || !starts_with(ctx->getBelType(bel).str(ctx), "CPE_"))
+            continue;
+        // (the carry logic's muxes are 0 where its cell does not set them, as in the bitstream)
+        if (cell->type == id_CPE_CPLINES)
+            for (IdString p : {id_C_SELX, id_C_SELY1, id_C_SELY2, id_C_SEL_C, id_C_SEL_P, id_C_Y12, id_C_CX_I,
+                               id_C_CY1_I, id_C_CY2_I, id_C_PX_I, id_C_PY1_I, id_C_PY2_I})
+                if (!params.count(p))
+                    params[p] = 0;
+        for (auto &p : cell->params)
+            params[p.first] = int_or_default(cell->params, p.first, 0);
+        for (IdString pin : ctx->getBelPins(bel)) {
+            WireId w = ctx->getBelPinWire(bel, pin);
+            if (w.tile == tile)
+                live.insert(w.index);
+        }
+    }
+    if (params.empty())
+        return;
+    // The configurable pips of the CPE in tiles of this type: (pip, parameter, value), the parameter
+    // empty for the first-level LUT2s' inputs (not swapped: value 0)
+    struct ConfigPip
+    {
+        int pip;
+        IdString param;
+        int value;
+    };
+    static std::mutex cache_mutex;
+    static std::map<int, std::vector<ConfigPip>> cache;
+    std::vector<ConfigPip> candidates;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        int type = tile_type_of(ctx, tile);
+        auto it = cache.find(type);
+        if (it == cache.end()) {
+            std::vector<ConfigPip> found;
+            for (int i = 0; i < tdata.pips.ssize(); i++) {
+                const auto &extra = *pip_extra_data(PipId(tile, i));
+                if (extra.type != PipExtra::PIP_EXTRA_MUX || extra.bits == 0 || extra.name == 0)
+                    continue;
+                const std::string &src = tile_wire_name(ctx, tile, tdata.pips[i].src_wire);
+                const std::string &dst = tile_wire_name(ctx, tile, tdata.pips[i].dst_wire);
+                if (!starts_with(src, "CPE.") || !starts_with(dst, "CPE.") || ends_with(src, "_n"))
+                    continue;
+                std::string name = IdString(extra.name).str(ctx);
+                if (starts_with(name, "LUT2_0"))
+                    found.push_back({i, IdString(), extra.value});
+                else if (!starts_with(name, "LUT2_"))
+                    found.push_back({i, ctx->id(starts_with(name, "CPE.") ? name.substr(4) : name), extra.value});
+            }
+            it = cache.emplace(type, std::move(found)).first;
+        }
+        candidates = it->second;
+    }
+    // The selected pips, not routed
+    std::map<int, std::vector<int>> from; // source wire -> selected pips
+    for (auto &c : candidates) {
+        PipId pip(tile, c.pip);
+        if (ctx->getBoundPipNet(pip) != nullptr)
+            continue;
+        if (c.param == IdString() ? c.value != 0 : (!params.count(c.param) || params.at(c.param) != c.value))
+            continue;
+        from[tdata.pips[c.pip].src_wire].push_back(c.pip);
+    }
+    // Ways start at a used wire, and end at one or at a pin of a used bel
+    auto is_used = [&](int w) { return ctx->getBoundWireNet(ctx->normalise_wire(tile, w)) != nullptr; };
+    auto is_live = [&](int w) { return live.count(w) || is_used(w); };
+    // The wires from which a live wire is reached through selected pips (the muxes form no loops)
+    dict<int, bool> reaches;
+    std::function<bool(int)> leads_on = [&](int w) {
+        auto it = reaches.find(w);
+        if (it != reaches.end())
+            return it->second;
+        reaches[w] = false;
+        bool r = false;
+        auto out = from.find(w);
+        if (out != from.end())
+            for (int p : out->second) {
+                int d = tdata.pips[p].dst_wire;
+                r |= is_live(d) || leads_on(d);
+            }
+        reaches[w] = r;
+        return r;
+    };
+    // From each live wire, along the selected pips that lead on to a live wire
+    pool<int> drawn, visited;
+    std::function<void(int)> walk = [&](int w) {
+        if (!visited.insert(w).second)
+            return;
+        auto out = from.find(w);
+        if (out == from.end())
+            return;
+        for (int p : out->second) {
+            int d = tdata.pips[p].dst_wire;
+            if (!is_live(d) && !leads_on(d))
+                continue;
+            drawn.insert(p);
+            if (!is_live(d))
+                walk(d);
+        }
+    };
+    for (auto &f : from)
+        if (is_used(f.first))
+            walk(f.first);
+    for (int p : drawn) {
+        int s = tdata.pips[p].src_wire, d = tdata.pips[p].dst_wire;
+        connect(g, GraphicElement::STYLE_ACTIVE, placed_routed(tile, s), placed_routed(tile, d));
+        size_t first = g.size();
+        if (cpe_mux_symbol(g, GraphicElement::STYLE_ACTIVE, tile_wire_name(ctx, tile, d).substr(4), x, y))
+            lod(g, first, LOD_DETAIL);
+    }
+}
+
+// The outputs of a CPE used as a multiplier cell are the carry and propagate lines, driven by its
+// MULT mode, which the routing graph does not describe: the used ones are only named, by what the
+// multiplier sends on them (see pack_mult.cc), the Y lines at the top of their columns (with a faint
+// line from the column), the X lines at the right edge, just above their band.
+void GateMateImpl::mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicElement::style_t style, BelId bel,
+                                    float x, float y) const
+{
+    const CellInfo *cell = ctx->getBoundBelCell(bel);
+    if (cell == nullptr || int_or_default(cell->params, id_C_FUNCTION, 0) != C_MULT)
+        return;
+    int tile = bel.tile;
+    auto used = [&](const char *name) {
+        int index = tile_wire_index(ctx, tile, std::string("CPE.") + name);
+        return index >= 0 && ctx->getBoundWireNet(ctx->normalise_wire(tile, index)) != nullptr;
+    };
+    constexpr float TEXT_X0 = 0.942f, TEXT_X1 = 0.998f, TEXT_H = 0.008f;
+    struct
+    {
+        const char *name;
+        float column;
+        std::string text;
+    } y_lines[] = {
+            {"COUTY1", CY1, "COUTY1 carry"},
+            {"POUTY1", PY1, int_or_default(cell->params, id_C_PY1_I, 0) ? "POUTY1" : "POUTY1 = PINY1"},
+            {"COUTY2", CY2, "COUTY2 carry"},
+            {"POUTY2", PY2, int_or_default(cell->params, id_C_PY2_I, 0) ? "POUTY2" : "POUTY2 = PINY2"}};
+    // (below the names of the lines at the top and the muxes where they leave)
+    float ty = CARRY_OUT_Y - 0.032f;
+    for (auto &l : y_lines) {
+        if (!used(l.name))
+            continue;
+        line(g, GraphicElement::STYLE_FRAME, x + l.column, y + ty, x + TEXT_X0, y + ty);
+        label(g, style, x + TEXT_X0, y + ty - TEXT_H / 2, x + TEXT_X1, y + ty + TEXT_H / 2, l.text, LOD_PORTS);
+        ty -= TEXT_H + 0.002f;
+    }
+    // (left of the names of the lines at the right edge)
+    const std::pair<const char *, float> x_lines[] = {{"COUTX", CX_BAND}, {"POUTX", PX_BAND}};
+    for (auto &l : x_lines)
+        if (used(l.first))
+            label(g, style, x + TEXT_X0, y + l.second + 0.001f, x + 0.966f, y + l.second + 0.001f + TEXT_H, "sum",
+                  LOD_PORTS);
+}
+
 void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style_t style, IdString bel_type, Loc loc)
 {
     float x = gui_column(ctx, loc.x), y = loc.y;
@@ -1466,32 +1694,52 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
     if (used)
         labels = gui_labels(ctx->getBelByLocation(loc));
     auto text = [&](size_t i) { return i < labels.size() ? labels[i] : std::string(); };
-    // A LUT2 with its function
-    auto lut = [&](float x0, float x1, float y0, float y1, size_t index, float label_y = -1) {
-        box(g, style, x + x0, y + y0, x + x1, y + y1);
+    // A LUT2 with its function, its inputs A and B and its output at the heights a, b and out. One
+    // that does nothing (a constant, or passing an input through) is grey: a constant shows its
+    // value, one passing an input through a line from that input to the output.
+    auto idle = [&](size_t index) {
+        std::string f = text(index);
+        return used && (f == "0" || f == "1" || f == "A" || f == "B");
+    };
+    auto lut = [&](float x0, float x1, float y0, float y1, size_t index, float a, float b, float out,
+                   float label_y = -1) {
+        std::string f = text(index);
+        auto s = idle(index) ? GraphicElement::STYLE_INACTIVE : style;
+        box(g, s, x + x0, y + y0, x + x1, y + y1);
+        if (used && (f == "A" || f == "B")) {
+            float in = f == "A" ? a : b, xm = mid(x0, x1);
+            polyline(g, style, {Pt{x + x0, y + in}, Pt{x + xm, y + in}, Pt{x + xm, y + out}, Pt{x + x1, y + out}});
+            return;
+        }
         float ly = label_y < 0 ? mid(y0, y1) : label_y;
-        label(g, style, x + x0 + 0.003f, y + ly - 0.012f, x + x1 - 0.003f, y + ly + 0.012f, text(index));
+        label(g, s, x + x0 + 0.003f, y + ly - 0.012f, x + x1 - 0.003f, y + ly + 0.012f, f);
+    };
+    // From the output of a LUT2 to the next one: grey from a constant
+    auto link = [&](size_t index, float x0, float x1, float h) {
+        std::string f = text(index);
+        bool constant = used && (f == "0" || f == "1");
+        line(g, constant ? GraphicElement::STYLE_INACTIVE : style, x + x0, y + h, x + x1, y + h);
     };
     // LUT2 L00 (IN1, IN2) and L01 (IN3, IN4) into L10
     auto upper_tree = [&]() {
         size_t from = g.size();
-        lut(L1_X0, L1_X1, row(2) - 0.012f, row(1) + 0.012f, 0);
-        lut(L1_X0, L1_X1, row(4) - 0.012f, row(3) + 0.012f, 1);
-        lut(L2_X0, L2_X1, m34() - 0.018f, m12() + 0.018f, 4);
-        line(g, style, x + L1_X1, y + m12(), x + L2_X0, y + m12());
-        line(g, style, x + L1_X1, y + m34(), x + L2_X0, y + m34());
+        lut(L1_X0, L1_X1, row(2) - 0.012f, row(1) + 0.012f, 0, row(1), row(2), m12());
+        lut(L1_X0, L1_X1, row(4) - 0.012f, row(3) + 0.012f, 1, row(3), row(4), m34());
+        lut(L2_X0, L2_X1, m34() - 0.018f, m12() + 0.018f, 4, m12(), m34(), mu());
+        link(0, L1_X1, L2_X0, m12());
+        link(1, L1_X1, L2_X0, m34());
         lod(g, from, LOD_DETAIL);
     };
     // LUT2 L02 (IN5, IN6) and L03 (IN7, IN8) into L11, and L20 combining L11 with the upper half
     auto lower_tree = [&]() {
         size_t from = g.size();
-        lut(L1_X0, L1_X1, row(6) - 0.012f, row(5) + 0.012f, 2);
-        lut(L1_X0, L1_X1, row(8) - 0.012f, row(7) + 0.012f, 3);
-        lut(L2_X0, L2_X1, m78() - 0.018f, m56() + 0.018f, 5);
-        lut(L20_X0, L20_X1, ml() + CPOUT_DY - 0.005f, ml() + 0.06f, 6, ml() + 0.0225f);
-        line(g, style, x + L1_X1, y + m56(), x + L2_X0, y + m56());
-        line(g, style, x + L1_X1, y + m78(), x + L2_X0, y + m78());
-        line(g, style, x + L2_X1, y + ml(), x + L20_X0, y + ml());
+        lut(L1_X0, L1_X1, row(6) - 0.012f, row(5) + 0.012f, 2, row(5), row(6), m56());
+        lut(L1_X0, L1_X1, row(8) - 0.012f, row(7) + 0.012f, 3, row(7), row(8), m78());
+        lut(L2_X0, L2_X1, m78() - 0.018f, m56() + 0.018f, 5, m56(), m78(), ml());
+        lut(L20_X0, L20_X1, ml() + CPOUT_DY - 0.005f, ml() + 0.06f, 6, ml() + 0.045f, ml(), ml(), ml() + 0.0225f);
+        link(2, L1_X1, L2_X0, m56());
+        link(3, L1_X1, L2_X0, m78());
+        link(5, L2_X1, L20_X0, ml());
         lod(g, from, LOD_DETAIL);
     };
     // Zoomed out, a used half of the CPE logic is a box in place of its LUT2s
@@ -1526,7 +1774,10 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         if (used) {
             upper_tree();
             lower_tree();
+            mult_cpe_outputs(g, style, ctx->getBelByLocation(loc), x, y);
         }
+        // (for every CPE, used as a whole or not: drawn once per CPE, with the decal of this bel)
+        configured_cpe_paths(g, ctx->getBelByLocation(loc).tile, x, y);
         break;
     }
     case id_CPE_LT_U.index:
@@ -1750,13 +2001,21 @@ void GateMateImpl::drawTileWire(std::vector<GraphicElement> &g, GraphicElement::
         mux(g, style, x + OM_X1, x + OM_X0, y + om_centre(num(rest, 1)), 0.014f, 0.006f);
     } else if ((kind == "SB_BIG" || kind == "SB_SML") && (rest.find(".Y") != std::string::npos)) {
         int plane = num(rest, 1);
-        if (ends_with(rest, "_int"))
+        Pt m;
+        if (sb_mux_output(here, m))
             sb_mux_symbol(g, style, rest, x, y + row(plane));
-        else
+        if (!ends_with(rest, "_int"))
             box(g, style, x + SB_X0, y + row(plane) - SB_H, x + SB_X1, y + row(plane) + SB_H);
     } else if (kind == "IOES" && starts_with(rest, "SB_IN")) {
         mux(g, style, x + IOES_X0, x + IOES_X1, p.y, 0.009f, 0.004f);
-    } else if (kind == "CPE" && cpe_mux_symbol(g, style, rest, x, y)) {
+    } else if (kind == "CPE" &&
+               cpe_mux_symbol(g,
+                              // an output mux whose output goes nowhere is grey
+                              (rest == "OUT1_int" || rest == "OUT2_int") && ctx->getBoundWireNet(tile_wire) &&
+                                              ctx->getBoundWireNet(tile_wire)->users.empty()
+                                      ? GraphicElement::STYLE_INACTIVE
+                                      : style,
+                              rest, x, y)) {
         lod(g, from, LOD_DETAIL);
         return;
     } else if (here.a.entity == E_OTHER) {
