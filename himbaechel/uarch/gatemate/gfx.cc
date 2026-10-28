@@ -1978,13 +1978,32 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         }
         break;
     }
-    case id_CPE_COMP.index:
-        simple(CMP_X0, CMP_Y0, CMP_X1, CMP_Y1);
-        name(CMP_X0 + 0.001f, CMP_OUT_Y - 0.006f, CMP_X1 - 0.001f, CMP_OUT_Y + 0.006f, "CMP", LOD_PORTS);
+    case id_CPE_COMP.index: {
+        // The comparator, a LUT2 behind L20 (A: COMB1 from L20, B: COMB2 from L10): what it computes
+        // when used (see update_gui_labels), grey when it is a constant or passes an input through,
+        // with a line from that input to its output
+        std::string f = text(0);
+        bool through = used && (f == "A" || f == "B"), idle = through || (used && (f == "0" || f == "1"));
+        size_t from = g.size();
+        box(g, idle ? GraphicElement::STYLE_INACTIVE : style, x + CMP_X0, y + CMP_Y0, x + CMP_X1, y + CMP_Y1);
+        lod(g, from, used ? 0 : LOD_DETAIL);
+        if (through) {
+            float in = f == "A" ? CMP_IN1_Y : CMP_IN2_Y, xm = mid(CMP_X0, CMP_X1);
+            from = g.size();
+            polyline(g, style,
+                     {Pt{x + CMP_X0, y + in}, Pt{x + xm, y + in}, Pt{x + xm, y + CMP_OUT_Y},
+                      Pt{x + CMP_X1, y + CMP_OUT_Y}});
+            lod(g, from, LOD_DETAIL);
+        } else if (used) {
+            label(g, idle ? GraphicElement::STYLE_INACTIVE : style, x + CMP_X0 + 0.002f, y + CMP_OUT_Y - 0.008f,
+                  x + CMP_X1 - 0.002f, y + CMP_OUT_Y + 0.008f, f);
+        }
+        name(CMP_X0, CMP_Y1 + 0.001f, CMP_X1, CMP_Y1 + 0.007f, "CMP", used ? LOD_PORTS : LOD_TEXT);
         port_name(CMP_X0 - 0.016f, CMP_IN2_Y + 0.0005f, CMP_X0 - 0.001f, CMP_IN2_Y + 0.0055f, "COMB2");
         port_name(CMP_X0 - 0.016f, CMP_IN1_Y + 0.0005f, CMP_X0 - 0.001f, CMP_IN1_Y + 0.0055f, "COMB1");
         port_name(CMP_X1 + 0.001f, CMP_OUT_Y + 0.0005f, OUT2_LANE - 0.001f, CMP_OUT_Y + 0.0055f, "COMPOUT");
         break;
+    }
     case id_RAM.index: {
         // In the RAM column: a block 16 tiles high at any zoom (an unused one from a little zoomed
         // in), its mode at the top, and zoomed out RAM written down it
