@@ -30,6 +30,7 @@
 #include <fstream>
 #include "designwidget.h"
 #include "fpgaviewwidget.h"
+#include "timingwidget.h"
 #include "json_frontend.h"
 #include "jsonwrite.h"
 #include "log.h"
@@ -69,8 +70,12 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     setCentralWidget(centralWidget);
 
     designview = new DesignWidget();
-    designview->setMinimumWidth(300);
-    splitter_h->addWidget(designview);
+    timingview = new TimingWidget();
+    rightTabWidget = new QTabWidget();
+    rightTabWidget->setMinimumWidth(300);
+    rightTabWidget->addTab(designview, "Design");
+    rightTabWidget->addTab(timingview, "Paths");
+    splitter_h->addWidget(rightTabWidget);
 
     tabWidget = new QTabWidget();
 
@@ -102,6 +107,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(this, &BaseMainWindow::contextChanged, console, &PythonTab::newContext);
     connect(this, &BaseMainWindow::contextChanged, fpgaView, &FPGAViewWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, designview, &DesignWidget::newContext);
+    connect(this, &BaseMainWindow::contextChanged, timingview, &TimingWidget::newContext);
 
     // Catch close tab events
     connect(centralTabWidget, &QTabWidget::tabCloseRequested, this, &BaseMainWindow::closeTab);
@@ -111,6 +117,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(designview, &DesignWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
     connect(designview, &DesignWidget::highlight, fpgaView, &FPGAViewWidget::onHighlightGroupChanged);
     connect(designview, &DesignWidget::hover, fpgaView, &FPGAViewWidget::onHoverItemChanged);
+    connect(timingview, &TimingWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
+    connect(timingview, &TimingWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
 
     // Click event on device view
     connect(fpgaView, &FPGAViewWidget::clickedBel, designview, &DesignWidget::onClickedBel);
@@ -119,6 +127,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
+    connect(this, &BaseMainWindow::updateTreeView, timingview, &TimingWidget::designChanged);
 
     createMenusAndBars();
 }

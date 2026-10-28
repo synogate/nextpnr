@@ -374,6 +374,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
                     const PickQuadTree::BoundingBox &rect, int maxLevel);
     void populateQuadTree(RendererData *data, const DecalXY &decal, const PickedElement &element);
     boost::optional<PickedElement> pickElement(float worldx, float worldy);
+    void hoverAt(int x, int y);
     QVector4D mouseToWorldCoordinates(int x, int y);
     QVector4D mouseToWorldDimensions(float x, float y);
     QMatrix4x4 getProjection(void);

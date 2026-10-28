@@ -207,9 +207,8 @@ void TimingAnalyser::topo_sort()
         }
     }
 
-    bool ignore_loops = bool_or_default(ctx->settings, ctx->id("timing/ignoreLoops"), false);
     bool no_loops = topo.sort();
-    if (!no_loops && !ignore_loops) {
+    if (!no_loops && !ignore_loops && !bool_or_default(ctx->settings, ctx->id("timing/ignoreLoops"), false)) {
         log_info("Found %d combinational loops:\n", int(topo.loops.size()));
         int i = 0;
         for (auto &loop : topo.loops) {
@@ -902,20 +901,7 @@ CriticalPath TimingAnalyser::build_critical_path_report(domain_id_t domain_pair,
     report.clock_pair.end.clock = capture.clock;
     report.clock_pair.end.edge = capture.edge;
 
-    report.max_delay = ctx->getDelayFromNS(1.0e9 / ctx->setting<float>("target_freq"));
-    if (launch.edge != capture.edge) {
-        report.max_delay = report.max_delay / 2;
-    }
-
-    if (!launch.is_async() && ctx->nets.at(launch.clock)->clkconstr) {
-        if (launch.edge == capture.edge) {
-            report.max_delay = ctx->nets.at(launch.clock)->clkconstr->period.minDelay();
-        } else if (capture.edge == RISING_EDGE) {
-            report.max_delay = ctx->nets.at(launch.clock)->clkconstr->low.minDelay();
-        } else if (capture.edge == FALLING_EDGE) {
-            report.max_delay = ctx->nets.at(launch.clock)->clkconstr->high.minDelay();
-        }
-    }
+    report.max_delay = get_max_delay(domain_pair);
 
     auto crit_path_rev = walk_crit_path(domain_pair, endpoint, longest_path);
     auto crit_path = boost::adaptors::reverse(crit_path_rev);
@@ -1073,6 +1059,77 @@ CriticalPath TimingAnalyser::build_critical_path_report(domain_id_t domain_pair,
     }
 
     return report;
+}
+
+delay_t TimingAnalyser::get_max_delay(domain_id_t domain_pair)
+{
+    const auto &dp = domain_pairs.at(domain_pair);
+    const auto &launch = domains.at(dp.key.launch).key;
+    const auto &capture = domains.at(dp.key.capture).key;
+
+    delay_t max_delay = ctx->getDelayFromNS(1.0e9 / ctx->setting<float>("target_freq"));
+    if (launch.edge != capture.edge) {
+        max_delay = max_delay / 2;
+    }
+
+    if (!launch.is_async() && ctx->nets.at(launch.clock)->clkconstr) {
+        if (launch.edge == capture.edge) {
+            max_delay = ctx->nets.at(launch.clock)->clkconstr->period.minDelay();
+        } else if (capture.edge == RISING_EDGE) {
+            max_delay = ctx->nets.at(launch.clock)->clkconstr->low.minDelay();
+        } else if (capture.edge == FALLING_EDGE) {
+            max_delay = ctx->nets.at(launch.clock)->clkconstr->high.minDelay();
+        }
+    }
+    return max_delay;
+}
+
+std::vector<TimingAnalyser::EndpointTiming> TimingAnalyser::get_endpoint_timings()
+{
+    std::vector<EndpointTiming> timings;
+
+    for (domain_id_t capture_id = 0; capture_id < domain_id_t(domains.size()); ++capture_id) {
+        const auto &capture = domains.at(capture_id);
+
+        for (const auto &ep : capture.endpoints) {
+            const auto &port = ports.at(ep.first);
+            const CellInfo *ci = cell_info(ep.first);
+            int clkInfoCount = 0;
+            const bool is_register = ctx->getPortTimingClass(ci, ep.first.port, clkInfoCount) == TMG_REGISTER_INPUT;
+
+            for (const auto &arr : port.arrival) {
+                const auto &launch = domains.at(arr.first);
+                auto pair_id = pair_to_id.find(ClockDomainPairKey(arr.first, capture_id));
+                if (pair_id == pair_to_id.end())
+                    continue;
+                const auto dom_pair_id = pair_id->second;
+                auto pdp = port.domain_pairs.find(dom_pair_id);
+                if (pdp == port.domain_pairs.end())
+                    continue;
+
+                EndpointTiming timing;
+                timing.domain_pair = dom_pair_id;
+                timing.endpoint = ep.first;
+                timing.clock_pair.start.clock = launch.key.clock;
+                timing.clock_pair.start.edge = launch.key.edge;
+                timing.clock_pair.end.clock = capture.key.clock;
+                timing.clock_pair.end.edge = capture.key.edge;
+                timing.delay = -pdp->second.setup_slack;
+                timing.setup_slack = get_max_delay(dom_pair_id) - timing.delay;
+
+                // as for the min delay violations: only between registers of the same or related clocks
+                auto related_clocks = clock_delays.count(std::make_pair(launch.key.clock, capture.key.clock)) > 0;
+                if (setup_only || !is_register || arr.first == async_clock_id ||
+                    (arr.first != capture_id && !related_clocks))
+                    timing.hold_slack = std::numeric_limits<delay_t>::max();
+                else
+                    timing.hold_slack = pdp->second.hold_slack;
+
+                timings.push_back(timing);
+            }
+        }
+    }
+    return timings;
 }
 
 void TimingAnalyser::build_crit_path_reports()

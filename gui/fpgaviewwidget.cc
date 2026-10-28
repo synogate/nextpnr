@@ -1029,7 +1029,14 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+    hoverAt(EVENT_POS(event).x(), EVENT_POS(event).y());
+    update();
+}
+
+// The element under the mouse at (x, y), with its hint, as hovered
+void FPGAViewWidget::hoverAt(int x, int y)
+{
+    auto world = mouseToWorldCoordinates(x, y);
     auto closestOr = pickElement(world.x(), world.y());
     // No elements? No decal.
     if (!closestOr) {
@@ -1047,8 +1054,8 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         QMutexLocker locked(&rendererArgsLock_);
         rendererArgs_->hoveredDecal = closest.decal(ctx_);
         rendererArgs_->changed = true;
-        rendererArgs_->x = EVENT_POS(event).x();
-        rendererArgs_->y = EVENT_POS(event).y();
+        rendererArgs_->x = x;
+        rendererArgs_->y = y;
         if (closest.type == ElementType::BEL) {
             rendererArgs_->hintText = std::string("BEL\n") + ctx_->getBelName(closest.bel).str(ctx_);
             CellInfo *cell = ctx_->getBoundBelCell(closest.bel);
@@ -1071,7 +1078,6 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
 
         pokeRenderer();
     }
-    update();
 }
 
 // Invert the projection matrix to calculate screen/mouse to world/grid
@@ -1121,8 +1127,11 @@ void FPGAViewWidget::wheelEvent(QWheelEvent *event)
 
     QPoint degree = event->angleDelta() / 8;
 
-    if (!degree.isNull())
+    if (!degree.isNull()) {
         zoom(degree.y());
+        // what is under the mouse now
+        hoverAt(event->position().x(), event->position().y());
+    }
 }
 
 void FPGAViewWidget::zoom(int level)

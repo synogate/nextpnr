@@ -39,6 +39,7 @@ NEXTPNR_NAMESPACE_BEGIN
 
 class PythonTab;
 class DesignWidget;
+class TimingWidget;
 class FPGAViewWidget;
 
 class BaseMainWindow : public QMainWindow
@@ -104,6 +105,8 @@ class BaseMainWindow : public QMainWindow
     QTabWidget *centralTabWidget;
     PythonTab *console;
     DesignWidget *designview;
+    TimingWidget *timingview;
+    QTabWidget *rightTabWidget;
     FPGAViewWidget *fpgaView;
 
     // Menus, bars and actions
