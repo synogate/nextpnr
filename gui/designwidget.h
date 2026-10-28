@@ -97,6 +97,11 @@ class DesignWidget : public QWidget
     void onClickedPip(PipId pip, bool keep);
 
   private:
+    // How many of a large net's users and wires the properties list, and how long an attribute's
+    // value may be there (the property browser gets very slow with thousands of entries)
+    static constexpr int MAX_LISTED = 100;
+    static constexpr size_t MAX_VALUE_LENGTH = 200;
+
     Context *ctx;
 
     QTabWidget *tabWidget;
