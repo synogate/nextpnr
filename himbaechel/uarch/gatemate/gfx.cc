@@ -81,7 +81,7 @@ float om_centre(int plane) { return row(plane) - 0.032f; }
 // The CPE, from left to right:
 //  - its pins (IN1..IN8 in the rows of planes 1 to 8, CLK, EN and SR in rows 9 to 11) and their
 //    internal side;
-//  - vertical lanes: the bridge lane, down from the inputs to the bridge mux below the LUT2s, and
+//  - vertical lanes: the bridge lane, down from the inputs to the 8:1 mux (MX8) below the SR row, and
 //    one lane for each carry or propagate line that can drive a 2:1 mux on the left;
 //  - the 2:1 muxes TI2..TI8 in front of the second input of each first-level LUT2, and those of
 //    the clock and enable (in rows 9 and 10);
@@ -94,7 +94,13 @@ constexpr float CPE_PIN = 0.455f, CPE_INT = 0.46f, BRIDGE_LANE = 0.4625f;
 constexpr float TI_X0 = 0.481f, TI_X1 = 0.49f;
 constexpr float L1_X0 = 0.502f, L1_X1 = 0.544f, L2_X0 = 0.558f, L2_X1 = 0.6f, L20_X0 = 0.614f, L20_X1 = 0.652f;
 constexpr float COMBIN_X = 0.607f, BYPASS_X = 0.661f;
-constexpr float BRIDGE_X0 = 0.565f, BRIDGE_X1 = 0.585f, BRIDGE_Y = 0.478f;
+// The 8:1 mux (MX8, its output MUXOUT), below the SR row: IN1..IN8 on its left (IN1 at the top), its
+// selects S0..S2 (CLK, EN and SR in an MX8; set by C_SN where it is a bridge, as nextpnr uses it) at
+// the bottom
+constexpr float MX8_X0 = 0.562f, MX8_X1 = 0.6f, MX8_Y = 0.29f, MX8_H_IN = 0.02f, MX8_H_OUT = 0.007f;
+float mx8_input(int i) { return MX8_Y + 0.0175f - (i - 1) * 0.005f; }
+float mx8_select_x(int k) { return MX8_X0 + 0.009f * (k + 1); }
+float mx8_bottom(float x) { return MX8_Y - MX8_H_IN + (x - MX8_X0) / (MX8_X1 - MX8_X0) * (MX8_H_IN - MX8_H_OUT); }
 constexpr float CLK_LANE = 0.668f, EN_LANE = 0.674f, SR_LANE = 0.68f, D_JOG = 0.686f;
 constexpr float FF_X0 = 0.692f, FF_X1 = 0.737f;
 constexpr float CPOUT_JOG = 0.744f, MUXOUT_JOG = 0.749f, BYPASS_JOG = 0.753f;
@@ -342,7 +348,7 @@ Anchor cpe_anchor(const std::string &n)
     if (n == "COMBIN1_int")
         return cpe(CMP_X0, CMP_IN1_Y);
     if (n == "MUXOUT_int")
-        return cpe(BRIDGE_X1, BRIDGE_Y);
+        return cpe(MX8_X1, MX8_Y);
     if (n == "DIN2_int")
         return cpe(FF_X0, mu() + FF_D);
     if (n == "DIN1_int")
@@ -869,9 +875,10 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         through_mux({S}, TI_X0, D.y);
         return;
     }
-    // The bridge mux: an input down the bridge lane, along below the LUT2s
+    // The 8:1 mux: an input down the bridge lane, along below the SR row to its own place
     if (dn == "MUXOUT_int") {
-        through_mux({S, Pt{BRIDGE_LANE, S.y}, Pt{BRIDGE_LANE, BRIDGE_Y}}, BRIDGE_X0, BRIDGE_Y);
+        float in_y = starts_with(sn, "IN") ? mx8_input(num(sn, 2)) : MX8_Y;
+        through_mux({S, Pt{BRIDGE_LANE, S.y}, Pt{BRIDGE_LANE, in_y}}, MX8_X0, in_y);
         return;
     }
     // A register's data input: from its own half straight in, otherwise up beside the registers
@@ -1199,8 +1206,17 @@ static bool cpe_mux_symbol(std::vector<GraphicElement> &g, GraphicElement::style
         mux(g, style, x + TI_X0, x + TI_X1, my, 0.01f, 0.005f);
     else if (n == "OUT1_int" || n == "OUT2_int")
         mux(g, style, x + OMUX_X0, x + OMUX_X1, my, 0.045f, 0.015f);
-    else if (n == "MUXOUT_int")
-        mux(g, style, x + BRIDGE_X0, x + BRIDGE_X1, my, 0.011f, 0.005f);
+    else if (n == "MUXOUT_int") {
+        // with a short stub at each of its inputs and selects (grey: nextpnr uses it as a bridge,
+        // set by C_SN)
+        mux(g, style, x + MX8_X0, x + MX8_X1, my, MX8_H_IN, MX8_H_OUT);
+        for (int i = 1; i <= 8; i++)
+            line(g, style, x + MX8_X0 - 0.002f, y + mx8_input(i), x + MX8_X0, y + mx8_input(i));
+        for (int k = 0; k < 3; k++) {
+            float sx = mx8_select_x(k);
+            line(g, GraphicElement::STYLE_INACTIVE, x + sx, y + mx8_bottom(sx) - 0.003f, x + sx, y + mx8_bottom(sx));
+        }
+    }
     else if (ends_with(n, "_OUT") || ends_with(n, "_OUT2"))
         // the carry logic's first muxes, and its _VAL muxes (see CL_RAIL_OUT2)
         mux(g, style, x + CL_SEL_X0, x + CL_SEL_X1, my, CL_IN_DY + 0.0015f, 0.0015f);
@@ -1319,7 +1335,15 @@ static void cpe_port_labels(std::vector<GraphicElement> &g)
         port(OMUX_X0, m + 0.047f, OMUX_X1, m + 0.054f, upper ? "C_O2" : "C_O1");
         port(OUT_X + 0.001f, m + 0.001f, OUT_X + 0.016f, m + 0.001f + h, upper ? "OUT2" : "OUT1");
     }
-    port(BRIDGE_X0 - 0.004f, BRIDGE_Y + 0.012f, BRIDGE_X1 + 0.004f, BRIDGE_Y + 0.018f, "C_SN");
+    // The 8:1 mux: its inputs' numbers, its selects and their configuration
+    for (int i = 1; i <= 8; i++)
+        port(MX8_X0 + 0.0005f, mx8_input(i) - 0.0018f, MX8_X0 + 0.0045f, mx8_input(i) + 0.0018f, std::to_string(i));
+    const char *selects[] = {"CLK", "EN", "SR"};
+    for (int k = 0; k < 3; k++) {
+        float sx = mx8_select_x(k), sy = mx8_bottom(sx);
+        port(sx - 0.0045f, sy - 0.0085f, sx + 0.0045f, sy - 0.0045f, selects[k]);
+    }
+    port(MX8_X1 + 0.001f, MX8_Y + 0.002f, MX8_X1 + 0.014f, MX8_Y + 0.008f, "C_SN");
     // The carry and propagate pins: X on their band, left and right; Y right of their line, at the
     // bottom and top
     for (auto &band : {std::make_pair(CX_BAND, "X"), std::make_pair(PX_BAND, "X")}) {
@@ -1945,11 +1969,12 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         break;
     }
     case id_CPE_BRIDGE.index: {
-        // The bridge mux (C_SN): one of IN1..IN8 to the register or the outputs
+        // The 8:1 mux (MX8): one of IN1..IN8 to the register or the outputs; as a bridge, the one
+        // that C_SN selects
         size_t from = g.size();
         cpe_mux_symbol(g, style, "MUXOUT_int", x, y);
         lod(g, from, LOD_DETAIL);
-        name(BRIDGE_X0 - 0.004f, BRIDGE_Y - 0.018f, BRIDGE_X1 + 0.004f, BRIDGE_Y - 0.012f, "BRIDGE", LOD_PORTS);
+        name(MX8_X0 + 0.006f, MX8_Y - 0.006f, MX8_X1 - 0.01f, MX8_Y + 0.006f, "MX8", LOD_TEXT);
         break;
     }
     case id_CPE_RAMIO_U.index:
