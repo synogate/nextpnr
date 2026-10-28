@@ -167,8 +167,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         bool no_constants = avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
         // A net on the carry inputs of several adders
         bool no_shared_carry_inputs = avoiding_bug(KnownBug::CARRY_TO_SEVERAL_CARRY_INPUTS);
-        // An inverter between a double data rate output register and its output buffer
-        bool no_inverted_ddr_outputs = avoiding_bug(KnownBug::DDR_OUTPUT_INVERSION_LEAKS);
         std::mt19937 rng(seed);
         auto pick = [&](int n) { return int(rng() % unsigned(n)); };
         NetInfo *clk = global_clock("clk");
@@ -322,7 +320,7 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
                 } else {
                     auto in = inputs(2, false);
                     NetInfo *q = oddr(name, in[0], in[1], oclk, ddr_sel, clk_inv);
-                    if (!no_inverted_ddr_outputs && pick(3) == 0)
+                    if (pick(3) == 0)
                         q = lut1(name + "_inv", 0b01, q);
                     output(name + "_pad", q);
                 }

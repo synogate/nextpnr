@@ -34,12 +34,6 @@ enum class KnownBug
     // Test: GateMateTest.constants_created_during_cleanup_stay_driven
     CONSTANT_DRIVER_DROPPED,
 
-    // pack_io.cc pack_io_sel: after a double data rate output with an inverter in front of its
-    // output buffer, every output packed after it is inverted (is_inverted is not reset per IO).
-    // Tests: GateMateOddrInverterTest.other_outputs_not_inverted,
-    // GateMateIoRegisterTest.ddr_output_through_inverter
-    DDR_OUTPUT_INVERSION_LEAKS,
-
     // pack_cpe.cc pack_addf: a carry out that feeds the carry inputs of two adders is rejected
     // ("Only one other ADDF can be connected") instead of being packed.
     // Test: GateMateAdderTest.carry_feeding_two_carry_inputs
