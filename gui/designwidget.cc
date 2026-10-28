@@ -767,8 +767,17 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
         else
             addProperty(driverItem, QtType::QString, "Cell", "", ElementType::CELL);
 
+        // (a large net, such as a clock, has thousands of users and wires: only the first ones are
+        // listed, as for a wire's pips, since the property browser gets very slow with so many)
         QtProperty *usersItem = addSubGroup(topItem, "Users");
+        int counter = 0;
         for (auto &item : net->users) {
+            if (counter++ == MAX_LISTED) {
+                addProperty(usersItem, QtType::QString, "Warning",
+                            QString("%1 more users not listed").arg(int(net->users.entries()) - MAX_LISTED),
+                            ElementType::NONE);
+                break;
+            }
             QtProperty *portItem = addSubGroup(usersItem, item.port.c_str(ctx));
 
             addProperty(portItem, QtType::QString, "Port", item.port.c_str(ctx));
@@ -780,12 +789,22 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
 
         QtProperty *attrsItem = addSubGroup(topItem, "Attributes");
         for (auto &item : net->attrs) {
-            addProperty(attrsItem, QtType::QString, item.first.c_str(ctx),
-                        item.second.is_string ? item.second.as_string().c_str() : item.second.to_string().c_str());
+            // (such as the ROUTING of a loaded design, which can be megabytes)
+            std::string value = item.second.is_string ? item.second.as_string() : item.second.to_string();
+            if (value.size() > MAX_VALUE_LENGTH)
+                value = value.substr(0, MAX_VALUE_LENGTH) + "... (" + std::to_string(value.size()) + " characters)";
+            addProperty(attrsItem, QtType::QString, item.first.c_str(ctx), value.c_str());
         }
 
         QtProperty *wiresItem = addSubGroup(topItem, "Wires");
+        counter = 0;
         for (auto &item : net->wires) {
+            if (counter++ == MAX_LISTED) {
+                addProperty(wiresItem, QtType::QString, "Warning",
+                            QString("%1 more wires not listed").arg(int(net->wires.size()) - MAX_LISTED),
+                            ElementType::NONE);
+                break;
+            }
             auto name = ctx->nameOfWire(item.first);
 
             QtProperty *wireItem = addSubGroup(wiresItem, name);
