@@ -595,8 +595,9 @@ void GateMateImpl::postPlace()
         // We need to skip CPE_MULT since using CP outputs is mandatory
         // even if output is actually not connected
         bool marked_used = cell.second.get()->type == id_CPE_MULT;
-        // Can not use FF for OUT2 if CPE is used in bridge mode
-        if (cell.second.get()->type == id_CPE_FF && ctx->getBelLocation(cell.second.get()->bel).z == CPE_FF_U_Z)
+        // Can not use FF or latch for OUT2 if CPE is used in bridge mode (C_BR drives DIN2 from MUXOUT)
+        if (cell.second.get()->type.in(id_CPE_FF, id_CPE_LATCH) &&
+            ctx->getBelLocation(cell.second.get()->bel).z == CPE_FF_U_Z)
             marked_used = true;
         if (marked_used)
             used_cpes[cell.second.get()->bel.tile] = true;

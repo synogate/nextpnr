@@ -935,7 +935,7 @@ void GateMateImpl::relocate_register(CellInfo *lut, CellInfo *ff, BelId lt)
     update_used_cpe(lt.tile);
 }
 
-// Bridges through a CPE need its OUT2, which a register in its upper half takes (as postPlace() marks it)
+// Bridges through a CPE drive DIN2 (C_BR), so a register or latch in its upper half blocks them (as postPlace() marks it)
 void GateMateImpl::update_used_cpe(int tile)
 {
     if (used_cpes.empty())
@@ -943,7 +943,8 @@ void GateMateImpl::update_used_cpe(int tile)
     int x, y;
     tile_xy(ctx->chip_info, tile, x, y);
     BelId ff = ctx->getBelByLocation(Loc(x, y, CPE_FF_U_Z));
-    used_cpes[tile] = ff != BelId() && ctx->getBoundBelCell(ff) && ctx->getBoundBelCell(ff)->type == id_CPE_FF;
+    used_cpes[tile] =
+            ff != BelId() && ctx->getBoundBelCell(ff) && ctx->getBoundBelCell(ff)->type.in(id_CPE_FF, id_CPE_LATCH);
 }
 
 // After a register moved: route its clock to its new CLK_INT from the clock net's routing as it

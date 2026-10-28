@@ -34,6 +34,7 @@ set(TEST_SOURCES
     tests/adder_semantics.cc
     tests/bram.cc
     tests/bram_semantics.cc
+    tests/bridges.cc
     tests/ccf.cc
     tests/clocking.cc
     tests/config_output.cc
