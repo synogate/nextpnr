@@ -142,25 +142,13 @@ TEST_F(GateMateFuseTest, lut_feeding_a_5_input_lut_goes_into_its_upper_half)
                 std::vector<NetInfo *> in;
                 for (int i = 0; i < 8; i++)
                     in.push_back(input(stringf("i%d", i)));
-                // Distinct inputs within each LUT, and tables using both inputs (a constant one
-                // becomes a constant net)
-                std::vector<NetInfo *> pool;
-                auto any = [&] {
-                    if (!avoid(KnownBug::LUT_SAME_INPUT))
-                        return in[rng() % in.size()];
-                    if (pool.empty())
-                        pool = in;
-                    size_t k = rng() % pool.size();
-                    NetInfo *net = pool[k];
-                    pool.erase(pool.begin() + k);
-                    return net;
-                };
+                // Tables using both inputs (a constant one becomes a constant net)
+                auto any = [&] { return in[rng() % in.size()]; };
                 const int both[] = {0b1000, 0b1110, 0b0110, 0b1001, 0b0111, 0b0001, 0b0100, 0b0010};
                 auto table = [&] {
                     return avoid(KnownBug::CONSTANT_DRIVER_DROPPED) ? both[rng() % 8] : int(rng() & 0xf);
                 };
                 for (int n = 0; n < 16; n++) {
-                    pool.clear();
                     NetInfo *fifth;
                     if (n % 3 == 0)
                         fifth = lut2(stringf("f%d", n), table(), any(), any());
@@ -168,7 +156,6 @@ TEST_F(GateMateFuseTest, lut_feeding_a_5_input_lut_goes_into_its_upper_half)
                         fifth = l2t4(stringf("f%d", n), table(), table(), table(), any(), any(), any(), any());
                     else
                         fifth = mx2(stringf("f%d", n), any(), any(), any());
-                    pool.clear();
                     CellInfo *lut = create_cell_ptr(id_CC_L2T5, stringf("lut%d", n));
                     for (auto p : {id_INIT_L02, id_INIT_L03, id_INIT_L11, id_INIT_L20})
                         lut->params[p] = Property(int(rng() & 0xf), 4);
@@ -261,19 +248,8 @@ TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
                 std::vector<NetInfo *> in;
                 for (int i = 0; i < 10; i++)
                     in.push_back(input(stringf("i%d", i)));
-                // Distinct inputs within each LUT (a repeated one hits KnownBug::LUT_SAME_INPUT), and
-                // tables using their inputs (constant ones run into KnownBug::CONSTANT_DRIVER_DROPPED)
-                std::vector<NetInfo *> pool;
-                auto any = [&] {
-                    if (!avoid(KnownBug::LUT_SAME_INPUT))
-                        return in[rng() % in.size()];
-                    if (pool.empty())
-                        pool = in;
-                    size_t k = rng() % pool.size();
-                    NetInfo *net = pool[k];
-                    pool.erase(pool.begin() + k);
-                    return net;
-                };
+                // Tables using their inputs (constant ones run into KnownBug::CONSTANT_DRIVER_DROPPED)
+                auto any = [&] { return in[rng() % in.size()]; };
                 const int used[] = {0b1000, 0b1110, 0b0110, 0b1001, 0b0111, 0b0001, 0b0100, 0b0010};
                 auto table = [&] {
                     return avoid(KnownBug::CONSTANT_DRIVER_DROPPED) ? used[rng() % 8] : int(rng() & 0xf);
@@ -290,9 +266,7 @@ TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
                     return mx2(name, ins[0], ins[1], ins[2]);
                 };
                 for (int n = 0; n < 24; n++) {
-                    pool.clear();
                     NetInfo *first = lut(stringf("a%d", n), rng() % 3, nullptr);
-                    pool.clear();
                     output(stringf("o%d", n), lut(stringf("b%d", n), rng() % 3, first));
                     // Every other first LUT also feeds an output of its own
                     if (n % 2)

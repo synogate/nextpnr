@@ -159,11 +159,13 @@ inline int lut2_apply_constant_inputs(int init, int d0_const, int d1_const)
 
 void GateMatePacker::optimize_lut2(CellInfo &ci, IdString i0, IdString i1, IdString init)
 {
+    // With the same signal x on both inputs only f(0, 0) (bit 0) and f(1, 1) (bit 3) occur; the result
+    // depends on i0 alone, the input that stays connected
     auto lut2_same_inputs = [&](int lut) -> int {
         int b0 = lut & 1;        // bit 0
         int b3 = (lut >> 3) & 1; // bit 3
 
-        return (b3 << 3) | (b3 << 2) | (b0 << 1) | b0;
+        return (b3 << 3) | (b0 << 2) | (b3 << 1) | b0;
     };
 
     uint8_t val = int_or_default(ci.params, init, 0);

@@ -166,9 +166,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         bool no_lut_constants =
                 avoiding_bug(KnownBug::LUT_CONSTANT_INPUT) || avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
         bool no_constants = avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
-        // The same net on several LUT inputs, also through LUTs that only copy an input (the packer
-        // removes those, connecting their users to the copied net)
-        bool no_repeated_lut_inputs = avoiding_bug(KnownBug::LUT_SAME_INPUT);
         // A net on the carry inputs of several adders
         bool no_shared_carry_inputs = avoiding_bug(KnownBug::CARRY_TO_SEVERAL_CARRY_INPUTS);
         // An inverter between a double data rate output register and its output buffer
@@ -189,8 +186,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         std::vector<NetInfo *> nets;
         for (int i = 0; i < 8; i++)
             nets.push_back(input(stringf("in%d", i)));
-        // LUT inputs of the cell being built
-        std::vector<NetInfo *> used;
         // Nets used as an adder carry input
         std::set<NetInfo *> carry_inputs;
         auto operand = [&](bool lut_input) -> NetInfo * {
@@ -201,15 +196,7 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
                 if (r == 1)
                     return vcc();
             }
-            while (true) {
-                NetInfo *net = nets.at(pick(int(nets.size())));
-                if (!lut_input || !no_repeated_lut_inputs)
-                    return net;
-                if (std::find(used.begin(), used.end(), net) == used.end()) {
-                    used.push_back(net);
-                    return net;
-                }
-            }
+            return nets.at(pick(int(nets.size())));
         };
         auto lut_input = [&] { return operand(true); };
         auto other_input = [&] { return operand(false); };
@@ -220,8 +207,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
                 int init = pick(4);
                 if (no_lut_constants && (init == 0b00 || init == 0b11))
                     continue;
-                if (no_repeated_lut_inputs && init == 0b10)
-                    continue;
                 return init;
             }
         };
@@ -229,8 +214,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
             while (true) {
                 int init = pick(16);
                 if (no_lut_constants && (init == 0b0000 || init == 0b1111))
-                    continue;
-                if (no_repeated_lut_inputs && (init == 0b1010 || init == 0b1100))
                     continue;
                 return init;
             }
@@ -252,7 +235,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         };
         int rams = 0;
         for (int n = 0; n < 60; n++) {
-            used.clear();
             std::string name = stringf("c%d", n);
             int kind = pick(with_rams ? 13 : 12);
             if (kind == 12 && rams == 3)

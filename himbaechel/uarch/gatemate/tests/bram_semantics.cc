@@ -162,13 +162,6 @@ class GateMateBramSemanticsTest : public GateMateTest
             int kind = rng() % 8;
             int n = int(pads.size());
             int ia = rng() % n, ib = rng() % n, ic = rng() % n, id = rng() % n;
-            if (avoid(KnownBug::LUT_SAME_INPUT)) {
-                // Different pads on the inputs of each LUT (and multiplexer)
-                ib = (ia + 1 + ib % (n - 1)) % n;
-                while (ic == ia || ic == ib)
-                    ic = (ic + 1) % n;
-                id = (ic + 1 + id % (n - 1)) % n;
-            }
             NetInfo *a = pads[ia], *b = pads[ib], *c = pads[ic];
             int init = rng() % 16;
             NetInfo *result;

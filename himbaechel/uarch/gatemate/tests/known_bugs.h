@@ -33,13 +33,6 @@ enum class KnownBug
     // Tests: GateMateLut2Test.constant_i0/i1, GateMateL2T4Test.constant_inputs
     LUT_CONSTANT_INPUT,
 
-    // pack.cc optimize_lut2: a LUT with the same net on both inputs of a LUT2 gets a
-    // configuration that depends on the input it disconnects. This also happens when the packer
-    // removes a LUT that only copies its input, and the copy fed another input of the same cell.
-    // Tests: GateMateLut2Test.same_net_on_both_inputs, input_equal_after_buffer_removal,
-    // GateMateL2T4Test.repeated_inputs
-    LUT_SAME_INPUT,
-
     // pack.cc cleanup: once the original users of a constant net are folded away (e.g. constant
     // register enables and resets), the constant driver is disconnected; constants created later
     // in the cleanup (LUTs or registers with a constant output) are left undriven.
