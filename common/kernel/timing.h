@@ -98,10 +98,31 @@ struct TimingAnalyser
 
     TimingResult &get_timing_result() { return result; }
 
+    // The timing of one endpoint for one launch/capture domain pair
+    struct EndpointTiming
+    {
+        domain_id_t domain_pair;
+        CellPortKey endpoint;
+        ClockPair clock_pair;
+        // Longest path delay, including setup time and clock-to-clock delay
+        delay_t delay;
+        // Slacks; the hold slack is max() where no hold analysis applies (unclocked endpoints, unrelated clocks)
+        delay_t setup_slack, hold_slack;
+    };
+    // All endpoints with their timing, for listing paths
+    std::vector<EndpointTiming> get_endpoint_timings();
+    // The longest (setup) or the shortest (hold) path into an endpoint
+    CriticalPath get_endpoint_path(const EndpointTiming &ep, bool longest_path)
+    {
+        return build_critical_path_report(ep.domain_pair, ep.endpoint, longest_path);
+    }
+
     // Enable analysis of clock skew between FFs.
     bool with_clock_skew = false;
 
     bool setup_only = false;
+    // Analyse despite combinational loops (as with the timing/ignoreLoops setting)
+    bool ignore_loops = false;
     bool have_loops = false;
     bool updated_domains = false;
 
@@ -135,6 +156,9 @@ struct TimingAnalyser
     std::vector<CriticalPath> get_min_delay_violations();
 
     dict<domain_id_t, delay_t> max_delay_by_domain_pairs();
+
+    // The delay a path between the clocks of a domain pair may have
+    delay_t get_max_delay(domain_id_t domain_pair);
 
     // get the N worst endpoints for a given domain pair
     std::vector<CellPortKey> get_worst_eps(domain_id_t domain_pair, int count);

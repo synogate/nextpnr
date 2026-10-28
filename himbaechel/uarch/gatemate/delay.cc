@@ -306,6 +306,41 @@ ClockEdge iosel_edge(const CellInfo *cell, IdString inv_param)
 }
 } // namespace
 
+bool GateMateImpl::cplines_connects(const CellInfo *cell, IdString fromPort, IdString toPort) const
+{
+    if (cell->bel == BelId())
+        return true;
+    WireId from = ctx->getBelPinWire(cell->bel, fromPort), to = ctx->getBelPinWire(cell->bel, toPort);
+    if (from == WireId() || to == WireId())
+        return false;
+    // Along the CPE's pips: those of a mux only where the cell's parameter selects them (0 where it is
+    // not set, as in the bitstream)
+    std::vector<WireId> queue{from};
+    pool<WireId> seen{from};
+    while (!queue.empty()) {
+        WireId wire = queue.back();
+        queue.pop_back();
+        if (wire == to)
+            return true;
+        for (PipId pip : ctx->getPipsDownhill(wire)) {
+            WireId dst = ctx->getPipDstWire(pip);
+            if (seen.count(dst) || !boost::starts_with(ctx->getWireName(dst)[1].str(ctx), "CPE."))
+                continue;
+            const auto &extra = *pip_extra_data(pip);
+            if (extra.type == PipExtra::PIP_EXTRA_MUX && extra.bits != 0 && extra.name != 0) {
+                std::string name = IdString(extra.name).str(ctx);
+                if (boost::starts_with(name, "CPE."))
+                    name = name.substr(4);
+                if (int_or_default(cell->params, ctx->id(name), 0) != extra.value)
+                    continue;
+            }
+            seen.insert(dst);
+            queue.push_back(dst);
+        }
+    }
+    return false;
+}
+
 bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const
 {
     delay = DelayQuad{0};
@@ -392,6 +427,9 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
     } else if (cell->type.in(id_CPE_FF, id_CPE_LATCH, id_CPE_FF_L, id_CPE_FF_U)) {
         return false;
     } else if (cell->type.in(id_CPE_CPLINES)) {
+        // (every input to every output would make loops: an output into the carry input of its own CPE)
+        if (!cplines_connects(cell, fromPort, toPort))
+            return false;
         // From a LUT output (comb12_*), from the comparator (comb12_compout_*), carries
         // passing through (_ROUTING_*); zero where the database has nothing
         IdString name = fromPort.in(id_OUT1, id_OUT2) ? ctx->idf("timing_comb12_%s", toPort.c_str(ctx))

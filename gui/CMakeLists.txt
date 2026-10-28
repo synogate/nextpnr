@@ -21,6 +21,8 @@ set(GUI_SOURCES
     quadtree.h
     textshader.cc
     textshader.h
+    timingwidget.cc
+    timingwidget.h
     treemodel.cc
     treemodel.h
     worker.cc

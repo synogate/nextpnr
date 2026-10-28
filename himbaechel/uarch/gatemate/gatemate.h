@@ -222,6 +222,8 @@ struct GateMateImpl : HimbaechelAPI
     const GateMateTileExtraDataPOD *tile_extra_data(int tile) const;
     const GateMateBelExtraDataPOD *bel_extra_data(BelId bel) const;
     const GateMatePipExtraDataPOD *pip_extra_data(PipId pip) const;
+    // Whether a placed carry logic cell (CPE_CPLINES) is set to pass its input on to the output
+    bool cplines_connects(const CellInfo *cell, IdString fromPort, IdString toPort) const;
 
     int get_dff_config(CellInfo *dff) const;
     int get_ram_config(CellInfo *ram) const;
