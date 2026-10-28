@@ -142,12 +142,11 @@ TEST_F(GateMateFuseTest, lut_feeding_a_5_input_lut_goes_into_its_upper_half)
                 std::vector<NetInfo *> in;
                 for (int i = 0; i < 8; i++)
                     in.push_back(input(stringf("i%d", i)));
-                // Tables using both inputs (a constant one becomes a constant net)
                 auto any = [&] { return in[rng() % in.size()]; };
+                // Tables using both inputs: a constant one fuses into nothing, which the count below
+                // leaves out
                 const int both[] = {0b1000, 0b1110, 0b0110, 0b1001, 0b0111, 0b0001, 0b0100, 0b0010};
-                auto table = [&] {
-                    return avoid(KnownBug::CONSTANT_DRIVER_DROPPED) ? both[rng() % 8] : int(rng() & 0xf);
-                };
+                auto table = [&] { return both[rng() % 8]; };
                 for (int n = 0; n < 16; n++) {
                     NetInfo *fifth;
                     if (n % 3 == 0)
@@ -248,12 +247,11 @@ TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
                 std::vector<NetInfo *> in;
                 for (int i = 0; i < 10; i++)
                     in.push_back(input(stringf("i%d", i)));
-                // Tables using their inputs (constant ones run into KnownBug::CONSTANT_DRIVER_DROPPED)
                 auto any = [&] { return in[rng() % in.size()]; };
+                // Tables using their inputs: a constant one merges into nothing, which the count below
+                // leaves out
                 const int used[] = {0b1000, 0b1110, 0b0110, 0b1001, 0b0111, 0b0001, 0b0100, 0b0010};
-                auto table = [&] {
-                    return avoid(KnownBug::CONSTANT_DRIVER_DROPPED) ? used[rng() % 8] : int(rng() & 0xf);
-                };
+                auto table = [&] { return used[rng() % 8]; };
                 auto lut = [&](const std::string &name, int kind, NetInfo *x) {
                     // x on a random input
                     std::vector<NetInfo *> ins = {any(), any(), any(), any()};

@@ -163,8 +163,6 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         bool with_rams = GetParam().rams;
         auto avoiding_bug = [&](KnownBug bug) { return avoiding && avoid(bug); };
         // Constants in LUT inputs, and constants created while the packer simplifies the netlist
-        bool no_lut_constants = avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
-        bool no_constants = avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
         // A net on the carry inputs of several adders
         bool no_shared_carry_inputs = avoiding_bug(KnownBug::CARRY_TO_SEVERAL_CARRY_INPUTS);
         std::mt19937 rng(seed);
@@ -185,42 +183,21 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
             nets.push_back(input(stringf("in%d", i)));
         // Nets used as an adder carry input
         std::set<NetInfo *> carry_inputs;
-        auto operand = [&](bool lut_input) -> NetInfo * {
-            if (!(lut_input ? no_lut_constants : no_constants)) {
-                int r = pick(20);
-                if (r == 0)
-                    return gnd();
-                if (r == 1)
-                    return vcc();
-            }
+        // A net of the netlist, sometimes a constant
+        auto operand = [&]() -> NetInfo * {
+            int r = pick(20);
+            if (r == 0)
+                return gnd();
+            if (r == 1)
+                return vcc();
             return nets.at(pick(int(nets.size())));
         };
-        auto lut_input = [&] { return operand(true); };
-        auto other_input = [&] { return operand(false); };
-        // LUT configurations, without constant functions or copies of an input where these
-        // are avoided
-        auto lut1_init = [&] {
-            while (true) {
-                int init = pick(4);
-                if (no_lut_constants && (init == 0b00 || init == 0b11))
-                    continue;
-                return init;
-            }
-        };
-        auto lut2_init = [&] {
-            while (true) {
-                int init = pick(16);
-                if (no_lut_constants && (init == 0b0000 || init == 0b1111))
-                    continue;
-                return init;
-            }
-        };
-        // L1x of a LUT tree: without constant functions, it has to use both inputs
-        auto lut_tree_root_init = [&] {
-            static const int both_inputs[] = {0b0001, 0b0010, 0b0100, 0b1000, 0b0110,
-                                              0b0111, 0b1001, 0b1011, 0b1101, 0b1110};
-            return no_lut_constants ? both_inputs[pick(10)] : pick(16);
-        };
+        auto lut_input = [&] { return operand(); };
+        auto other_input = [&] { return operand(); };
+        // LUT configurations
+        auto lut1_init = [&] { return pick(4); };
+        auto lut2_init = [&] { return pick(16); };
+        auto lut_tree_root_init = [&] { return pick(16); };
         // Random choices are made in statement order (not as several arguments of one call,
         // whose evaluation order is unspecified), so that the netlist is the same with
         // every compiler.
@@ -384,8 +361,8 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
                 // Registers without enable or reset have them tied to constants, which the
                 // packer folds into the configuration
                 NetInfo *d = other_input();
-                NetInfo *en = no_constants || !pick(3) ? other_input() : nullptr;
-                NetInfo *sr = no_constants || !pick(3) ? other_input() : nullptr;
+                NetInfo *en = !pick(3) ? other_input() : nullptr;
+                NetInfo *sr = !pick(3) ? other_input() : nullptr;
                 CellInfo *ff = dff(name, d, clk, en, sr);
                 ff->params[id_CLK_INV] = Property(pick(4) == 0, 1);
                 ff->params[id_SR_VAL] = Property(pick(2), 1);

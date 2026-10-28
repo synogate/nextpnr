@@ -556,10 +556,13 @@ void GateMatePacker::fuse_luts()
         if (!changed)
             break;
     }
-    // The cells left without users go
+    // The cells left without users go, except the constant drivers (later steps can need them again;
+    // remove_constants() takes away the unused ones at the end)
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
         NetInfo *out = fuser.lut_ports(ci).empty() ? nullptr : ci->getPort(fuser.output(ci));
+        if (out == net_PACKER_GND || out == net_PACKER_VCC)
+            continue;
         if (!fuser.lut_ports(ci).empty() && !fuser.keep(ci) && (!out || out->users.empty()))
             packed_cells.insert(ci->name);
     }

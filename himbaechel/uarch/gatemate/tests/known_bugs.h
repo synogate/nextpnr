@@ -28,12 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // pack.cc cleanup: once the original users of a constant net are folded away (e.g. constant
-    // register enables and resets), the constant driver is disconnected; constants created later
-    // in the cleanup (LUTs or registers with a constant output) are left undriven.
-    // Test: GateMateTest.constants_created_during_cleanup_stay_driven
-    CONSTANT_DRIVER_DROPPED,
-
     // pack_cpe.cc pack_addf: a carry out that feeds the carry inputs of two adders is rejected
     // ("Only one other ADDF can be connected") instead of being packed.
     // Test: GateMateAdderTest.carry_feeding_two_carry_inputs

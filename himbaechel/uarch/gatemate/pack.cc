@@ -90,7 +90,9 @@ void GateMatePacker::disconnect_not_used()
         for (auto &p : ci.ports) {
             if (p.second.type == PortType::PORT_OUT) {
                 NetInfo *net = ci.getPort(p.first);
-                if (net && net->users.entries() == 0) {
+                // The constant nets keep their drivers: later rewrites can need them again
+                // (remove_constants() takes away the unused ones at the end)
+                if (net && net->users.entries() == 0 && net != net_PACKER_GND && net != net_PACKER_VCC) {
                     ci.disconnectPort(p.first);
                 }
             }
