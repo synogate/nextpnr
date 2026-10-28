@@ -465,12 +465,18 @@ NetlistEvaluator::SeqInputs NetlistEvaluator::seq_inputs(const CellInfo *cell, i
     auto cfg = [&](IdString name) { return int_or_default(cell->params, name, 0); };
     if (cell->params.count(id_C_CLKSEL) || cell->params.count(id_C_ENSEL))
         throw EvalUnsupported(stringf("register '%s' uses a CP line clock or enable", cell->name.c_str(ctx)));
+    // After routing, CLK_INT and EN_INT are named after the CPE inputs they were routed to (CLK, EN)
+    auto routed = [&](IdString port, IdString after_routing) {
+        return !connected(cell, port) && connected(cell, after_routing) ? input(cell, after_routing)
+                                                                        : input(cell, port);
+    };
     s.rst = tri_not(lut1(cfg(id_C_CPE_RES), input(cell, id_SR)));
-    s.set = tri_not(lut1(cfg(id_C_CPE_SET), flag(id_C_EN_SR) ? input(cell, id_SR) : input(cell, id_EN_INT)));
+    s.set = tri_not(
+            lut1(cfg(id_C_CPE_SET), flag(id_C_EN_SR) ? input(cell, id_SR) : routed(id_EN_INT, id_EN)));
     if (!sync)
         return s;
-    s.clk = lut1(cfg(id_C_CPE_CLK), input(cell, id_CLK_INT));
-    s.en = lut1(cfg(id_C_CPE_EN), input(cell, id_EN_INT));
+    s.clk = lut1(cfg(id_C_CPE_CLK), routed(id_CLK_INT, id_CLK));
+    s.en = lut1(cfg(id_C_CPE_EN), routed(id_EN_INT, id_EN));
     s.d = input(cell, id_DIN);
     return s;
 }
@@ -560,8 +566,11 @@ void NetlistEvaluator::settle(bool power_up)
 
 Tri NetlistEvaluator::eval_l2t4(const CellInfo *cell)
 {
+    // PINX has a model only in a lower half selecting it with C_I4 (below)
+    bool lower_pinx = cell->bel != BelId() && ctx->getBelLocation(cell->bel).z != CPE_LT_U_Z &&
+                      bool_or_default(cell->params, id_C_I4, false);
     for (auto port : {id_PINX, id_CINY2, id_PINY2})
-        if (connected(cell, port))
+        if (connected(cell, port) && !(port == id_PINX && lower_pinx))
             throw EvalUnsupported(stringf("cell '%s' uses port %s, which has no model", cell->name.c_str(ctx),
                                           port.c_str(ctx)));
     int func = int_or_default(cell->params, id_C_FUNCTION, 0);
