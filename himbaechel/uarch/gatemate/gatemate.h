@@ -101,6 +101,9 @@ struct GateMateImpl : HimbaechelAPI
     // After the routing repair, up to `rounds` moves of LUT trees on the critical paths, with rounds < 0
     // until timing is met (reroute.cc)
     void repair_critical_placement(int rounds);
+    // place-repair's two halves; the number of changes kept
+    int move_critical_cells(int rounds);
+    int fuse_critical_luts(int rounds);
     int place_repair = -1;
     // Percent above each clock's constraint that "until timing is met" means (--vopt repair-margin)
     float repair_margin = 0;

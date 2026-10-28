@@ -1042,7 +1042,7 @@ bool GateMateImpl::reroute_clock_sink(NetInfo *clk, const PortRef &user, WireId 
 // most slack on the paths through the moved cells, makes it, lays their critical connections on
 // their ideal paths, routes the rest again with all other routing held, and keeps the move if Fmax
 // improved.
-void GateMateImpl::repair_critical_placement(int rounds)
+int GateMateImpl::move_critical_cells(int rounds)
 {
     if (!lookahead.built())
         log_error("place-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
@@ -1053,10 +1053,48 @@ void GateMateImpl::repair_critical_placement(int rounds)
     const float window = 250;      // ps: cells within this of the worst slack are candidates
     const float min_gain = 50;     // ps of slack
     const float swap_margin = 100; // ps: a LUT tree swapped away keeps this much more slack than the moved one
-    // What moves together: a LUT tree, or a register with the LUT tree feeding it
+    // What moves together: a LUT tree, a register with the LUT tree feeding it, the two halves of an
+    // L20 pair (a 5-input LUT: the lower half with its L20, and the upper half feeding its COMBIN), or a 4:1
+    // multiplexer taking a whole CPE (`lut` then is the CPE_MX4)
     struct Unit
     {
-        CellInfo *lut = nullptr, *ff = nullptr;
+        CellInfo *lut = nullptr, *ff = nullptr, *upper = nullptr;
+        bool full = false;
+    };
+    // Every position of a CPE free (or held by `leaving`)
+    auto free_cpe = [&](const CellInfo *ci, int x, int y, const CellInfo *leaving) {
+        // (the same kind of position as the one the multiplexer holds: after repack() its cell type is
+        // no longer one the database lists for it)
+        BelId full = ctx->getBelByLocation(Loc(x, y, CPE_LT_FULL_Z));
+        if (full == BelId() || ctx->getBelType(full) != ctx->getBelType(ci->bel) || !ci->testRegion(full))
+            return false;
+        for (int z : {CPE_LT_U_Z, CPE_LT_L_Z, CPE_FF_U_Z, CPE_FF_L_Z, CPE_RAMIO_U_Z, CPE_RAMIO_L_Z, CPE_COMP_Z,
+                      CPE_CPLINES_Z, CPE_LT_FULL_Z, CPE_BRIDGE_Z}) {
+            BelId bel = ctx->getBelByLocation(Loc(x, y, z));
+            if (bel != BelId() && !ctx->checkBelAvail(bel) && ctx->getBoundBelCell(bel) != leaving)
+                return false;
+        }
+        return true;
+    };
+    // A 4:1 multiplexer alone in its CPE (no register merged with it), fed and read only through
+    // routing
+    auto movable_mux = [&](const CellInfo *ci) {
+        if (ci->type != id_CPE_MX4 || ci->bel == BelId() || ci->belStrength > STRENGTH_STRONG)
+            return false;
+        Loc l = ctx->getBelLocation(ci->bel);
+        if (!free_cpe(ci, l.x, l.y, ci))
+            return false;
+        for (auto &port : ci->ports)
+            if (port.second.net &&
+                !(port.second.type == PORT_IN
+                          ? port.first.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8, id_D0_00,
+                                          id_D1_00, id_D0_01, id_D1_01, id_D0_02, id_D1_02, id_D0_03, id_D1_03)
+                          : port.first.in(id_OUT1, id_OUT2)))
+                return false;
+        for (IdString param : {id_C_I1, id_C_I2, id_C_I3, id_C_I4})
+            if (int_or_default(ci->params, param, 0))
+                return false;
+        return true;
     };
     auto movable_nets = [&](CellInfo *ci) {
         for (auto &port : ci->ports)
@@ -1065,9 +1103,37 @@ void GateMateImpl::repair_critical_placement(int rounds)
                 return false;
         return true;
     };
+    // The upper half of ci's L20 pair, if ci is the lower one and the two are alone in their cluster
+    auto l20_upper = [&](CellInfo *ci) -> CellInfo * {
+        if (ci->type != id_CPE_L2T4 || ci->bel == BelId() || ci->belStrength > STRENGTH_STRONG ||
+            !ci->getPort(id_COMBIN) || !ci->getPort(id_OUT) || ci->cluster != ci->name ||
+            ctx->getBelLocation(ci->bel).z != CPE_LT_L_Z)
+            return nullptr;
+        for (auto &port : ci->ports)
+            if (port.second.net && (port.second.type == PORT_IN ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01,
+                                                                                   id_D0_10, id_D1_10, id_COMBIN)
+                                                                : port.first != id_OUT))
+                return nullptr;
+        for (IdString param : {id_C_I1, id_C_I2, id_C_I3, id_C_I4})
+            if (int_or_default(ci->params, param, 0))
+                return nullptr;
+        CellInfo *up = ci->getPort(id_COMBIN)->driver.cell;
+        if (!up || up->bel == BelId() || up->bel.tile != ci->bel.tile || up->cluster != ci->cluster ||
+            ci->constr_children.size() != 1 || ci->constr_children.front() != up || !plain_lut_tree(ctx, up))
+            return nullptr;
+        return up;
+    };
     auto unit_of = [&](CellInfo *ci, Unit &unit) {
         if (relocatable_lut_tree(ci) && movable_nets(ci)) {
             unit = Unit{ci, nullptr};
+            return true;
+        }
+        if (CellInfo *up = l20_upper(ci); up && movable_nets(ci) && movable_nets(up)) {
+            unit = Unit{ci, nullptr, up};
+            return true;
+        }
+        if (movable_mux(ci) && movable_nets(ci)) {
+            unit = Unit{ci, nullptr, nullptr, true};
             return true;
         }
         CellInfo *lut = ci->type == id_CPE_FF ? relocatable_register(ci) : nullptr;
@@ -1096,13 +1162,15 @@ void GateMateImpl::repair_critical_placement(int rounds)
     };
     auto connections = [&](const Unit &unit, TimingAnalyser &tmg, std::vector<Connection> &conns) {
         conns.clear();
-        for (CellInfo *ci : {unit.lut, unit.ff}) {
+        for (CellInfo *ci : {unit.lut, unit.ff, unit.upper}) {
             if (!ci)
                 continue;
             for (auto &port : ci->ports) {
                 NetInfo *net = port.second.net;
-                // The clock is routed apart, the connection from the LUT tree to the register stays
-                if (!net || port.first == id_CLK_INT || (unit.ff && net == unit.ff->getPort(id_DIN)))
+                // The clock is routed apart, the connection from the LUT tree to the register stays, and
+                // so does the one inside an L20 pair
+                if (!net || port.first == id_CLK_INT || (unit.ff && net == unit.ff->getPort(id_DIN)) ||
+                    port.first == id_COMBIN)
                     continue;
                 if (port.second.type == PORT_IN) {
                     if (!net->driver.cell || net->driver.cell->bel == BelId())
@@ -1114,6 +1182,8 @@ void GateMateImpl::repair_critical_placement(int rounds)
                     continue;
                 }
                 for (auto &user : net->users) {
+                    if (unit.upper && user.cell == unit.lut && user.port == id_COMBIN)
+                        continue;
                     if (!user.cell || user.cell->bel == BelId())
                         return false;
                     WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
@@ -1140,9 +1210,10 @@ void GateMateImpl::repair_critical_placement(int rounds)
     auto slack_at = [&](const Unit &unit, BelId lt, const std::vector<Connection> &conns, float worst) {
         Loc loc = ctx->getBelLocation(lt);
         BelId ff = unit.ff ? ctx->getBelByLocation(Loc(loc.x, loc.y, loc.z + 2)) : BelId();
+        BelId up = unit.upper ? ctx->getBelByLocation(Loc(loc.x, loc.y, CPE_LT_U_Z)) : BelId();
         float out = std::numeric_limits<float>::infinity(), in = -std::numeric_limits<float>::infinity();
         for (auto &c : conns) {
-            WireId pin = ctx->getBelPinWire(c.cell == unit.ff ? ff : lt, c.port);
+            WireId pin = ctx->getBelPinWire(c.cell == unit.ff ? ff : c.cell == unit.upper ? up : lt, c.port);
             delay_t delay = c.input ? lookahead.estimate(c.wire, pin) : lookahead.estimate(pin, c.wire);
             if (delay < 0)
                 return -std::numeric_limits<float>::infinity();
@@ -1163,7 +1234,7 @@ void GateMateImpl::repair_critical_placement(int rounds)
     best = slowest_fmax(*current);
     best_near = near_critical(ctx, *current);
     log_info("Moving cells of critical paths, starting at %.2f MHz.\n", best);
-    int kept = 0;
+    int kept = 0, kept_pairs = 0, kept_muxes = 0;
     for (int round = 1; rounds < 0 || round <= rounds; round++) {
         if (rounds < 0 && timing_met(*current, repair_margin)) {
             log_info("    round %d: timing met\n", round);
@@ -1198,15 +1269,27 @@ void GateMateImpl::repair_critical_placement(int rounds)
                     for (int x = loc.x - radius; x <= loc.x + radius; x++) {
                         if (x < 0 || y < 0 || x >= ctx->getGridDimX() || y >= ctx->getGridDimY())
                             continue;
-                        for (int z : {CPE_LT_U_Z, CPE_LT_L_Z}) {
+                        for (int z : {CPE_LT_U_Z, CPE_LT_L_Z, CPE_LT_FULL_Z}) {
+                            if ((z == CPE_LT_FULL_Z) != u.full)
+                                continue;
                             BelId bel = ctx->getBelByLocation(Loc(x, y, z));
                             if (bel == BelId() || bel == u.lut->bel || tried.count({u.lut->name, bel}))
                                 continue;
                             CellInfo *other = nullptr;
-                            if (u.ff ? !free_register_half(u.lut, u.ff, bel) : !free_lut_tree_bel(u.lut, bel)) {
+                            if (u.full) {
+                                // a multiplexer takes a whole free CPE, without swapping
+                                if (!free_cpe(u.lut, x, y, nullptr))
+                                    continue;
+                            } else if (u.upper) {
+                                // an L20 pair takes a whole free CPE, without swapping
+                                BelId up = ctx->getBelByLocation(Loc(x, y, CPE_LT_U_Z));
+                                if (z != CPE_LT_L_Z || !free_lut_tree_bel(u.lut, bel) ||
+                                    !free_lut_tree_bel(u.upper, up))
+                                    continue;
+                            } else if (u.ff ? !free_register_half(u.lut, u.ff, bel) : !free_lut_tree_bel(u.lut, bel)) {
                                 Unit o;
                                 other = ctx->getBoundBelCell(bel);
-                                if (u.ff || !other || !unit_of(other, o) || o.ff ||
+                                if (u.ff || !other || !unit_of(other, o) || o.ff || o.upper ||
                                     !free_lut_tree_bel(u.lut, bel, other) ||
                                     !free_lut_tree_bel(other, u.lut->bel, u.lut))
                                     continue;
@@ -1257,6 +1340,8 @@ void GateMateImpl::repair_critical_placement(int rounds)
         add_move(unit.lut, to);
         if (unit.ff)
             add_move(unit.ff, ctx->getBelByLocation(Loc(lt.x, lt.y, lt.z + 2)));
+        if (unit.upper)
+            add_move(unit.upper, ctx->getBelByLocation(Loc(lt.x, lt.y, CPE_LT_U_Z)));
         if (swapped)
             add_move(swapped, unit.lut->bel);
         std::string move;
@@ -1272,7 +1357,7 @@ void GateMateImpl::repair_critical_placement(int rounds)
                 ctx->bindBel(back ? m.from : m.to, m.cell, m.strength);
                 if (back)
                     m.cell->params = m.params;
-                else if (m.cell->type == id_CPE_L2T4)
+                else if (m.cell->type == id_CPE_L2T4 && !unit.upper) // (an L20 pair keeps its halves and tables)
                     set_lut_tree_half(ctx, m.cell);
             }
             for (auto &m : moves)
@@ -1359,6 +1444,8 @@ void GateMateImpl::repair_critical_placement(int rounds)
             best_near = now_near;
             current = std::move(after);
             kept++;
+            kept_pairs += unit.upper != nullptr;
+            kept_muxes += unit.full;
             continue;
         }
         log_info("    round %d: %s, %.2f ns more slack by the tables: %s, undone\n", round, move.c_str(),
@@ -1368,8 +1455,252 @@ void GateMateImpl::repair_critical_placement(int rounds)
         place(true);
         tried.insert({unit.lut->name, to});
     }
-    log_info("Kept %d cell moves.\n", kept);
+    log_info("Kept %d cell moves (%d of L20 pairs, %d of multiplexers).\n", kept, kept_pairs, kept_muxes);
     check_repaired_routing(ctx, "Moving cells");
+    return kept;
+}
+
+// Repairing the placement of the critical paths (--vopt place-repair): moving cells, and fusing LUT2
+// levels, in turns while either keeps something (each changes what the other finds)
+void GateMateImpl::repair_critical_placement(int rounds)
+{
+    for (int pass = 0; pass < 4; pass++)
+        if (move_critical_cells(rounds) + fuse_critical_luts(rounds) == 0)
+            break;
+}
+
+// Fusing the LUT2 levels of critical paths, the other half of place-repair.
+//
+// A critical connection from a LUT2 A to a LUT2 C alone in its half costs a CPE pass and a routing
+// hop. A copy of A can compute in C's L00 (or L01) instead, from A's inputs; A stays for its other
+// sinks, or goes if C was its only one. Each round takes the critical connection where, by the delay
+// tables, this gains most slack, lays A's inputs to C on their ideal paths, re-routes the rest with
+// all other routing held, and keeps the result if Fmax rose (or tied with less near-critical slack).
+int GateMateImpl::fuse_critical_luts(int rounds)
+{
+    if (!lookahead.built())
+        log_error("place-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
+    assign_cell_info();
+    const float window = 250;           // ps: connections within this of the worst slack are critical
+    const float min_gain = 50;          // ps of slack
+    const float stage = 300;            // ps: a CPE pass and its input less the first-level LUT, roughly
+    const IdString first[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
+    const IdString first_init[2] = {id_INIT_L00, id_INIT_L01};
+    auto is_ram_io = [](const CellInfo *x) { return x && x->type.in(id_CPE_RAMIO, id_CPE_RAMI, id_CPE_RAMO); };
+    // A LUT2 alone in a half (inputs on D0_10/D1_10, maybe a first-level LUT computing and COMBIN)
+    auto lone = [&](const CellInfo *ci, bool tree_ok) {
+        if (ci->type != id_CPE_L2T4 || ci->bel == BelId() || ci->belStrength > STRENGTH_STRONG)
+            return false;
+        for (IdString param : {id_C_I1, id_C_I2, id_C_I3, id_C_I4})
+            if (int_or_default(ci->params, param, 0))
+                return false;
+        for (auto &port : ci->ports) {
+            NetInfo *net = port.second.net;
+            if (!net)
+                continue;
+            bool ok = port.second.type == PORT_IN
+                              ? port.first.in(id_D0_10, id_D1_10) ||
+                                        (tree_ok && port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_COMBIN))
+                              : port.first == id_OUT;
+            if (!ok || is_ram_io(net->driver.cell) || (port.first != id_COMBIN && (prerouted_nets.count(net->name) ||
+                                                                                  !weakly_routed(net))))
+                return false;
+            for (auto &user : net->users)
+                if (is_ram_io(user.cell))
+                    return false;
+        }
+        return true;
+    };
+    pool<std::pair<IdString, IdString>> tried; // C, its port
+    auto current = std::make_unique<TimingAnalyser>(ctx);
+    float best = slowest_fmax(*current);
+    double best_near = near_critical(ctx, *current);
+    log_info("Fusing LUT2 levels of critical paths, starting at %.2f MHz.\n", best);
+    int kept = 0, copied = 0;
+    for (int round = 1; rounds < 0 || round <= rounds; round++) {
+        if (rounds < 0 && timing_met(*current, repair_margin)) {
+            log_info("    round %d: timing met\n", round);
+            break;
+        }
+        TimingAnalyser &tmg = *current;
+        float worst_all = std::numeric_limits<float>::infinity();
+        for (auto &net : ctx->nets)
+            for (auto &user : net.second->users)
+                worst_all = std::min(worst_all, tmg.get_setup_slack(CellPortKey(user)));
+        // The best fusion: C, its port fed by A, the first-level LUT j
+        float gain = 0;
+        CellInfo *best_c = nullptr;
+        IdString best_port;
+        int best_j = -1, candidates = 0;
+        for (auto &cell : ctx->cells) {
+            CellInfo *c = cell.second.get();
+            if (!lone(c, true))
+                continue;
+            for (IdString port : {id_D0_10, id_D1_10}) {
+                NetInfo *net = c->getPort(port);
+                if (!net || tried.count({c->name, port}))
+                    continue;
+                float s = tmg.get_setup_slack(CellPortKey(c->name, port));
+                CellInfo *a = net->driver.cell;
+                if (s > worst_all + window || !a || a == c || net->driver.port != id_OUT || !lone(a, false) ||
+                    a->getPort(id_COMBIN) || int_or_default(a->params, id_INIT_L20, LUT_D1) != LUT_D1)
+                    continue;
+                NetInfo *n1 = a->getPort(id_D0_10), *n2 = a->getPort(id_D1_10);
+                if (!n1 || !n2 || n1 == n2 || !n1->driver.cell || !n2->driver.cell)
+                    continue;
+                // A first-level LUT free, the other one free to pass C's other input on (or that input gone)
+                IdString other = port == id_D0_10 ? id_D1_10 : id_D0_10;
+                int j = -1;
+                for (int t = 0; t < 2 && j < 0; t++)
+                    if (!c->getPort(first[t][0]) && !c->getPort(first[t][1]) &&
+                        (!c->getPort(other) || (!c->getPort(first[1 - t][0]) && !c->getPort(first[1 - t][1]))))
+                        j = t;
+                if (j < 0)
+                    continue;
+                candidates++;
+                // The worst slack through A's inputs afterwards: each saves A's routing, A's pass and the
+                // hop to C, and gains the route to C's first-level LUT
+                WireId a_out = ctx->getNetinfoSourceWire(net), c_in = ctx->getBelPinWire(c->bel, port);
+                delay_t hop = lookahead.estimate(a_out, c_in);
+                float after = std::numeric_limits<float>::infinity();
+                bool ok = hop >= 0;
+                for (int i = 0; i < 2 && ok; i++) {
+                    NetInfo *n = i == 0 ? n1 : n2;
+                    WireId src = ctx->getNetinfoSourceWire(n);
+                    delay_t old_in = lookahead.estimate(src, ctx->getBelPinWire(a->bel, i == 0 ? id_D0_10 : id_D1_10));
+                    delay_t new_in = lookahead.estimate(src, ctx->getBelPinWire(c->bel, first[j][i]));
+                    ok = old_in >= 0 && new_in >= 0;
+                    float si = tmg.get_setup_slack(CellPortKey(a->name, i == 0 ? id_D0_10 : id_D1_10));
+                    after = std::min(after, si + float(old_in + hop - new_in) + stage);
+                }
+                if (!ok)
+                    continue;
+                float g = after - s;
+                if (g > gain) {
+                    gain = g;
+                    best_c = c;
+                    best_port = port;
+                    best_j = j;
+                }
+            }
+        }
+        if (!best_c || gain < min_gain) {
+            log_info("    round %d: no LUT2 level of a critical path to fuse (%d candidates, best gain %.2f ns)\n",
+                     round, candidates, ctx->getDelayNS(delay_t(gain)));
+            break;
+        }
+        CellInfo *c = best_c;
+        int j = best_j;
+        NetInfo *net = c->getPort(best_port);
+        CellInfo *a = net->driver.cell;
+        NetInfo *n1 = a->getPort(id_D0_10), *n2 = a->getPort(id_D1_10);
+        tried.insert({c->name, best_port});
+        bool a_shared = net->users.entries() > 1;
+
+        RoutingSnapshot snapshot = snapshot_routing(ctx);
+        auto params = c->params;
+        // C: A's copy in L0j, A's net no longer an input
+        WireId c_sink = ctx->getNetinfoSinkWire(net, net->users.at(c->ports.at(best_port).user_idx), 0);
+        if (c_sink != WireId() && net->wires.count(c_sink))
+            rip_up_from(ctx, net, c_sink);
+        c->disconnectPort(best_port);
+        if (!a_shared)
+            ctx->ripupNet(net->name); // left without sinks (the snapshot has its routing for an undo)
+        c->params[first_init[j]] = Property(int_or_default(a->params, id_INIT_L10, 0), 4);
+        std::vector<WireId> pins;
+        for (int i = 0; i < 2; i++) {
+            if (!c->ports.count(first[j][i]))
+                c->addInput(first[j][i]);
+            c->connectPort(first[j][i], i == 0 ? n1 : n2);
+            pins.push_back(ctx->getBelPinWire(c->bel, first[j][i]));
+        }
+        // With both of L10's inputs now from the first level, C is a plain tree, which reads L00 as the
+        // side of D0_10 and L01 as that of D1_10: swap L10's inputs where it is the other way round
+        if (!c->getPort(id_D0_10) && !c->getPort(id_D1_10) && (best_port == id_D0_10 ? j == 1 : j == 0)) {
+            int t = int_or_default(c->params, id_INIT_L10, 0);
+            c->params[id_INIT_L10] = Property((t & 0b1001) | ((t & 0b0010) << 1) | ((t & 0b0100) >> 1), 4);
+        }
+        // The CPE wires the new inputs need (C's other input may pass them now)
+        rip_up_near(ctx, pins, true);
+        if (NetInfo *x = c->getPort(best_port == id_D0_10 ? id_D1_10 : id_D0_10)) {
+            WireId sink = ctx->getNetinfoSinkWire(x, x->users.at(c->ports.at(best_port == id_D0_10 ? id_D1_10
+                                                                                                  : id_D0_10)
+                                                                   .user_idx),
+                                                 0);
+            if (sink != WireId() && x->wires.count(sink) && x->wires.at(sink).strength <= STRENGTH_WEAK)
+                rip_up_from(ctx, x, sink);
+        }
+        ctx->assignArchInfo();
+        assign_cell_info();
+        std::vector<std::pair<NetInfo *, WireId>> laid;
+        for (int i = 0; i < 2; i++) {
+            NetInfo *n = i == 0 ? n1 : n2;
+            lay_ideal_path(n, n->users.at(c->ports.at(first[j][i]).user_idx), laid);
+        }
+        bool routed = route_ripped(laid);
+        float now = 0;
+        double now_near = 0;
+        std::unique_ptr<TimingAnalyser> after;
+        if (routed) {
+            after = std::make_unique<TimingAnalyser>(ctx);
+            now = slowest_fmax(*after);
+            now_near = near_critical(ctx, *after);
+        }
+        std::string what = stringf("%s into L0%d of %s%s", a->name.c_str(ctx), j, c->name.c_str(ctx),
+                                   a_shared ? " (a copy)" : "");
+        bool faster = now > best * 1.0001f, as_fast = now >= best * 0.9999f;
+        if (routed && (faster || (as_fast && now_near < best_near * 0.999))) {
+            log_info("    round %d: %s, %.2f ns more slack by the tables: %.2f -> %.2f MHz, near-critical %.1f -> "
+                     "%.1f\n",
+                     round, what.c_str(), ctx->getDelayNS(delay_t(gain)), best, now, best_near, now_near);
+            best = std::max(best, now);
+            best_near = now_near;
+            kept++;
+            copied += a_shared;
+            if (!a_shared) {
+                // A has nothing left to drive
+                for (IdString p : {id_D0_10, id_D1_10}) {
+                    NetInfo *n = a->getPort(p);
+                    WireId sink = ctx->getNetinfoSinkWire(n, n->users.at(a->ports.at(p).user_idx), 0);
+                    if (sink != WireId() && n->wires.count(sink))
+                        rip_up_from(ctx, n, sink);
+                    a->disconnectPort(p);
+                }
+                ctx->ripupNet(net->name);
+                a->disconnectPort(id_OUT);
+                ctx->unbindBel(a->bel);
+                ctx->net_aliases.erase(net->name);
+                ctx->nets.erase(net->name);
+                ctx->cells.erase(a->name);
+                ctx->assignArchInfo();
+                assign_cell_info();
+                after = std::make_unique<TimingAnalyser>(ctx);
+                slowest_fmax(*after);
+            }
+            current = std::move(after);
+            continue;
+        }
+        log_info("    round %d: %s, %.2f ns more slack by the tables: %s, undone\n", round, what.c_str(),
+                 ctx->getDelayNS(delay_t(gain)),
+                 routed ? stringf("%.2f MHz is no better", now).c_str() : "not routable");
+        for (int i = 0; i < 2; i++) {
+            NetInfo *n = i == 0 ? n1 : n2;
+            WireId sink = ctx->getNetinfoSinkWire(n, n->users.at(c->ports.at(first[j][i]).user_idx), 0);
+            if (sink != WireId() && n->wires.count(sink))
+                rip_up_from(ctx, n, sink);
+            c->disconnectPort(first[j][i]);
+        }
+        c->params = params;
+        c->connectPort(best_port, net);
+        restore_changed_routing(ctx, snapshot);
+        ctx->assignArchInfo();
+        assign_cell_info();
+        current = std::make_unique<TimingAnalyser>(ctx);
+        slowest_fmax(*current);
+    }
+    log_info("Kept %d fused LUT2 levels (%d with a copy of the first LUT2).\n", kept, copied);
+    check_repaired_routing(ctx, "Fusing LUT2 levels");
+    return kept;
 }
 
 NEXTPNR_NAMESPACE_END

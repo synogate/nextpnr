@@ -110,8 +110,10 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("net-repair", po::value<int>(),
                            "after routing, rounds of re-routing nets with several critical sinks (default 0)");
     specific.add_options()("place-repair", po::value<int>(),
-                           "after routing, rounds of moving LUT trees on the critical paths (default: until timing is met "
-                           "or nothing is left to try; 0 turns it off)");
+                           "after routing, rounds of moving cells on the critical paths (LUT trees, registers with "
+                           "their LUT, 5-input LUT pairs, 4:1 multiplexers) and of computing LUT2s (or copies) in the "
+                           "first level of the LUT2 they feed (default: until timing is met or nothing is left to try; "
+                           "0 turns it off)");
     specific.add_options()("repair-margin", po::value<float>(),
                            "percent above each clock's constraint route-repair and place-repair aim for when run "
                            "until timing is met (default 0)");
@@ -1129,52 +1131,58 @@ void GateMateImpl::postRoute()
             check_input(cell.second.get(), id_D0_10, false);
             check_input(cell.second.get(), id_D1_10, false);
             if (cfg.count(id_LUT2_11) || cfg.count(id_LUT2_10)) {
-                if (cfg.count(id_LUT2_11)) { // lower
-                    if (cfg.count(id_LUT2_02) && !cfg.count(id_LUT2_03)) {
-                        // both inputs on 02
-                        l00 = l10;    // config is now in 02
-                        l10 = 0b1010; // LUT_D0 - we propagate only
-                    } else if (!cfg.count(id_LUT2_02) && cfg.count(id_LUT2_03)) {
-                        // both inputs on 03
-                        l01 = l10;    // config is now in 03
-                        l10 = 0b1010; // LUT_D0 - we propagate only
-                    } else {
-                        // one input on 02, other on 03 (or LUT1)
-                        if (cfg.count(id_LUT2_02))
-                            l00 = 0b1010; // LUT_D0 - we propagate only
-                        if (cfg.count(id_LUT2_03))
-                            l01 = 0b1010; // LUT_D0 - we propagate only
+                // A LUT2 alone in the half computes l10 from D0_10 (a) and D1_10 (b). Each input reaches the
+                // half through a first-level LUT j (L00/L02: 0, L01/L03: 1) at its physical input p (IN1/3/5/7:
+                // 0, TI2/4/6/8: 1); read both from the routing. Both through the same LUT: that LUT computes
+                // and L10 passes it on. Otherwise each passes its input on and L10 computes.
+                auto trace = [&](IdString port, int &j, int &p) {
+                    j = p = -1;
+                    NetInfo *net = cell.second->getPort(port);
+                    if (!net)
+                        return;
+                    WireId w = ctx->getBelPinWire(cell.second->bel, port);
+                    for (int step = 0; step < 2 && net->wires.count(w) && net->wires.at(w).pip != PipId(); step++) {
+                        PipId pip = net->wires.at(w).pip;
+                        std::string src = ctx->getPipName(pip)[2].str(ctx); // CPE.D0_01_int, CPE.TI4_int, ...
+                        if (step == 0 && src.size() > 8 && src.compare(0, 5, "CPE.D") == 0)
+                            j = (src[8] - '0') & 1;
+                        if (step == 1)
+                            p = src.compare(0, 6, "CPE.TI") == 0 ? 1 : 0;
+                        w = ctx->getPipSrcWire(pip);
                     }
-
-                    if (cfg.at(id_LUT2_11) == 1)
+                };
+                int ja, pa, jb, pb;
+                trace(id_D0_10, ja, pa);
+                trace(id_D1_10, jb, pb);
+                auto pass = [](int p) { return p == 1 ? 0b1100 : 0b1010; }; // LUT_D1 : LUT_D0
+                int *first[2] = {&l00, &l01};
+                if (ja >= 0 && ja == jb) {
+                    NPNR_ASSERT(pa != pb);
+                    *first[ja] = pa == 0 ? l10 : swap_lut2_inputs(l10);
+                    l10 = pass(ja);
+                } else {
+                    if (ja >= 0)
+                        *first[ja] = pass(pa);
+                    if (jb >= 0)
+                        *first[jb] = pass(pb);
+                    // L10's physical inputs are L00 then L01: swapped where a comes through L01 or b through L00
+                    if (ja == 1 || jb == 0)
                         l10 = swap_lut2_inputs(l10);
-                    if (cfg.count(id_LUT2_02) && (cfg.at(id_LUT2_02) == 1))
-                        l00 = swap_lut2_inputs(l00);
-                    if (cfg.count(id_LUT2_03) && (cfg.at(id_LUT2_03) == 1))
-                        l01 = swap_lut2_inputs(l01);
-                } else { // upper part
-                    if (cfg.count(id_LUT2_00) && !cfg.count(id_LUT2_01)) {
-                        // both inputs on 02
-                        l00 = l10;    // config is now in 02
-                        l10 = 0b1010; // LUT_D0 - we propagate only
-                    } else if (!cfg.count(id_LUT2_00) && cfg.count(id_LUT2_01)) {
-                        // both inputs on 03
-                        l01 = l10;    // config is now in 03
-                        l10 = 0b1010; // LUT_D0 - we propagate only
-                    } else {
-                        // one input on 02, other on 03 (or LUT1)
-                        if (cfg.count(id_LUT2_00))
-                            l00 = 0b1010; // LUT_D0 - we propagate only
-                        if (cfg.count(id_LUT2_01))
-                            l01 = 0b1010; // LUT_D0 - we propagate only
-                    }
-
-                    if (cfg.at(id_LUT2_10) == 1)
-                        l10 = swap_lut2_inputs(l10);
-                    if (cfg.count(id_LUT2_00) && (cfg.at(id_LUT2_00) == 1))
-                        l00 = swap_lut2_inputs(l00);
-                    if (cfg.count(id_LUT2_01) && (cfg.at(id_LUT2_01) == 1))
-                        l01 = swap_lut2_inputs(l01);
+                }
+                // A first-level LUT computing on its own inputs (place-repair's fusing) where the other passes D0_10
+                // or D1_10 on: its inputs swap like a tree's
+                const IdString tree_ports[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
+                const IdString tree_mux[2] = {cfg.count(id_LUT2_11) ? id_LUT2_02 : id_LUT2_00,
+                                              cfg.count(id_LUT2_11) ? id_LUT2_03 : id_LUT2_01};
+                for (int t = 0; t < 2; t++) {
+                    if (!cell.second->getPort(tree_ports[t][0]) && !cell.second->getPort(tree_ports[t][1]))
+                        continue;
+                    NPNR_ASSERT(ja != t && jb != t);
+                    if (cfg.count(tree_mux[t]) && cfg.at(tree_mux[t]) == 1)
+                        *first[t] = swap_lut2_inputs(*first[t]);
+                    for (IdString port : tree_ports[t])
+                        if (cell.second->getPort(port))
+                            cell.second->renamePort(port, port_mapping[port]);
                 }
                 cell.second->params[id_INIT_L00] = Property(l00, 4);
                 cell.second->params[id_INIT_L01] = Property(l01, 4);
