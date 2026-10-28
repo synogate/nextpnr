@@ -191,7 +191,9 @@ TEST_F(GateMateGuiTest, routed_pips_are_drawn_on_the_chip)
             EXPECT_FALSE(g.empty()) << ctx->nameOfPip(pip);
             EXPECT_TRUE(on_chip(g)) << ctx->nameOfPip(pip);
             for (auto &e : g) {
-                EXPECT_EQ(e.style, GraphicElement::STYLE_ACTIVE) << ctx->nameOfPip(pip);
+                // (between tiles, used routing is less prominent than the tiles' contents)
+                EXPECT_TRUE(e.style == GraphicElement::STYLE_ACTIVE || e.style == GraphicElement::STYLE_ROUTING)
+                        << ctx->nameOfPip(pip);
                 EXPECT_LE(std::abs(e.x1 - e.x2) + std::abs(e.y1 - e.y2), 22.0f) << ctx->nameOfPip(pip);
                 // A line that leaves its tile runs horizontally or vertically (through the
                 // routing channels), not diagonally across other tiles' entities
