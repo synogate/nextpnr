@@ -855,7 +855,9 @@ Tri NetlistEvaluator::eval_port(const CellInfo *cell, IdString port)
     if (cell->type.in(id_CC_IBUF, id_CPE_IBUF, id_CPE_LVDS_IBUF) && port == id_Y)
         return external(cell);
     if (cell->type.in(id_CC_IOBUF, id_CPE_IOBUF, id_CC_LVDS_IOBUF, id_CPE_LVDS_IOBUF) && port == id_Y) {
-        Tri drives = cell->type.in(id_CC_IOBUF, id_CC_LVDS_IOBUF) ? tri_not(input(cell, id_T)) : input(cell, id_T);
+        // (a packed one without T, whose enable the packer made constant, drives as its IOSEL says)
+        Tri drives = cell->type.in(id_CC_IOBUF, id_CC_LVDS_IOBUF) ? tri_not(input(cell, id_T))
+                                                                   : eval_output_enable(cell->name);
         return tri_mux(drives, external(cell), input(cell, id_A));
     }
     // cells_sim.v CC_LVDS_IBUF: Y = I_P (the value driven into the device, per buffer)
