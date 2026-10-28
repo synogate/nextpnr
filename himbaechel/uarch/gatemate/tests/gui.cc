@@ -399,7 +399,7 @@ TEST_F(GateMateGuiTest, level_of_detail)
 
 // Zoomed in, a tile shows the schematic of its CPE and routing muxes: every connection inside them
 // in dark grey, with the used ones drawn over it. So every line of a used pip inside a CPE lies on
-// a line of the schematic.
+// a line of the schematic, or of the CPE's LUT2 trees (which draw the ways between the LUT2s).
 TEST_F(GateMateGuiTest, used_cpe_paths_lie_on_the_schematic)
 {
     NetInfo *clk = global_clock("clk");
@@ -435,6 +435,10 @@ TEST_F(GateMateGuiTest, used_cpe_paths_lie_on_the_schematic)
                     for (auto &e : ctx->getDecalGraphics(d.first.decal))
                         if (e.type == GraphicElement::TYPE_LINE && e.style == GraphicElement::STYLE_INACTIVE)
                             schematic.push_back(e);
+            for (BelId bel : ctx->getBelsByTile(ctx->getPipLocation(pip).x, ctx->getPipLocation(pip).y))
+                for (auto &e : ctx->getDecalGraphics(ctx->getBelDecal(bel).decal))
+                    if (e.type == GraphicElement::TYPE_LINE)
+                        schematic.push_back(e);
             auto on_schematic = [&](const GraphicElement &e) {
                 const float eps = 1e-4f;
                 auto near = [&](float a, float b) { return std::abs(a - b) < eps; };

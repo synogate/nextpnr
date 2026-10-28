@@ -844,8 +844,12 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         return n.size() == 9 && n[0] == 'D' && n[2] == '_' && ends_with(n, "_int");
     };
     // A second-level LUT2 input from a first-level one: the signal passes through that LUT2 (a
-    // LUT2 may take either input; postRoute permutes its function to match), so from its output
+    // LUT2 may take either input; postRoute permutes its function to match), so from its output.
+    // Only where it is used, not in the schematic: the LUT2 trees draw these ways, and a CPE in MX4
+    // mode has a mux in place of the second level.
     if (lut_input(dn) && dn[3] == '1' && lut_input(sn) && sn[3] == '0') {
+        if (style != GraphicElement::STYLE_ACTIVE)
+            return;
         float m = lut_output_y(sn[4] - '0');
         path({Pt{L1_X1, m}, Pt{L2_X0, m}});
         return;
@@ -1303,23 +1307,8 @@ static void cpe_port_labels(std::vector<GraphicElement> &g)
     }
     port(TI_X0 - 0.006f, row(9) + 0.011f, TI_X1 + 0.006f, row(9) + 0.016f, "C_CLKSEL");
     port(TI_X0 - 0.006f, row(10) + 0.011f, TI_X1 + 0.006f, row(10) + 0.016f, "C_ENSEL");
-    // The LUT2s: their name at the top, their inputs A and B
-    struct
-    {
-        const char *name;
-        float x0, x1, top, a, b;
-    } luts[] = {{"L00", L1_X0, L1_X1, row(1) + 0.012f, row(1), row(2)},
-                {"L01", L1_X0, L1_X1, row(3) + 0.012f, row(3), row(4)},
-                {"L02", L1_X0, L1_X1, row(5) + 0.012f, row(5), row(6)},
-                {"L03", L1_X0, L1_X1, row(7) + 0.012f, row(7), row(8)},
-                {"L10", L2_X0, L2_X1, m12() + 0.018f, m12(), m34()},
-                {"L11", L2_X0, L2_X1, m56() + 0.018f, m56(), m78()},
-                {"L20", L20_X0, L20_X1, ml() + 0.06f, ml() + 0.045f, ml()}};
-    for (auto &l : luts) {
-        port(l.x0 + 0.002f, l.top - 0.008f, l.x1 - 0.002f, l.top - 0.002f, l.name);
-        port(l.x0 + 0.001f, l.a - 0.003f, l.x0 + 0.006f, l.a + 0.003f, "A");
-        port(l.x0 + 0.001f, l.b - 0.003f, l.x0 + 0.006f, l.b + 0.003f, "B");
-    }
+    // (the LUT2s' names and inputs: with each LUT2, see drawBel, as a CPE in MX4 mode has a mux in
+    // place of some)
     // The registers, their output muxes (inputs: 0 register, 1 bridge, 2 carry output, 3 LUT2
     // tree) and the outputs
     for (bool upper : {true, false}) {
@@ -1810,11 +1799,25 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         std::string f = text(index);
         return used && (f == "0" || f == "1" || f == "A" || f == "B");
     };
+    // Names of ports in the LUT2 trees, added after them (which get their level of detail as a whole)
+    std::vector<GraphicElement> tree_ports;
+    auto tree_port = [&](float x1, float y1, float x2, float y2, const char *text) {
+        label(tree_ports, GraphicElement::STYLE_FRAME, x + x1, y + y1, x + x2, y + y2, text, LOD_PORTS);
+    };
+    auto add_tree_ports = [&]() {
+        g.insert(g.end(), tree_ports.begin(), tree_ports.end());
+        tree_ports.clear();
+    };
     auto lut = [&](float x0, float x1, float y0, float y1, size_t index, float a, float b, float out,
                    float label_y = -1) {
         std::string f = text(index);
         auto s = idle(index) ? GraphicElement::STYLE_INACTIVE : style;
         box(g, s, x + x0, y + y0, x + x1, y + y1);
+        // its name at the top, its inputs A and B, when zoomed in closely
+        static const char *names[] = {"L00", "L01", "L02", "L03", "L10", "L11", "L20"};
+        tree_port(x0 + 0.002f, y1 - 0.008f, x1 - 0.002f, y1 - 0.002f, names[index]);
+        tree_port(x0 + 0.001f, a - 0.003f, x0 + 0.006f, a + 0.003f, "A");
+        tree_port(x0 + 0.001f, b - 0.003f, x0 + 0.006f, b + 0.003f, "B");
         if (used && (f == "A" || f == "B")) {
             float in = f == "A" ? a : b, xm = mid(x0, x1);
             polyline(g, style, {Pt{x + x0, y + in}, Pt{x + xm, y + in}, Pt{x + xm, y + out}, Pt{x + x1, y + out}});
@@ -1863,28 +1866,115 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
             p = Pt{x + p.x, y + p.y};
         polyline(g, cin_used ? style : GraphicElement::STYLE_INACTIVE, pts);
     };
-    // LUT2 L00 (IN1, IN2) and L01 (IN3, IN4) into L10
+    // A CPE in MX4 mode (C_FUNCTION, see pack_cpe.cc): L10 and L11 are a 4:1 mux, the other LUT2 of
+    // the pair and its first-level LUT2s are not used as such. In mode A (L20 takes L11, INIT_L20 not
+    // D0) the mux takes IN1..IN4, selected by L02 and L03, its mask in INIT_L10 and its inversions in
+    // INIT_L11; in mode B (L20 takes L10) it takes IN5..IN8, selected by L00 and L01, mask and
+    // inversions the other way round. A data input that is masked is a constant (its inversion).
+    struct
+    {
+        bool on = false, mode_a = true;
+        int mask = 0xf, inv = 0;
+    } mx4;
+    if (used && (bel_type == id_CPE_LT_FULL || bel_type == id_CPE_LT_L || bel_type == id_CPE_LT_U)) {
+        auto cell_at = [&](int z) { return ctx->getBoundBelCell(ctx->getBelByLocation(Loc(loc.x, loc.y, z))); };
+        const CellInfo *full = cell_at(CPE_LT_FULL_Z);
+        const CellInfo *lower = full ? full : cell_at(CPE_LT_L_Z), *upper = full ? full : cell_at(CPE_LT_U_Z);
+        if (lower != nullptr && int_or_default(lower->params, id_C_FUNCTION, 0) == C_MX4) {
+            mx4.on = true;
+            mx4.mode_a = int_or_default(lower->params, id_INIT_L20, 0) != 0b1010; // (LUT_D0)
+            int l10 = int_or_default((upper ? upper : lower)->params, id_INIT_L10, 0);
+            int l11 = int_or_default(lower->params, id_INIT_L11, 0);
+            mx4.mask = mx4.mode_a ? l10 : l11;
+            mx4.inv = mx4.mode_a ? l11 : l10;
+        }
+    }
+    // The 4:1 mux, shaped as an output mux, in the column of L10 and L11 beside the rows of its data
+    // inputs. These arrive at the left of the first-level LUT2s as there and go on, bent along two
+    // lanes (the outer rows on the lane nearer the mux, so that the lines keep apart), to its inputs: an inverted one with a bubble, a masked one grey up to its constant. The
+    // select LUT2s' outputs go into its bottom (mode A) or top (mode B), the one nearer on the inner
+    // lane, and its output along the lane right of it into L20 (B in mode A, A in mode B).
+    auto mx4_mux = [&]() {
+        const float x0 = L2_X0, x1 = L2_X0 + (OMUX_X1 - OMUX_X0), h_in = 0.045f, h_out = 0.015f, r = 0.003f;
+        int r0 = mx4.mode_a ? 1 : 5;
+        float c = mid(row(r0), row(r0 + 3));
+        mux(g, style, x + x0, x + x1, y + c, h_in, h_out);
+        label(g, style, x + x0 + 0.002f, y + c - 0.006f, x + x1 - 0.006f, y + c + 0.006f, "MX4");
+        const float in_dy[4] = {0.033f, 0.011f, -0.011f, -0.033f}, lane[4] = {0.542f, 0.528f, 0.528f, 0.542f};
+        for (int k = 0; k < 4; k++) {
+            bool masked = !((mx4.mask >> k) & 1), inverted = (mx4.inv >> k) & 1;
+            // (a masked input's line ends at its constant, an inverted one's at its bubble)
+            float ry = row(r0 + k), in_y = c + in_dy[k];
+            float end = x0 - (masked ? 0.009f : inverted ? 2 * r : 0);
+            polyline(g, masked ? GraphicElement::STYLE_INACTIVE : style,
+                     {Pt{x + L1_X0, y + ry}, Pt{x + lane[k], y + ry}, Pt{x + lane[k], y + in_y}, Pt{x + end, y + in_y}});
+            if (masked) {
+                label(g, style, x + x0 - 0.008f, y + in_y - 0.0045f, x + x0 - 0.001f, y + in_y + 0.0045f,
+                      inverted ? "1" : "0");
+            } else if (inverted) {
+                // a bubble: an octagon around (x0 - r, in_y)
+                std::vector<Pt> pts;
+                for (int i = 0; i <= 8; i++) {
+                    float a = float(i) * 3.14159265f / 4;
+                    pts.push_back(Pt{x + x0 - r + r * std::cos(a), y + in_y + r * std::sin(a)});
+                }
+                polyline(g, style, pts);
+            }
+        }
+        // (inner lane: the select LUT2 next to the mux; S0 is L02 or L00, S1 L03 or L01)
+        struct
+        {
+            float from_y, lane;
+            const char *name;
+        } selects[2] = {{mx4.mode_a ? m56() : m12(), mx4.mode_a ? x0 + 0.008f : x0 + 0.017f, "S0"},
+                        {mx4.mode_a ? m78() : m34(), mx4.mode_a ? x0 + 0.017f : x0 + 0.008f, "S1"}};
+        for (auto &sel : selects) {
+            // where the lane meets the mux's slanted edge
+            float t = (sel.lane - x0) / (x1 - x0);
+            float edge = mx4.mode_a ? c - h_in + t * (h_in - h_out) : c + h_in - t * (h_in - h_out);
+            polyline(g, style, {Pt{x + L1_X1, y + sel.from_y}, Pt{x + sel.lane, y + sel.from_y}, Pt{x + sel.lane, y + edge}});
+            float ly = mx4.mode_a ? edge - 0.011f : edge + 0.003f;
+            tree_port(sel.lane + 0.001f, ly, sel.lane + 0.009f, ly + 0.007f, sel.name);
+        }
+        float to_y = mx4.mode_a ? ml() : ml() + 0.045f;
+        polyline(g, style, {Pt{x + x1, y + c}, Pt{x + COMBIN_X, y + c}, Pt{x + COMBIN_X, y + to_y}, Pt{x + L20_X0, y + to_y}});
+    };
+    // LUT2 L00 (IN1, IN2) and L01 (IN3, IN4) into L10 (in MX4 mode A: none, the mux takes their
+    // place; in mode B only L00 and L01, the selects)
     auto upper_tree = [&]() {
+        if (mx4.on && mx4.mode_a)
+            return;
         size_t from = g.size();
         lut(L1_X0, L1_X1, row(2) - 0.012f, row(1) + 0.012f, 0, row(1), row(2), m12());
         lut(L1_X0, L1_X1, row(4) - 0.012f, row(3) + 0.012f, 1, row(3), row(4), m34());
-        lut(L2_X0, L2_X1, m34() - 0.018f, m12() + 0.018f, 4, m12(), m34(), mu());
-        link(0, L1_X1, L2_X0, m12());
-        link(1, L1_X1, L2_X0, m34());
+        if (!mx4.on) {
+            lut(L2_X0, L2_X1, m34() - 0.018f, m12() + 0.018f, 4, m12(), m34(), mu());
+            link(0, L1_X1, L2_X0, m12());
+            link(1, L1_X1, L2_X0, m34());
+        }
         lod(g, from, LOD_DETAIL);
+        add_tree_ports();
     };
-    // LUT2 L02 (IN5, IN6) and L03 (IN7, IN8) into L11, and L20 combining L11 with the upper half
+    // LUT2 L02 (IN5, IN6) and L03 (IN7, IN8) into L11, and L20 combining L11 with the upper half (in
+    // MX4 mode: the mux, with L02 and L03 as its selects in mode A)
     auto lower_tree = [&]() {
         size_t from = g.size();
-        lut(L1_X0, L1_X1, row(6) - 0.012f, row(5) + 0.012f, 2, row(5), row(6), m56());
-        lut(L1_X0, L1_X1, row(8) - 0.012f, row(7) + 0.012f, 3, row(7), row(8), m78());
-        lut(L2_X0, L2_X1, m78() - 0.018f, m56() + 0.018f, 5, m56(), m78(), ml());
+        if (!mx4.on || mx4.mode_a) {
+            lut(L1_X0, L1_X1, row(6) - 0.012f, row(5) + 0.012f, 2, row(5), row(6), m56());
+            lut(L1_X0, L1_X1, row(8) - 0.012f, row(7) + 0.012f, 3, row(7), row(8), m78());
+        }
+        if (mx4.on) {
+            mx4_mux();
+        } else {
+            lut(L2_X0, L2_X1, m78() - 0.018f, m56() + 0.018f, 5, m56(), m78(), ml());
+            link(2, L1_X1, L2_X0, m56());
+            link(3, L1_X1, L2_X0, m78());
+            link(5, L2_X1, L20_X0, ml());
+        }
         lut(L20_X0, L20_X1, ml() + CPOUT_DY - 0.005f, ml() + 0.06f, 6, ml() + 0.045f, ml(), ml(), ml() + 0.0225f);
-        link(2, L1_X1, L2_X0, m56());
-        link(3, L1_X1, L2_X0, m78());
-        link(5, L2_X1, L20_X0, ml());
         carry_in();
         lod(g, from, LOD_DETAIL);
+        add_tree_ports();
     };
     // Zoomed out, a used half of the CPE logic is a box in place of its LUT2s
     auto outline = [&](float x0, float x1, float y0, float y1) {
@@ -1925,13 +2015,20 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         break;
     }
     case id_CPE_LT_U.index:
-        outline(L1_X0, L2_X1, row(4) - 0.012f, row(1) + 0.012f);
-        upper_tree();
+    case id_CPE_LT_L.index: {
+        // An unused half of a CPE used as a whole is not drawn (the whole CPE's LUT2s, or a mux in their
+        // place, are)
+        if (!used && ctx->getBoundBelCell(ctx->getBelByLocation(Loc(loc.x, loc.y, CPE_LT_FULL_Z))) != nullptr)
+            break;
+        if (bel_type == id_CPE_LT_U) {
+            outline(L1_X0, L2_X1, row(4) - 0.012f, row(1) + 0.012f);
+            upper_tree();
+        } else {
+            outline(L1_X0, L20_X1, row(8) - 0.012f, row(5) + 0.012f);
+            lower_tree();
+        }
         break;
-    case id_CPE_LT_L.index:
-        outline(L1_X0, L20_X1, row(8) - 0.012f, row(5) + 0.012f);
-        lower_tree();
-        break;
+    }
     case id_CPE_FF_U.index:
     case id_CPE_FF_L.index: {
         // The register, in the middle of its half: data input, clock (with the triangle), enable and
