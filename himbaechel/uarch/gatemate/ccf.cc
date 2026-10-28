@@ -391,6 +391,16 @@ struct GateMateCCFReader
                         for (auto p : defaults)
                             ci->params[p.first] = p.second;
                         parse_params(params, false, &ci->params);
+                    } else if (uarch->as_partition) {
+                        // The CCF of the design importing the partition: keep the CPEs of its IOs free
+                        dict<IdString, Property> pin_params;
+                        parse_params(params, false, &pin_params);
+                        auto loc = pin_params.find(id_LOC);
+                        if (loc != pin_params.end()) {
+                            BelId bel = ctx->get_package_pin_bel(ctx->id(loc->second.as_string()));
+                            if (bel != BelId())
+                                uarch->partition_ccf_tiles.insert(bel.tile);
+                        }
                     } else
                         log_warning("Pad with name '%s' not found in netlist.\n", pin_name.c_str());
                 } else if (type == "start" || type == "end") {

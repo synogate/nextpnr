@@ -23,6 +23,7 @@ set(SOURCES
     pack_mult.cc
     pack_serdes.cc
     pack.h
+    partition.cc
     pll.cc
     replicate.cc
     reroute.cc

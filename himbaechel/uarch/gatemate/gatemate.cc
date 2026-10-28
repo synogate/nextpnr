@@ -55,6 +55,16 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("clk-cp", "use CP lines for CLK and EN");
     specific.add_options()("no-cpe-cp", "do not use CP lines pass through CPE");
     specific.add_options()("no-bridges", "do not use CPE in bridge mode");
+    specific.add_options()("as-partition",
+                           "implement the design as a partition: top level ports become unrouted boundary nets instead "
+                           "of IO pads, for importing the result with partition");
+    specific.add_options()("partition", po::value<std::vector<std::string>>(),
+                           "<inst>:<file>[@dx,dy]: replace the blackbox instance <inst> with the placed and routed "
+                           "partition from <file> (written with as-partition), moved by dx, dy tiles; only the "
+                           "connections to the rest of the design are routed again");
+    specific.add_options()("partition-open",
+                           "let the design place cells in the areas of imported partitions too, everywhere but the "
+                           "tiles of their cells (by default it keeps out of their whole rectangles)");
     // The options from here on come from the timing experiments (docs/timing_experiments.md). Those
     // marked TEMPORARY gave no gain; they and the code behind them are to go once the comparison has
     // been repeated with the timing model fixed.
@@ -224,6 +234,8 @@ void GateMateImpl::init_database(Arch *arch)
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
+    as_partition = args.options.count("as-partition") > 0;
+    partition_open = args.options.count("partition-open") > 0;
     auto table = [&](const char *option) {
         if (!args.options.count(option))
             return false;
@@ -405,6 +417,15 @@ bool GateMateImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
     if (cell == nullptr) {
         return true;
     }
+    // The placer keeps out of imported partitions: the bels of their final cells overlap the placer's, and a cell
+    // in a gap would be closed in by their locked routing. Cells fixed by packing (next to the IOs) stay.
+    if (partition_tiles.count(bel.tile) && cell->belStrength < STRENGTH_FIXED && !partition_cells.count(cell->name))
+        return false;
+    if (partition_routed_tiles.count(bel.tile) && multiplier_clusters.count(cell->cluster))
+        return false;
+    // A partition keeps the CPEs next to IOs and the clocking free for the design importing it
+    if (as_partition && partition_io_tiles.count(bel.tile) && cell->belStrength < STRENGTH_FIXED)
+        return false;
 
     if (getBelBucketForBel(bel) == id_CPE_FF) {
         Loc loc = ctx->getBelLocation(bel);
@@ -699,6 +720,8 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
 
 void GateMateImpl::preRoute()
 {
+    if (as_partition)
+        find_partition_free_nets();
     if (replicate_fanout > 0)
         replicate_drivers(replicate_fanout);
     if (ctx->args.options.count("route-seed"))
@@ -952,6 +975,15 @@ void GateMateImpl::postRoute()
             if (crit > 0 && net.first.str(ctx).find_first_of(" \t\n") == std::string::npos)
                 out << net.first.str(ctx) << "\t" << crit << "\n";
         }
+    }
+    if (as_partition) {
+        // A partition stays as routed: what follows turns bridges and CP lines into cells and the LUT inputs
+        // into the CPE inputs the routing reaches, which needs the routing of the ports, done on import
+        detach_partition_ports();
+        save_partition_attrs();
+        if (ctx->args.options.count("out"))
+            log_warning("No bitstream is written for a partition.\n");
+        return;
     }
     int num = 0;
 

@@ -83,6 +83,7 @@ struct GateMatePacker
     void repack_cpe();
     void repack_ram();
     void reassign_clocks();
+    void reassign_partition_clocks();
     void copy_clocks();
     void assign_clocks();
     void find_regions();

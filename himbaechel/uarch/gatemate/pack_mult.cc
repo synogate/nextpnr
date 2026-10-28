@@ -573,6 +573,7 @@ void GateMatePacker::pack_mult()
         // we also constrain it to proper Z location
         auto *root = m.cols[0].b_passthru.upper;
         root->cluster = root->name;
+        uarch->multiplier_clusters.insert(root->name);
         root->region = mult->region;
         root->constr_abs_z = true;
         root->constr_z = CPE_LT_U_Z;

@@ -34,11 +34,85 @@ std::string get_die_name(int total_dies, int die)
 void GateMatePacker::pack_io()
 {
     log_info("Packing IOs..\n");
+    // The stand-ins on the ports of a partition go outside its area, so routing it keeps the ways across the
+    // edge free for the design importing it
+    IdString outside;
+    if (uarch->as_partition) {
+        uarch->find_partition_area();
+        const BoundingBox &area = uarch->partition_area;
+        if (area.x0 >= 0) {
+            outside = ctx->id("partition:outside");
+            ctx->createRectangularRegion(outside, 0, 0, -1, -1); // empty, filled below
+            for (BelId bel : ctx->getBels()) {
+                Loc loc = ctx->getBelLocation(bel);
+                if (loc.x < area.x0 || loc.x > area.x1 || loc.y < area.y0 || loc.y > area.y1)
+                    ctx->addBelToRegion(outside, bel);
+            }
+        }
+    }
     // Trim nextpnr IOBs - assume IO buffer insertion has been done in synthesis
     for (auto &port : ctx->ports) {
         if (!ctx->cells.count(port.first))
             log_error("Port '%s' doesn't seem to have a corresponding top level IO.\n", ctx->nameOf(port.first));
         CellInfo *ci = ctx->cells.at(port.first).get();
+
+        if (uarch->as_partition && ci->type.in(ctx->id("$nextpnr_ibuf"), ctx->id("$nextpnr_obuf"))) {
+            // The port net stays without a driver (input) or without users (output), and unrouted, to be
+            // joined with the net outside where the partition is imported
+            NetInfo *net = ci->getPort(ci->type == ctx->id("$nextpnr_ibuf") ? id_O : id_I);
+            if (net && net->driver.cell && net->driver.cell->type.in(id_CC_IBUF, id_CC_LVDS_IBUF))
+                log_error("Port '%s' of a partition has an IO buffer.\n", ctx->nameOf(port.first));
+            port.second.net = net;
+            ci->disconnectPort(id_I);
+            ci->disconnectPort(id_O);
+            ctx->cells.erase(port.first);
+            // A constant output gets a net of its own, marked for the import to drive it from that design's
+            // constant (as detach_partition_ports marks the partition's constant nets)
+            if (net && (net == net_PACKER_GND || net == net_PACKER_VCC)) {
+                NetInfo *own = ctx->createNet(ctx->idf("%s$partition_const", ctx->nameOf(port.first)));
+                own->attrs[ctx->id("GATEMATE_CONSTANT")] = std::string(net == net_PACKER_VCC ? "1" : "0");
+                port.second.net = own;
+                continue;
+            }
+            // A clock input keeps its global buffer until after routing, so the clock's dedicated routing is
+            // kept free for when the design importing the partition drives it (detach_partition_clocks)
+            bool is_clock = false;
+            if (net)
+                for (auto &usr : net->users)
+                    if (usr.cell->type == id_CC_BUFG && usr.port == id_I && usr.cell->getPort(id_O)) {
+                        uarch->partition_clocks[usr.cell->getPort(id_O)->name] = net->name;
+                        is_clock = true;
+                    }
+            // Each port gets a cell standing in for the design outside until after routing, so routing the
+            // partition leaves a way in to its sinks and out from its drivers: a register driving an input (a
+            // LUT would be merged into the CPE of a register it feeds) and a LUT on an output (a register
+            // would be merged into the CPE driving it)
+            bool is_input = ci->type == ctx->id("$nextpnr_ibuf");
+            if (net && !is_clock && (is_input || net->driver.cell)) {
+                IdString name = ctx->idf("%s$partition_port", ctx->nameOf(port.first));
+                CellInfo *dummy;
+                if (is_input) {
+                    dummy = ctx->createCell(name, id_CC_DFF);
+                    for (IdString p : {id_D, id_CLK, id_EN, id_SR})
+                        dummy->addInput(p);
+                    dummy->addOutput(id_Q);
+                    dummy->connectPort(id_Q, net);
+                } else {
+                    dummy = ctx->createCell(name, id_CC_LUT1);
+                    dummy->addInput(id_I0);
+                    dummy->addOutput(id_O);
+                    dummy->params[id_INIT] = Property(1, 2); // an inverter, which is not optimised away
+                    dummy->connectPort(id_I0, net);
+                }
+                dummy->attrs[ctx->id("keep")] = Property(1);
+                uarch->partition_port_cells.insert(dummy->name);
+                if (outside != IdString())
+                    ctx->constrainCellToRegion(dummy->name, outside);
+            }
+            continue;
+        }
+        if (uarch->as_partition && ci->type == ctx->id("$nextpnr_iobuf"))
+            log_error("Partitions can not have inout ports ('%s').\n", ctx->nameOf(port.first));
 
         PortRef top_port;
         top_port.cell = nullptr;

@@ -60,7 +60,7 @@ struct GateMateImpl : HimbaechelAPI
     BoundingBox getRouteBoundingBox(WireId src, WireId dst) const override;
     void expandBoundingBox(BoundingBox &bb) const override;
     bool checkPipAvail(PipId pip) const override;
-    bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override { return checkPipAvail(pip); };
+    bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override;
     // Whether a pip is usable at all with the chosen options, regardless of placement
     bool pip_allowed_by_options(PipId pip) const;
 
@@ -185,6 +185,7 @@ struct GateMateImpl : HimbaechelAPI
     pool<IdString> multiplier_a_passthru_lowers;
     pool<IdString> multiplier_a_passthru_uppers;
     pool<IdString> multiplier_zero_drivers;
+    pool<ClusterId> multiplier_clusters;
     std::vector<bool> used_cpes;
     std::vector<uint32_t> pip_data;
     std::vector<uint32_t> pip_mask;
@@ -204,6 +205,40 @@ struct GateMateImpl : HimbaechelAPI
     pool<IdString> scopenames;
     dict<IdString, IdString> scope_regions; // scope name -> floorplanning region
 
+    // Partitions (partition.cc). With as_partition the top level ports stay as unrouted nets instead of
+    // IO pads, so the result can be imported into another design with --vopt partition.
+    bool as_partition = false;
+    // Replace the blackbox instances named by --vopt partition=<inst>:<file>[@dx,dy] with the placed and
+    // routed partitions from those files, moved by (dx, dy) tiles and locked
+    void import_partitions();
+    // Store what the bitstream needs beyond the netlist and routing as cell attributes, for a later import
+    void save_partition_attrs();
+    // A partition's global clock nets (by name) and the port nets clocking them, and taking the global buffers
+    // out again after routing, leaving the clock sinks on the port nets
+    dict<IdString, IdString> partition_clocks;
+    // Registers standing in for the design outside a partition on its ports while it is routed
+    pool<IdString> partition_port_cells;
+    void detach_partition_ports();
+    // The cells detach_partition_ports takes out: stand-ins, clocking and constant drivers
+    pool<IdString> partition_detached_cells() const;
+    // The area of a partition (its floorplan regions), outside which the routing it keeps must not go, and the
+    // nets that may, as they are taken out after routing
+    BoundingBox partition_area{-1, -1, -1, -1};
+    pool<IdString> partition_free_nets;
+    // The tiles of the CPEs fixed next to IOs and clocking, which a partition keeps free
+    pool<int> partition_io_tiles;
+    // The IOs a partition's CCF (that of the design importing it) names; only their CPEs are kept free then
+    pool<int> partition_ccf_tiles;
+    void find_partition_area();
+    void find_partition_free_nets();
+    // With partition_open the design may place cells in the free tiles of the partitions' areas too
+    bool partition_open = false;
+    // Cells imported from partitions, and the tiles of the rectangles they cover, where no other cell may go
+    pool<IdString> partition_cells;
+    pool<int> partition_tiles;
+    // Tiles the locked routing of partitions passes through, where the fixed multiplier paths may be taken
+    pool<int> partition_routed_tiles;
+
   private:
     bool getChildPlacement(const BaseClusterInfo *cluster, Loc root_loc,
                            std::vector<std::pair<CellInfo *, BelId>> &placement) const;
@@ -211,6 +246,9 @@ struct GateMateImpl : HimbaechelAPI
     void write_bitstream(const std::string &device, const std::string &filename);
 
     void parse_ccf(const std::string &filename);
+    void import_partition(const std::string &spec);
+    void restore_partition_attrs(CellInfo *ci);
+    void open_partition_area(const BoundingBox &area);
 
     void assign_cell_info();
     void check_regions();

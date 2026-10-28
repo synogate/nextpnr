@@ -787,7 +787,7 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
         ram_io_type = id_CPE_RAMO;
 
     if (o_net) {
-        if (o_net != net_PACKER_GND && o_net != net_PACKER_VCC &&
+        if (o_net != net_PACKER_GND && o_net != net_PACKER_VCC && o_net->driver.cell &&
             o_net->driver.cell->getPort(o_net->driver.port)->users.entries() == 1 &&
             o_net->driver.cell->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_MX2 /*, id_CC_DFF, id_CC_DLT*/) &&
             // A LUT taken into a fixed CPE outside its region would leave the region
@@ -897,6 +897,15 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
     }
 
     // Constrain RAMIO
+    // The CPEs of an IO or a RAM are fixed; a partition imported there would hold them
+    auto bind_fixed = [&](BelId bel, CellInfo *ci) {
+        if (CellInfo *other = ctx->getBoundBelCell(bel))
+            log_error("'%s' needs bel %s, which '%s' uses already%s.\n", ctx->nameOf(cell), ctx->nameOfBel(bel),
+                      ctx->nameOf(other),
+                      uarch->partition_cells.count(other->name) ? " (a partition must not cover the CPEs of IOs)"
+                                                                : "");
+        ctx->bindBel(bel, ci, PlaceStrength::STRENGTH_FIXED);
+    };
     if (place) {
         cell->constr_children.push_back(cpe_ramio);
         cpe_ramio->cluster = cell->cluster;
@@ -904,8 +913,7 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
         cpe_ramio->constr_abs_z = false;
         cpe_ramio->constr_z = PLACE_DB_CONSTR + (oPort != IdString() ? oPort.index : iPort.index);
     } else {
-        BelId b = ctx->getBelByLocation(cpe_loc);
-        ctx->bindBel(b, cpe_ramio, PlaceStrength::STRENGTH_FIXED);
+        bind_fixed(ctx->getBelByLocation(cpe_loc), cpe_ramio);
     }
     // Constrain CPE LUT tree
     if (place) {
@@ -915,8 +923,7 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
         cpe_half->constr_abs_z = false;
         cpe_half->constr_z = -4;
     } else {
-        BelId b = ctx->getBelByLocation(Loc(cpe_loc.x, cpe_loc.y, cpe_loc.z - 4));
-        ctx->bindBel(b, cpe_half, PlaceStrength::STRENGTH_FIXED);
+        bind_fixed(ctx->getBelByLocation(Loc(cpe_loc.x, cpe_loc.y, cpe_loc.z - 4)), cpe_half);
     }
     // Constrain CPE FF
     /*
