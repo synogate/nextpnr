@@ -60,6 +60,7 @@ struct GraphicElement
         STYLE_HIDDEN,   // Only display when object is selected or highlighted
         STYLE_INACTIVE, // Render using low-contrast color
         STYLE_ACTIVE,   // Render using high-contast color
+        STYLE_ROUTING,  // Used routing, less prominent than STYLE_ACTIVE (so that used bels stand out)
 
         // UI highlight groups
         STYLE_HIGHLIGHTED0,

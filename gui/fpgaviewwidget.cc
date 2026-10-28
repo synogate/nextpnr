@@ -57,6 +57,7 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     colors_.hidden = QColor("#606060");
     colors_.inactive = QColor("#303030");
     colors_.active = QColor("#f0f0f0");
+    colors_.routing = QColor("#686868");
     colors_.selected = QColor("#ff6600");
     colors_.hovered = QColor("#906030");
     colors_.highlight[0] = QColor("#6495ed");
@@ -272,7 +273,10 @@ void FPGAViewWidget::renderDecal(LineShaderData &out, PickQuadTree::BoundingBox 
     // elements of its decal (the background, such as unused connections inside a bel).
     auto graphics = ctx_->getDecalGraphics(decal.decal);
     bool active = std::any_of(graphics.begin(), graphics.end(),
-                              [](const GraphicElement &el) { return el.style == GraphicElement::STYLE_ACTIVE; });
+                              [](const GraphicElement &el) {
+                                  return el.style == GraphicElement::STYLE_ACTIVE ||
+                                         el.style == GraphicElement::STYLE_ROUTING;
+                              });
     std::vector<GraphicElement> heads;
     for (auto &el : graphics)
         arrowHead(graphics, el, heads);
@@ -290,8 +294,10 @@ int FPGAViewWidget::archStyle(GraphicElement::style_t style)
         return 0;
     case GraphicElement::STYLE_INACTIVE:
         return 1;
-    case GraphicElement::STYLE_ACTIVE:
+    case GraphicElement::STYLE_ROUTING:
         return 2;
+    case GraphicElement::STYLE_ACTIVE:
+        return 3;
     default:
         return -1;
     }
@@ -491,7 +497,7 @@ void FPGAViewWidget::paintGL()
     float scale = 1.0f / thick1Px; // pixels per coordinate unit
     if (scale >= lodScale_[VIEW_LEVEL])
         requestView();
-    const QColor *archColors[ARCH_STYLES] = {&colors_.frame, &colors_.inactive, &colors_.active};
+    const QColor *archColors[ARCH_STYLES] = {&colors_.frame, &colors_.inactive, &colors_.routing, &colors_.active};
     for (int style = 0; style < ARCH_STYLES; style++)
         for (int layer = 0; layer < ARCH_LAYERS; layer++)
             for (int range = 0; range < LOD_RANGES; range++)

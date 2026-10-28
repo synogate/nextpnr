@@ -112,6 +112,7 @@ PYBIND11_EMBEDDED_MODULE(MODULE_NAME, m)
             .value("STYLE_HIDDEN", GraphicElement::STYLE_HIDDEN)
             .value("STYLE_INACTIVE", GraphicElement::STYLE_INACTIVE)
             .value("STYLE_ACTIVE", GraphicElement::STYLE_ACTIVE)
+            .value("STYLE_ROUTING", GraphicElement::STYLE_ROUTING)
             .export_values();
 
     py::class_<GraphicElement>(m, "GraphicElement")

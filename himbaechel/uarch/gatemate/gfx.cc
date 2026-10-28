@@ -1131,8 +1131,16 @@ static void connect(std::vector<GraphicElement> &g, GraphicElement::style_t styl
         lod(g, from, LOD_TILE);
         return;
     }
+    // Zoomed out, used routing between tiles is drawn less prominently than the tiles' contents, so
+    // that the used CPEs stand out; from the zoom that shows the connections inside the tiles, as
+    // used
+    auto routing_style = style == GraphicElement::STYLE_ACTIVE && !same_tile ? GraphicElement::STYLE_ROUTING : style;
     if (is_global(S, D)) {
+        global_stub(g, routing_style, D);
+        lod(g, from, 0, LOD_TILE);
+        size_t near = g.size();
         global_stub(g, style, D);
+        lod(g, near, LOD_TILE);
         return;
     }
     // Through the channels: down the source's lane to the bottom channel of its row, along it to
@@ -1163,7 +1171,7 @@ static void connect(std::vector<GraphicElement> &g, GraphicElement::style_t styl
     if (!same_tile) {
         // Zoomed out, where the channels are too close to tell apart: the shortest such path
         size_t simple = g.size();
-        polyline(g, style, {S, Pt{D.x, S.y}, D});
+        polyline(g, routing_style, {S, Pt{D.x, S.y}, D});
         lod(g, simple, 0, LOD_TILE);
     }
 }

@@ -43,6 +43,8 @@ struct SVGWriter
             return "#C0C0C0";
         case GraphicElement::STYLE_ACTIVE:
             return "#FF3030";
+        case GraphicElement::STYLE_ROUTING:
+            return "#FF9090";
         default:
             return "#000";
         }

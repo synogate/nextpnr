@@ -244,8 +244,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     // The range of an element, or -1 if it is never drawn
     static int lodRange(const GraphicElement &el);
     static bool lodVisible(int range, float scale);
-    // The styles of Arch graphics: STYLE_FRAME, STYLE_INACTIVE and STYLE_ACTIVE
-    static constexpr int ARCH_STYLES = 3;
+    // The styles of Arch graphics, in the order they are drawn: STYLE_FRAME, STYLE_INACTIVE,
+    // STYLE_ROUTING and STYLE_ACTIVE
+    static constexpr int ARCH_STYLES = 4;
     static int archStyle(GraphicElement::style_t style);
     // The finest levels of detail, from VIEW_LEVEL on, are drawn only for the area in view (and
     // around it), and drawn again when the view leaves that area: for the whole chip, there may be
@@ -286,6 +287,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         QColor hidden;
         QColor inactive;
         QColor active;
+        QColor routing;
         QColor selected;
         QColor hovered;
         QColor highlight[8];
