@@ -28,11 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // pack.cc optimize_lut2: a LUT input tied to a constant is disconnected, but the LUT
-    // configuration is not updated for the constant.
-    // Tests: GateMateLut2Test.constant_i0/i1, GateMateL2T4Test.constant_inputs
-    LUT_CONSTANT_INPUT,
-
     // pack.cc cleanup: once the original users of a constant net are folded away (e.g. constant
     // register enables and resets), the constant driver is disconnected; constants created later
     // in the cleanup (LUTs or registers with a constant output) are left undriven.

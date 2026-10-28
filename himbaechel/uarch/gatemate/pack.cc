@@ -189,8 +189,10 @@ void GateMatePacker::optimize_lut2(CellInfo &ci, IdString i0, IdString i1, IdStr
     }
 
     val = lut2_apply_constant_inputs(val, d0_const, d1_const);
+    if (d0_const != -1 || d1_const != -1)
+        ci.params[init] = Property(val, 4);
 
-    if (ci.getPort(i0) == ci.getPort(i1)) {
+    if (ci.getPort(i0) && ci.getPort(i0) == ci.getPort(i1)) {
         val = lut2_same_inputs(val);
         ci.params[init] = Property(val, 4);
         ci.disconnectPort(i1);

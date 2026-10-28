@@ -163,8 +163,7 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
         bool with_rams = GetParam().rams;
         auto avoiding_bug = [&](KnownBug bug) { return avoiding && avoid(bug); };
         // Constants in LUT inputs, and constants created while the packer simplifies the netlist
-        bool no_lut_constants =
-                avoiding_bug(KnownBug::LUT_CONSTANT_INPUT) || avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
+        bool no_lut_constants = avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
         bool no_constants = avoiding_bug(KnownBug::CONSTANT_DRIVER_DROPPED);
         // A net on the carry inputs of several adders
         bool no_shared_carry_inputs = avoiding_bug(KnownBug::CARRY_TO_SEVERAL_CARRY_INPUTS);
