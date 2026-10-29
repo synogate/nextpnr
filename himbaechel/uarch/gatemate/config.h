@@ -55,7 +55,7 @@ struct CfgLoc
     int y;
 
     inline bool operator==(const CfgLoc &other) const { return other.die == die && other.x == x && other.y == y; }
-    inline bool operator!=(const CfgLoc &other) const { return other.die != die || x != other.x || y == other.y; }
+    inline bool operator!=(const CfgLoc &other) const { return !(*this == other); }
 
     inline bool operator<(const CfgLoc &other) const
     {
