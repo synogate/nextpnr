@@ -62,9 +62,17 @@ po::options_description GateMateImpl::getUArchOptions()
                            "with as-partition: write the partition placed only, after placing (run with --no-route); "
                            "the design importing it routes its nets");
     specific.add_options()("partition", po::value<std::vector<std::string>>(),
-                           "<inst>:<file>[@dx,dy]: replace the blackbox instance <inst> with the placed (and routed) "
-                           "partition from <file> (written with as-partition), moved by dx, dy tiles; only the "
-                           "connections to the rest of the design are routed again");
+                           "<inst>:<file>[@dx,dy][,key=value..]: replace the blackbox instance <inst> with the placed "
+                           "(and routed) partition from <file> (written with as-partition), moved by dx, dy tiles; "
+                           "keys load, place and route as partition-load, partition-place and partition-route");
+    specific.add_options()("partition-load", po::value<std::string>(),
+                           "what imported partitions bring: routing (default for routed files) or placement");
+    specific.add_options()("partition-place", po::value<std::string>(),
+                           "imported partitions' cells after placing: repair (default; the passes after placement may "
+                           "move them) or locked");
+    specific.add_options()("partition-route", po::value<std::string>(),
+                           "imported partitions' routing: open (default; the router and the repairs may change it), "
+                           "repair (only the repairs after routing) or locked");
     specific.add_options()("partition-open",
                            "let the design place cells in the areas of imported partitions too, everywhere but the "
                            "tiles of their cells (by default it keeps out of their whole rectangles)");
@@ -965,6 +973,7 @@ void GateMateImpl::reassign_cplines(NetInfo *ni, const dict<WireId, PipMap> &net
 
 void GateMateImpl::postRoute()
 {
+    release_partition_routing();
     if (route_runs > 0)
         route_learning(route_runs);
     if (net_repair > 0)

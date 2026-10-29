@@ -22,9 +22,10 @@
 // A partition is a design implemented on its own with --vopt as-partition, so that its top level ports
 // are nets without IO pads: an input port net has no driver, an output port net no users, and neither
 // is routed. Another design instantiates it as a blackbox; the import replaces that instance with the
-// partition's cells and nets, moved by whole tiles. The cells and the routing of the nets inside the
-// partition are locked; the port nets join the nets on the instance's ports and are routed with the
-// rest of the design, as are clocks, which reach the partition through its ports.
+// partition's cells and nets, moved by whole tiles. The cells are locked while placing, and the routing of
+// the nets inside the partition is bound; the options load, place and route say what is taken over and what
+// may change after. The port nets join the nets on the instance's ports and are routed with the rest of the
+// design, as are clocks, which reach the partition through its ports.
 //
 // A partition is written as routed, before postRoute turns bridges and CP lines into cells and renames
 // the LUT inputs after the CPE inputs their routing reaches; that happens once the ports are routed.
@@ -92,9 +93,39 @@ void GateMateImpl::import_partition(const std::string &spec)
     if (colon == std::string::npos || colon == 0)
         log_error("Invalid partition '%s', expected <inst>:<file>[@dx,dy].\n", spec.c_str());
     std::string inst_name = spec.substr(0, colon), filename = spec.substr(colon + 1);
+    // The options, from --vopt partition-<key> and overridden by ,<key>=<value> at the end of the spec
+    dict<std::string, std::string> options;
+    for (auto key : {"load", "place", "route"}) {
+        std::string option = stringf("partition-%s", key);
+        if (ctx->args.options.count(option))
+            options[key] = ctx->args.options[option].as<std::string>();
+    }
+    static const std::regex option_re(R"(,([a-z]+)=([a-z]+)$)");
+    std::smatch m;
+    pool<std::string> given; // (read from the end, the last one given counts)
+    while (std::regex_search(filename, m, option_re)) {
+        if (given.insert(m[1]).second)
+            options[m[1]] = m[2];
+        filename = filename.substr(0, m.position(0));
+    }
+    auto option = [&](const char *key, std::initializer_list<const char *> values) {
+        auto found = options.find(key);
+        if (found == options.end())
+            return std::string();
+        for (auto v : values)
+            if (found->second == v)
+                return found->second;
+        log_error("Invalid %s=%s for partition '%s'.\n", key, found->second.c_str(), inst_name.c_str());
+    };
+    for (auto &o : options)
+        if (o.first != "load" && o.first != "place" && o.first != "route")
+            log_error("Unknown option '%s' for partition '%s' (load, place and route).\n", o.first.c_str(),
+                      inst_name.c_str());
+    std::string load = option("load", {"routing", "placement"});
+    bool place_locked = option("place", {"repair", "locked"}) == "locked";
+    std::string route = option("route", {"open", "repair", "locked"});
     int dx = 0, dy = 0;
     static const std::regex offset_re(R"(@(-?\d+),(-?\d+)$)");
-    std::smatch m;
     if (std::regex_search(filename, m, offset_re)) {
         dx = std::stoi(m[1]);
         dy = std::stoi(m[2]);
@@ -132,6 +163,15 @@ void GateMateImpl::import_partition(const std::string &spec)
         log_error("Partition file '%s' is not routed (for a partition placed only, implement it with --vopt "
                   "partition-unrouted).\n",
                   filename.c_str());
+    if (unrouted && load == "routing")
+        log_error("Partition file '%s' has no routing to load (it was written with partition-unrouted).\n",
+                  filename.c_str());
+    // Without routing, the route option has nothing to act on
+    bool load_routing = !unrouted && load != "placement";
+    if (route.empty())
+        route = "open";
+    log_info("    load=%s place=%s route=%s\n", load_routing ? "routing" : "placement",
+             place_locked ? "locked" : "repair", load_routing ? route.c_str() : "-");
     if (!setting("as-partition"))
         log_error("Partition file '%s' was not implemented with --vopt as-partition.\n", filename.c_str());
 
@@ -279,6 +319,8 @@ void GateMateImpl::import_partition(const std::string &spec)
         if (nn != net_names.end()) {
             for (auto &attr : nn->second.second->operator[]("attributes").object_items()) {
                 if (attr.first == "ROUTING") {
+                    if (!load_routing)
+                        continue;
                     std::vector<std::string> strs;
                     std::string route = attr.second.string_value();
                     boost::split(strs, route, boost::is_any_of(";"));
@@ -342,7 +384,7 @@ void GateMateImpl::import_partition(const std::string &spec)
         ctx->bindBel(moved, ci, STRENGTH_LOCKED);
         auto strength = ci->attrs.find(id_BEL_STRENGTH);
         // (files written before the clusters were stored keep their cells locked: the passes would not see them)
-        partition_strength[ci->name] = strength != ci->attrs.end() && setting("partition-clusters")
+        partition_strength[ci->name] = strength != ci->attrs.end() && setting("partition-clusters") && !place_locked
                                                ? PlaceStrength(strength->second.as_int64())
                                                : STRENGTH_LOCKED;
         ci->attrs.erase(id_NEXTPNR_BEL);
@@ -471,8 +513,9 @@ void GateMateImpl::import_partition(const std::string &spec)
     }
 
     // Bind the routing of the nets inside the partition and check it reaches every sink; a net whose
-    // routing can not be moved is routed again. It is bound as the router binds its routing, so the router
-    // and the repairs after it may change it, but for the fixed multiplier paths (route_mult), locked as there.
+    // routing can not be moved is routed again. With route=open it is bound as the router binds its routing, so
+    // the router and the repairs after it may change it, but for the fixed multiplier paths (route_mult), locked
+    // as there; otherwise it is locked (and route=repair releases it after routing).
     int locked = 0, rerouted = 0;
     for (auto &r : routing) {
         NetInfo *net = ctx->nets.at(r.first).get();
@@ -482,7 +525,7 @@ void GateMateImpl::import_partition(const std::string &spec)
         bool fixed = net->driver.port == id_OUT &&
                      (multiplier_a_passthru_lowers.count(drv) || multiplier_a_passthru_uppers.count(drv) ||
                       multiplier_zero_drivers.count(drv));
-        PlaceStrength strength = fixed ? STRENGTH_LOCKED : STRENGTH_WEAK;
+        PlaceStrength strength = fixed || route != "open" ? STRENGTH_LOCKED : STRENGTH_WEAK;
         if (src == WireId())
             why = "no source wire";
         else if (NetInfo *other = ctx->getBoundWireNet(src))
@@ -520,8 +563,12 @@ void GateMateImpl::import_partition(const std::string &spec)
                 if (w.second.pip != PipId())
                     partition_routed_tiles.insert(w.second.pip.tile);
             }
-            if (!fixed)
+            if (!fixed && route == "open")
                 partition_nets.insert(net->name);
+            else
+                partition_locked_nets.insert(net->name);
+            if (!fixed && route == "repair")
+                partition_repair_nets.insert(net->name);
             locked++;
             continue;
         }
@@ -530,7 +577,7 @@ void GateMateImpl::import_partition(const std::string &spec)
             log_info("    routing net '%s' again: %s\n", ctx->nameOf(net), why.c_str());
         ctx->ripupNet(net->name);
     }
-    if (unrouted)
+    if (!load_routing)
         log_info("    %d cells, placed only: their nets are routed with the design.\n", num_cells);
     else
         log_info("    %d cells, %d nets with imported routing, %d nets to route again (%d pips on other kinds of "
@@ -550,6 +597,22 @@ void GateMateImpl::release_partitions()
     }
     // The cells of the design may go into the partitions' areas now; the partitions' routing gives way to them
     partition_tiles.clear();
+}
+
+void GateMateImpl::release_partition_routing()
+{
+    // route=repair: the routing the router kept is the repairs' to change, as the router's own
+    for (auto name : partition_repair_nets) {
+        auto found = ctx->nets.find(name);
+        if (found == ctx->nets.end())
+            continue;
+        for (auto &w : found->second->wires)
+            if (w.second.strength == STRENGTH_LOCKED)
+                w.second.strength = STRENGTH_WEAK;
+        prerouted_nets.erase(name);
+        partition_locked_nets.erase(name);
+    }
+    partition_repair_nets.clear();
 }
 
 void GateMateImpl::open_partition_area(const BoundingBox &area)

@@ -85,7 +85,7 @@ int GateMateImpl::replicate_drivers(int min_fanout, bool all)
         CellInfo *ci = cell.second.get();
         NetInfo *out = ci->getPort(id_OUT);
         if (ci->type != id_CPE_L2T4 || ci->bel == BelId() || ci->cluster != ClusterId() || !out ||
-            int(out->users.entries()) < min_fanout)
+            int(out->users.entries()) < min_fanout || partition_locked_nets.count(out->name))
             continue;
         // Only LUT trees fed through their first level, whose function is all in INIT_L00/L01/L10
         bool plain = true;

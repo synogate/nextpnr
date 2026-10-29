@@ -238,12 +238,17 @@ struct GateMateImpl : HimbaechelAPI
     // while placing
     pool<IdString> partition_cells;
     pool<int> partition_tiles;
-    // The placement strength the partition's cells had when it was implemented; they are locked while placing
-    // and get it back after, so the passes after placement may change the partitions too
+    // The placement strength the partition's cells get after placing (place=repair: the one they had when it was
+    // implemented, so the passes after placement may change them; place=locked: locked); locked while placing
     dict<IdString, PlaceStrength> partition_strength;
     void release_partitions();
-    // Nets of partitions whose routing was imported (weakly bound, open to the router and the repairs)
+    // Nets of partitions whose routing was imported: route=open, weakly bound, open to the router and the
+    // repairs; route=repair, locked for the router and released to the repairs after it (release_partition_routing);
+    // route=locked, locked throughout. The passes before routing leave the locked ones as they are.
     pool<IdString> partition_nets;
+    pool<IdString> partition_repair_nets;
+    pool<IdString> partition_locked_nets;
+    void release_partition_routing();
     // Tiles the locked routing of partitions passes through, where the fixed multiplier paths may be taken
     pool<int> partition_routed_tiles;
 

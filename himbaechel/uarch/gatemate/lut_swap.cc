@@ -132,6 +132,12 @@ int GateMateImpl::swap_lut_inputs(bool all)
         CellInfo *ci = cell.second.get();
         if (!plain_tree(ci))
             continue;
+        // (not where the routing of a partition is locked)
+        bool locked = false;
+        for (auto &port : ci->ports)
+            locked |= port.second.net && partition_locked_nets.count(port.second.net->name);
+        if (locked)
+            continue;
         eligible++;
         if (!all) {
             auto costs = lut_tree_costs(ci, tmg, false);

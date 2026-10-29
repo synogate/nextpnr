@@ -2,10 +2,11 @@
 
 A partition is a module placed and routed on its own. Another design can then use it as a finished block. The
 partition's cells and the routing inside it are taken over, optionally moved by whole tiles. The placer keeps
-them where they are and places only the rest of the design. After that, the partition is part of the design
-like any other logic: the passes after placement (the placement and routing repairs, LUT input swaps, driver
-replication) and the router may change its cells and routing too, where that helps. One partition file can be
-used several times, at different places.
+them where they are and places only the rest of the design. After that, by default, the partition is part of the
+design like any other logic: the passes after placement (the placement and routing repairs, LUT input swaps,
+driver replication) and the router may change its cells and routing too, where that helps. How much of it is
+taken over and what may change can be set per partition (see Options). One partition file can be used several
+times, at different places.
 
 ## Flow
 
@@ -63,6 +64,36 @@ used several times, at different places.
    design. Ports that are one net inside the partition (two outputs of the same signal, or a feedthrough) are
    made one net outside too. Ports left unconnected on the instance stay unconnected.
 
+## Options
+
+Each partition takes options as `,key=value` after the file (and the offset). `--vopt partition-<key>=<value>`
+sets them for all partitions, and the options of one partition override that:
+
+```
+--vopt partition=u_core:core_pnr.json@4,0,place=locked,route=repair
+--vopt partition=u_gpu:gpu_pnr.json,load=placement --vopt partition-route=locked
+```
+
+| Key | Values | |
+|---|---|---|
+| `load` | `routing` (default), `placement` | `placement` takes only the placement from the file; the partition's nets are routed with the design. A file written with `partition-unrouted` has no routing, so `placement` is the default there and `routing` is an error. |
+| `place` | `repair` (default), `locked` | The placer always keeps the cells where they are. With `repair` the passes after placement may move them (as far as the clusters allow), with `locked` they stay where they are. |
+| `route` | `open` (default), `repair`, `locked` | `open`: the routing is the router's starting point; it keeps what does not conflict, and other nets may pass through the partition's wires, which the router then negotiates. `repair`: locked while routing (no other net uses its wires, the router does not change it), then open to the repairs after routing. `locked`: stays as loaded; the LUT input swaps and driver replication before routing leave the cells on such nets alone too. |
+
+The fixed routing of the partition's multipliers stays locked with every option.
+
+On the dmg_soc CPU partition (same step 1 for all), step 2 gave:
+
+| Options | clk0 | Router | Whole run | Partition pips changed |
+|---|---|---|---|---|
+| `place=locked,route=locked` | 23.13 MHz | 51 s, 155 iterations | 270 s | none |
+| `route=repair` | 24.44 MHz | 47 s, 155 iterations | 412 s | 1 % |
+| `route=open` | 24.50 MHz | 46 s, 94 iterations | 800 s | 29 % |
+| `load=placement` | 24.75 MHz | 59 s, 221 iterations | 503 s | (all routed again) |
+
+The router takes about the same time with every option; the time goes into the repairs after routing, which
+have more to work on the more of the partition they may change.
+
 ## Placed only
 
 With `--vopt partition-unrouted` (which implies `as-partition`) and `--no-route`, step 1 stops after placing and
@@ -74,8 +105,8 @@ the free tiles of its area, so `partition-open` opens all of them.
 
 Step 1 is faster and the router is free to route the partition around the logic of the importing design. The
 partition's internal timing is then only estimated in step 1, and step 2 routes more. On the dmg_soc CPU
-partition, step 1 took 60 s, and step 2 reached 24.75 MHz on clk0, about the same as with the routed partition.
-The router needed 221 iterations instead of 94, but almost the same time (104 s instead of 95 s).
+partition, step 1 took 60 s, and step 2 reached 24.75 MHz on clk0, about the same as with the routed partition
+(see Options). `load=placement` does the same with a routed file.
 
 ## Moving
 
