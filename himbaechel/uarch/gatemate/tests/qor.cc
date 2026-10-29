@@ -532,6 +532,37 @@ TEST_P(GateMateClockInversionTest, global_clock_reaches_registers_and_rams)
     }
 }
 
+// The folded inversion keeps the function: the registers and latches have their clock polarity
+// in C_CPE_CLK by the time the inverters are folded, so flipping CLK_INV or G_INV there did nothing
+// and they took the wrong edge.
+TEST_P(GateMateClockInversionTest, function_is_kept)
+{
+    bool inverter = GetParam();
+    EXPECT_TRUE(implementation_matches_reference(
+            [&] {
+                NetInfo *clk = clock_pin();
+                NetInfo *nclk = inverter ? lut1("inv", 0b01, clk) : clk;
+                CellInfo *ff = dff("ff", lut2("x", 0b0110, input("a"), input("b")), nclk);
+                ff->params[id_CLK_INV] = Property(!inverter, 1);
+                output("q", ff->getPort(id_Q));
+                CellInfo *lt = dlt("lt", input("c"), nclk);
+                lt->params[id_G_INV] = Property(!inverter, 1);
+                output("ql", lt->getPort(id_Q));
+                CellInfo *ram = ctx->createCell(ctx->id("ram"), id_CC_BRAM_20K);
+                ram->params[id_RAM_MODE] = Property("TDP");
+                ram->params[id_A_RD_WIDTH] = Property(1, 32);
+                ram->params[id_A_WR_WIDTH] = Property(1, 32);
+                ram->params[id_A_CLK_INV] = Property(!inverter, 1);
+                connect_input(ram, id_A_CLK, nclk);
+                connect_input(ram, id_A_EN, vcc());
+                connect_input(ram, id_A_WE, input("we"));
+                connect_input(ram, ctx->id("A_DI[0]"), input("d"));
+                connect_input(ram, ctx->id("A_ADDR[7]"), input("addr"));
+                output("qr", connect_output(ram, ctx->id("A_DO[0]")));
+            },
+            400));
+}
+
 INSTANTIATE_TEST_SUITE_P(Inversion, GateMateClockInversionTest, ::testing::Values(false, true),
                          [](const ::testing::TestParamInfo<bool> &info) {
                              return info.param ? "inverter_lut" : "inversion_in_cells";

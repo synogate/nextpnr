@@ -432,12 +432,14 @@ void GateMatePacker::optimize_ff()
 // these get the clock itself, which can then be a global clock, instead of a fabric signal
 void GateMatePacker::fold_clock_inverters()
 {
-    // The clock inputs that can be inverted in the cell, with the parameter that does it
+    // The clock inputs that can be inverted in the cell, with the parameter that does it. Registers
+    // and latches have their clock polarity in C_CPE_CLK already (dff_update_params in cleanup,
+    // which also renames the latch's G to CLK).
     auto inversion = [&](const PortRef &usr) -> IdString {
-        if (usr.cell->type.in(id_CC_DFF, id_CC_IDDR, id_CC_ODDR) && usr.port == id_CLK)
+        if (usr.cell->type.in(id_CC_DFF, id_CC_DLT) && usr.port == id_CLK)
+            return id_C_CPE_CLK;
+        if (usr.cell->type.in(id_CC_IDDR, id_CC_ODDR) && usr.port == id_CLK)
             return id_CLK_INV;
-        if (usr.cell->type == id_CC_DLT && usr.port == id_G)
-            return id_G_INV;
         if (usr.cell->type.in(id_CC_BRAM_20K, id_CC_BRAM_40K, id_CC_FIFO_40K)) {
             if (usr.port == id_A_CLK)
                 return id_A_CLK_INV;
@@ -460,7 +462,10 @@ void GateMatePacker::fold_clock_inverters()
                 clocks.push_back(usr);
         for (auto &usr : clocks) {
             IdString inv = inversion(usr);
-            usr.cell->params[inv] = Property(!bool_or_default(usr.cell->params, inv, false), 1);
+            if (inv == id_C_CPE_CLK) // 0b10 (clock) or 0b01 (inverted clock) for a clock from a net
+                usr.cell->params[inv] = Property(int_or_default(usr.cell->params, inv, 0b10) ^ 0b11, 2);
+            else
+                usr.cell->params[inv] = Property(!bool_or_default(usr.cell->params, inv, false), 1);
             usr.cell->disconnectPort(usr.port);
             usr.cell->connectPort(usr.port, in);
             folded++;
