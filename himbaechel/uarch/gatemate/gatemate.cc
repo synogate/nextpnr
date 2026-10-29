@@ -61,6 +61,9 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("partition-unrouted",
                            "with as-partition: write the partition placed only, after placing (run with --no-route); "
                            "the design importing it routes its nets");
+    specific.add_options()("partition-region", po::value<std::string>(),
+                           "with as-partition: X0,Y0,X1,Y1 (bel coordinates) is the partition's area, for the cells "
+                           "not floorplanned by the CCF");
     specific.add_options()("partition", po::value<std::vector<std::string>>(),
                            "<inst>:<file>[@dx,dy][,key=value..]: replace the blackbox instance <inst> with the placed "
                            "(and routed) partition from <file> (written with as-partition), moved by dx, dy tiles; "
@@ -245,9 +248,6 @@ void GateMateImpl::init_database(Arch *arch)
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
-    partition_unrouted = args.options.count("partition-unrouted") > 0;
-    as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
-    partition_open = args.options.count("partition-open") > 0;
     auto table = [&](const char *option) {
         if (!args.options.count(option))
             return false;

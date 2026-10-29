@@ -20,7 +20,9 @@
 #include "mainwindow.h"
 
 #include <QMessageBox>
+#include "../fpgaviewwidget.h"
 #include "../timingwidget.h"
+#include "partitionwidget.h"
 
 static void initMainResource() { Q_INIT_RESOURCE(nextpnr); }
 
@@ -37,6 +39,11 @@ MainWindow::MainWindow(std::unique_ptr<Context> context, CommandHandler *handler
     repairTimer = new QTimer(this);
     connect(repairTimer, &QTimer::timeout, this, &MainWindow::repair_progress);
     connect(task, &TaskManager::taskCanceled, this, [this] { repairTimer->stop(); });
+
+    partitionview = new PartitionWidget(fpgaView);
+    rightTabWidget->addTab(partitionview, "Partitions");
+    connect(this, &BaseMainWindow::contextChanged, partitionview, &PartitionWidget::newContext);
+    connect(this, &BaseMainWindow::updateTreeView, partitionview, &PartitionWidget::designChanged);
 
     createMenu();
 }
@@ -139,6 +146,18 @@ void MainWindow::onUpdateActions()
 {
     actionRepair->setEnabled(ctx->route_finish_pending);
     actionFinish->setEnabled(ctx->route_finish_pending);
+    // A partition written placed only is complete once placed
+    if (ctx->settings.count(ctx->id("partition-unrouted")))
+        actionRoute->setEnabled(false);
+}
+
+bool MainWindow::beforePack()
+{
+    QString error;
+    if (partitionview->apply(error))
+        return true;
+    QMessageBox::critical(this, "Partitions", error);
+    return false;
 }
 
 void MainWindow::new_proj()

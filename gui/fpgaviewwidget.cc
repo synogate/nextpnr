@@ -27,6 +27,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImageWriter>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWidget>
 
@@ -543,6 +544,7 @@ void FPGAViewWidget::paintGL()
 
     // Render ImGui
     QtImGui::newFrame();
+    drawOverlays();
     QMutexLocker lock(&rendererArgsLock_);
     if (!(rendererArgs_->hoveredDecal == DecalXY()) && rendererArgs_->hintText.size() > 0) {
         ImGui::SetNextWindowPos(ImVec2(rendererArgs_->x, rendererArgs_->y));
@@ -983,6 +985,11 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
     if (btn_right || btn_mid || (btn_left && shift)) {
         lastDragPos_ = event->pos();
     }
+    if (picking_ && btn_left && !shift) {
+        auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+        Q_EMIT picked(PICK_PRESS, world.x(), world.y());
+        return;
+    }
     if (btn_left && !shift) {
         auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
         auto closestOr = pickElement(world.x(), world.y());
@@ -1032,8 +1039,87 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (picking_) {
+        auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+        Q_EMIT picked(btn_left ? PICK_DRAG : PICK_MOVE, world.x(), world.y());
+        update();
+        return;
+    }
+
     hoverAt(EVENT_POS(event).x(), EVENT_POS(event).y());
     update();
+}
+
+void FPGAViewWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!picking_ || event->button() != Qt::LeftButton)
+        return;
+    auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+    Q_EMIT picked(PICK_RELEASE, world.x(), world.y());
+}
+
+void FPGAViewWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (picking_ && event->key() == Qt::Key_Escape) {
+        setPicking(false);
+        Q_EMIT pickCanceled();
+        return;
+    }
+    QOpenGLWidget::keyPressEvent(event);
+}
+
+void FPGAViewWidget::setPicking(bool on)
+{
+    picking_ = on;
+    if (on) {
+        setCursor(Qt::CrossCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setFocus();
+        // (nothing hovered while picking)
+        QMutexLocker locked(&rendererArgsLock_);
+        rendererArgs_->hoveredDecal = DecalXY();
+        rendererArgs_->hintText = "";
+        rendererArgs_->changed = true;
+    } else
+        unsetCursor();
+    pokeRenderer();
+    update();
+}
+
+void FPGAViewWidget::setOverlays(std::vector<Overlay> overlays)
+{
+    overlays_ = std::move(overlays);
+    update();
+}
+
+void FPGAViewWidget::drawOverlays()
+{
+    if (overlays_.empty())
+        return;
+    // World to screen: the view maps the plane linearly
+    QVector4D a = mouseToWorldCoordinates(0, 0), b = mouseToWorldCoordinates(width(), height());
+    if (a.x() == b.x() || a.y() == b.y())
+        return;
+    auto screen = [&](float x, float y) {
+        return ImVec2((x - a.x()) / (b.x() - a.x()) * width(), (y - a.y()) / (b.y() - a.y()) * height());
+    };
+    ImDrawList *list = ImGui::GetOverlayDrawList();
+    for (auto &o : overlays_) {
+        ImVec2 p0 = screen(o.x0, o.y0), p1 = screen(o.x1, o.y1);
+        ImVec2 min(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), max(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+        if (max.x < 0 || max.y < 0 || min.x > width() || min.y > height())
+            continue;
+        QColor c = o.color;
+        if (o.fill)
+            list->AddRectFilled(min, max, IM_COL32(c.red(), c.green(), c.blue(), c.alpha()));
+        else
+            list->AddRect(min, max, IM_COL32(c.red(), c.green(), c.blue(), c.alpha()), 0.0f, 0, 2.0f);
+        if (!o.label.isEmpty() && max.x - min.x > 20) {
+            QByteArray text = o.label.toUtf8();
+            list->AddText(ImVec2(min.x + 4, min.y + 3), IM_COL32(c.red(), c.green(), c.blue(), 255),
+                          text.constData());
+        }
+    }
 }
 
 // The element under the mouse at (x, y), with its hint, as hovered

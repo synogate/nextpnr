@@ -757,6 +757,27 @@ pool<IdString> GateMateImpl::partition_detached_cells() const
     return remove;
 }
 
+void GateMateImpl::add_partition_region(const std::string &spec)
+{
+    int x0, y0, x1, y1;
+    if (sscanf(spec.c_str(), "%d,%d,%d,%d", &x0, &y0, &x1, &y1) != 4)
+        log_error("Invalid partition-region '%s', expected X0,Y0,X1,Y1.\n", spec.c_str());
+    if (x0 > x1)
+        std::swap(x0, x1);
+    if (y0 > y1)
+        std::swap(y0, y1);
+    if (x0 < 0 || y0 < 0 || x1 >= ctx->getGridDimX() || y1 >= ctx->getGridDimY())
+        log_error("Partition region '%s' is out of range.\n", spec.c_str());
+    // A floorplan region as the CCF makes them, so it is the partition's area too
+    IdString region = ctx->id("floorplan:partition-region");
+    ctx->createRectangularRegion(region, x0, y0, x1, y1);
+    int scopes = 0;
+    for (IdString name : scopenames)
+        if (scope_regions.emplace(name, region).second)
+            scopes++;
+    log_info("Partition region X%dY%d to X%dY%d for %d scopes.\n", x0, y0, x1, y1, scopes);
+}
+
 void GateMateImpl::find_partition_area()
 {
     // The bounding box of the floorplan regions
@@ -946,6 +967,111 @@ void GateMateImpl::save_partition_attrs()
         if (!value.empty())
             ci->attrs[id_GATEMATE_PORT_OFFSETS] = value;
     }
+}
+
+std::vector<IdString> GateMateImpl::getPartitionInstances() const
+{
+    // Before packing, every cell is a GateMate primitive (CC_*), one of nextpnr's or yosys' own ($*) or a constant
+    // driver the frontend adds, but for the blackbox instances
+    std::vector<IdString> instances;
+    for (auto &cell : ctx->cells) {
+        std::string type = cell.second->type.str(ctx);
+        if (type.rfind("CC_", 0) != 0 && type[0] != '$' && type != "GND" && type != "VCC")
+            instances.push_back(cell.first);
+    }
+    std::sort(instances.begin(), instances.end(),
+              [&](IdString a, IdString b) { return a.str(ctx) < b.str(ctx); });
+    return instances;
+}
+
+bool GateMateImpl::readPartitionFootprint(const std::string &filename, PartitionFootprint &footprint) const
+{
+    // As import_partition reads it, but only where the cells are
+    std::ifstream in(filename);
+    if (!in) {
+        footprint.error = "can not be read";
+        return false;
+    }
+    std::stringstream buf;
+    buf << in.rdbuf();
+    std::string error;
+    Json root = Json::parse(buf.str(), error, JsonParse::COMMENTS);
+    if (!error.empty()) {
+        footprint.error = "is no JSON: " + error;
+        return false;
+    }
+    const auto &modules = root["modules"].object_items();
+    if (modules.size() != 1) {
+        footprint.error = "is not a placed design";
+        return false;
+    }
+    const Json &mod = modules.begin()->second;
+    const auto &settings = mod["settings"].object_items();
+    auto setting = [&](const char *name) {
+        auto found = settings.find(name);
+        return found != settings.end() && parse_property(found->second).as_bool();
+    };
+    if (!setting("as-partition")) {
+        footprint.error = "was not implemented as a partition";
+        return false;
+    }
+    footprint.routed = setting("route") && !setting("partition-unrouted");
+    if (!footprint.routed && !setting("partition-unrouted")) {
+        footprint.error = "is not routed (nor written placed only)";
+        return false;
+    }
+    for (auto &port : mod["ports"].object_items())
+        footprint.ports.push_back(port.first);
+    pool<Loc> tiles;
+    BoundingBox &area = footprint.area;
+    area = BoundingBox(std::numeric_limits<int>::max(), std::numeric_limits<int>::max(), -1, -1);
+    for (auto &cell : mod["cells"].object_items()) {
+        const Json &bel_name = cell.second["attributes"]["NEXTPNR_BEL"];
+        BelId bel = bel_name.is_string() ? ctx->getBelByNameStr(bel_name.string_value()) : BelId();
+        if (bel == BelId()) {
+            footprint.error = stringf("cell '%s' is not placed", cell.first.c_str());
+            return false;
+        }
+        footprint.cells++;
+        Loc loc = ctx->getBelLocation(bel);
+        tiles.insert(Loc(loc.x, loc.y, 0));
+        area.x0 = std::min(area.x0, loc.x);
+        area.y0 = std::min(area.y0, loc.y);
+        area.x1 = std::max(area.x1, loc.x);
+        area.y1 = std::max(area.y1, ctx->getBelType(bel) == id_RAM ? loc.y + 8 : loc.y); // a RAM spans two tiles
+    }
+    auto routed_area = settings.find("partition-area");
+    int x0, y0, x1, y1;
+    if (routed_area != settings.end() &&
+        sscanf(routed_area->second.string_value().c_str(), "%d,%d,%d,%d", &x0, &y0, &x1, &y1) == 4) {
+        area.x0 = std::min(area.x0, x0);
+        area.y0 = std::min(area.y0, y0);
+        area.x1 = std::max(area.x1, x1);
+        area.y1 = std::max(area.y1, y1);
+    }
+    if (footprint.cells == 0) {
+        footprint.error = "has no cells";
+        return false;
+    }
+    footprint.tiles.assign(tiles.begin(), tiles.end());
+    return true;
+}
+
+std::string GateMateImpl::partitionMoveProblem(const PartitionFootprint &footprint, int dx, int dy) const
+{
+    // As import_partition moves the cells: each onto the same kind of tile
+    int unmovable = 0;
+    for (const Loc &loc : footprint.tiles) {
+        int nx = loc.x + dx, ny = loc.y + dy;
+        if (nx < 0 || ny < 0 || nx >= ctx->getGridDimX() || ny >= ctx->getGridDimY())
+            return "it would leave the device";
+        if (ctx->chip_info->tile_insts[tile_by_xy(ctx->chip_info, nx, ny)].type !=
+            ctx->chip_info->tile_insts[tile_by_xy(ctx->chip_info, loc.x, loc.y)].type)
+            unmovable++;
+    }
+    if (unmovable)
+        return stringf("cells in %d tiles would land on other kinds of tile", unmovable);
+    return "";
 }
 
 NEXTPNR_NAMESPACE_END

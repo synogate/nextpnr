@@ -61,6 +61,8 @@ class BaseMainWindow : public QMainWindow
 
     virtual void onDisableActions() {};
     virtual void onUpdateActions() {};
+    // Before packing, e.g. to set options; false keeps it from packing
+    virtual bool beforePack() { return true; }
 
   protected Q_SLOTS:
     void writeInfo(std::string text);
@@ -70,6 +72,7 @@ class BaseMainWindow : public QMainWindow
 
     void open_json();
     virtual void save_json();
+    void pack();
     void place();
 
     void execute_python();

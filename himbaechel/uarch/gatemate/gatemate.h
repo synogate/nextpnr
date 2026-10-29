@@ -165,6 +165,11 @@ struct GateMateImpl : HimbaechelAPI
     void drawDetail(std::vector<GraphicElement> &g, DecalId decal) override;
     std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override;
     float getGuiColumnX(int x) const override;
+    // Partitions for the GUI (partition.cc)
+    bool hasPartitions() const override { return true; }
+    std::vector<IdString> getPartitionInstances() const override;
+    bool readPartitionFootprint(const std::string &filename, PartitionFootprint &footprint) const override;
+    std::string partitionMoveProblem(const PartitionFootprint &footprint, int dx, int dy) const override;
     std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override;
     std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const override;
     std::vector<std::pair<IdString, std::string>> getPipAttrs(PipId pip) const override;
@@ -290,6 +295,8 @@ struct GateMateImpl : HimbaechelAPI
     // The IOs a partition's CCF (that of the design importing it) names; only their CPEs are kept free then
     pool<int> partition_ccf_tiles;
     void find_partition_area();
+    // --vopt partition-region: the area for the scopes the CCF does not floorplan
+    void add_partition_region(const std::string &spec);
     void find_partition_free_nets();
     // With partition_open the design may place cells in the free tiles of the partitions' areas too
     bool partition_open = false;

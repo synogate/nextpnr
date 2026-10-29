@@ -27,6 +27,9 @@ times, at different places.
    end floorplanning
    ```
 
+   or, without a CCF, with `--vopt partition-region=X0,Y0,X1,Y1` in bel coordinates (`X..Y..` of the bel names),
+   which takes all cells the CCF does not floorplan.
+
    The region is the partition's area. Its cells are placed inside, and the routing it keeps stays inside too,
    with a margin of two tiles (the switch boxes around the CPEs at the edge). Without a region, the area is
    wherever the cells and routing end up, and that can be most of the device.
@@ -63,6 +66,19 @@ times, at different places.
    clocks and constants: the global buffers, the constant drivers and the top-level IOs belong to the importing
    design. Ports that are one net inside the partition (two outputs of the same signal, or a feedthrough) are
    made one net outside too. Ports left unconnected on the instance stay unconnected.
+
+## In the GUI
+
+The Partitions tab beside the design view sets all of this up, before packing (the options are set when Pack is
+pressed; those given on the command line are filled in at the start):
+
+- Implement this design as a partition: placed only or not, and the region, dragged open in the device view with
+  Pick. After Finish (or after Place, placed only), Save JSON writes the partition.
+- Import partitions: per blackbox instance of the loaded design, the file, the offset and the options load, place
+  and route, and `partition-open` for all. The device view shows where each partition goes, its area and the
+  tiles of its cells, in red where it can not go. With Pick, the partition follows the mouse, snapped to the
+  nearest offset it can be moved by without landing on the cells of another partition; a click puts it there.
+  Once packed, the cells of each partition are highlighted in its colour.
 
 ## Options
 
