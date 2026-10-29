@@ -127,8 +127,11 @@ void GateMateImpl::import_partition(const std::string &spec)
         auto found = settings.find(name);
         return found != settings.end() && parse_property(found->second).as_bool();
     };
-    if (!setting("route"))
-        log_error("Partition file '%s' is not routed.\n", filename.c_str());
+    bool unrouted = setting("partition-unrouted");
+    if (!setting("route") && !unrouted)
+        log_error("Partition file '%s' is not routed (for a partition placed only, implement it with --vopt "
+                  "partition-unrouted).\n",
+                  filename.c_str());
     if (!setting("as-partition"))
         log_error("Partition file '%s' was not implemented with --vopt as-partition.\n", filename.c_str());
 
@@ -527,9 +530,12 @@ void GateMateImpl::import_partition(const std::string &spec)
             log_info("    routing net '%s' again: %s\n", ctx->nameOf(net), why.c_str());
         ctx->ripupNet(net->name);
     }
-    log_info("    %d cells, %d nets with imported routing, %d nets to route again (%d pips on other kinds of "
-             "tile).\n",
-             num_cells, locked, rerouted, unmovable_pips);
+    if (unrouted)
+        log_info("    %d cells, placed only: their nets are routed with the design.\n", num_cells);
+    else
+        log_info("    %d cells, %d nets with imported routing, %d nets to route again (%d pips on other kinds of "
+                 "tile).\n",
+                 num_cells, locked, rerouted, unmovable_pips);
     if (partition_open)
         open_partition_area(area);
 }

@@ -63,6 +63,20 @@ used several times, at different places.
    design. Ports that are one net inside the partition (two outputs of the same signal, or a feedthrough) are
    made one net outside too. Ports left unconnected on the instance stay unconnected.
 
+## Placed only
+
+With `--vopt partition-unrouted` (which implies `as-partition`) and `--no-route`, step 1 stops after placing and
+writes the partition without routing. The stand-ins, buffers and constant drivers are removed after placing
+instead of after routing. Run with routing, step 1 stops with an error. On import, such a partition brings only
+its placement, and all of its nets are routed with the design. Moving, the keep-out while placing and
+`partition-open` work as for a routed partition. Without routing of its own, nothing of the partition closes in
+the free tiles of its area, so `partition-open` opens all of them.
+
+Step 1 is faster and the router is free to route the partition around the logic of the importing design. The
+partition's internal timing is then only estimated in step 1, and step 2 routes more. On the dmg_soc CPU
+partition, step 1 took 60 s, and step 2 reached 24.75 MHz on clk0, about the same as with the routed partition.
+The router needed 221 iterations instead of 94, but almost the same time (104 s instead of 95 s).
+
 ## Moving
 
 `@dx,dy` moves the partition by dx tiles in X and dy tiles in Y (the coordinates of the bel names, `X..Y..`).

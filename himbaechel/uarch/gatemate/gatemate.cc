@@ -58,8 +58,11 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("as-partition",
                            "implement the design as a partition: top level ports become unrouted boundary nets instead "
                            "of IO pads, for importing the result with partition");
+    specific.add_options()("partition-unrouted",
+                           "with as-partition: write the partition placed only, after placing (run with --no-route); "
+                           "the design importing it routes its nets");
     specific.add_options()("partition", po::value<std::vector<std::string>>(),
-                           "<inst>:<file>[@dx,dy]: replace the blackbox instance <inst> with the placed and routed "
+                           "<inst>:<file>[@dx,dy]: replace the blackbox instance <inst> with the placed (and routed) "
                            "partition from <file> (written with as-partition), moved by dx, dy tiles; only the "
                            "connections to the rest of the design are routed again");
     specific.add_options()("partition-open",
@@ -234,7 +237,8 @@ void GateMateImpl::init_database(Arch *arch)
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
-    as_partition = args.options.count("as-partition") > 0;
+    partition_unrouted = args.options.count("partition-unrouted") > 0;
+    as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
     partition_open = args.options.count("partition-open") > 0;
     auto table = [&](const char *option) {
         if (!args.options.count(option))
@@ -663,6 +667,13 @@ void GateMateImpl::postPlace()
         pip_mask[cell.second.get()->bel.tile] = mask;
         pip_data[cell.second.get()->bel.tile] = data;
     }
+    if (partition_unrouted) {
+        // The partition is complete once placed: as after routing (postRoute), but with no routing kept
+        detach_partition_ports();
+        save_partition_attrs();
+        ctx->settings[ctx->id("partition-unrouted")] = 1;
+        timing_analysis(ctx, false, false, false, false, true);
+    }
 }
 void GateMateImpl::configureRouter2(Router2Cfg &cfg)
 {
@@ -729,6 +740,8 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
 
 void GateMateImpl::preRoute()
 {
+    if (partition_unrouted)
+        log_error("A partition written with --vopt partition-unrouted is not routed; run with --no-route.\n");
     if (as_partition)
         find_partition_free_nets();
     if (replicate_fanout > 0)

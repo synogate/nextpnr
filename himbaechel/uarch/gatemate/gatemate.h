@@ -207,6 +207,8 @@ struct GateMateImpl : HimbaechelAPI
     // Partitions (partition.cc). With as_partition the top level ports stay as unrouted nets instead of
     // IO pads, so the result can be imported into another design with --vopt partition.
     bool as_partition = false;
+    // With partition_unrouted the partition is written placed only, after placing; importing it routes its nets
+    bool partition_unrouted = false;
     // Replace the blackbox instances named by --vopt partition=<inst>:<file>[@dx,dy] with the placed and
     // routed partitions from those files, moved by (dx, dy) tiles and locked
     void import_partitions();
