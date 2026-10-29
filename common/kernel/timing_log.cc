@@ -300,8 +300,18 @@ static void log_fmax(Context *ctx, TimingResult &result, bool warn_on_failure)
                 target = clock_fmax.at(clock_a).constraint;
             } else if (!clock_fmax.count(clock_a) && clock_fmax.count(clock_b)) {
                 target = clock_fmax.at(clock_b).constraint;
-            } else {
+            } else if (clock_fmax.count(clock_a)) {
                 target = std::min(clock_fmax.at(clock_a).constraint, clock_fmax.at(clock_b).constraint);
+            } else {
+                // Neither clock has register-to-register paths of its own: the constraint of the
+                // clock nets, otherwise the default target
+                auto constraint = [&](IdString clock) {
+                    const NetInfo *net = ctx->nets.count(clock) ? ctx->nets.at(clock).get() : nullptr;
+                    if (net && net->clkconstr)
+                        return 1000 / ctx->getDelayNS(net->clkconstr->period.minDelay());
+                    return ctx->setting<float>("target_freq") / 1e6f;
+                };
+                target = std::min(constraint(clock_a), constraint(clock_b));
             }
 
             bool passed = target < fmax;

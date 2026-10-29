@@ -28,14 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // common/kernel/timing_log.cc log_fmax: a path between two related clock domains that both
-    // have no Fmax entry (no register-to-register paths of their own) throws std::out_of_range
-    // from clock_fmax.at(), here during placement, once any other clock has an Fmax entry. With
-    // GateMate, IO registers and RAMs clocked from the fabric get their clock through a CPE of
-    // their own, giving such related clocks.
-    // Tests: GateMateTimingTest.related_clocks_without_own_paths,
-    // Seeds/GateMateRandomLogicTest.matches_reference/full_seed20 (and full_with_rams_*)
-    FMAX_OF_RELATED_CLOCKS_WITHOUT_PATHS,
 };
 
 // Whether tests still avoid the given bug. Kept as a function so that a restriction reads as

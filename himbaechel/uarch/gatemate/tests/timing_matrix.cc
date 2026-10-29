@@ -71,8 +71,7 @@ class GateMatePathTest : public GateMateTest
 {
   protected:
     // Timing analysis as after placement, with the report of every endpoint and the critical
-    // path of every pair of clock events. (Without logging: printing the results can fail, see
-    // FMAX_OF_RELATED_CLOCKS_WITHOUT_PATHS.)
+    // path of every pair of clock events
     void analyse()
     {
         TimingAnalyser tmg(ctx);
