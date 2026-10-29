@@ -113,6 +113,57 @@ static void rename_or_move(CellInfo *main, CellInfo *other, IdString port, IdStr
         main->movePortTo(port, other, other_port);
 }
 
+// Inputs tied to a constant that the RAM ignores in its configuration need no CPE (cells_sim.v):
+// the address bits below the lowest one used at the port's width (and bit 6 on a 20K RAM), in SDP
+// mode the address bits [6:0], the data and bit mask inputs while there are no writes, and the
+// addresses of a disabled port
+void GateMatePacker::disconnect_ignored_ram_inputs(CellInfo &ci, bool is_split, bool sdp)
+{
+    auto is_const = [&](NetInfo *net) { return net == net_PACKER_GND || net == net_PACKER_VCC; };
+    // Whether a control input is constantly inactive, with its inversion (unconnected is 0)
+    auto never = [&](IdString port, IdString inv) {
+        NetInfo *net = ci.getPort(port);
+        bool low = net == nullptr || net == net_PACKER_GND;
+        return int_or_default(ci.params, inv, 0) ? net == net_PACKER_VCC : low;
+    };
+    auto disconnect = [&](IdString port) {
+        if (is_const(ci.getPort(port)))
+            ci.disconnectPort(port);
+    };
+    int items = is_split ? 20 : 40;
+    bool a_off = never(id_A_EN, id_A_EN_INV), b_off = never(id_B_EN, id_B_EN_INV);
+    auto never_writes = [&](char port) {
+        if (sdp)
+            port = 'A';
+        bool off = port == 'A' ? a_off : b_off;
+        int width = int_or_default(ci.params, ctx->idf("%c_WR_WIDTH", port), 0);
+        return off || width == 0 || never(ctx->idf("%c_WE", port), ctx->idf("%c_WE_INV", port));
+    };
+    for (char port : {'A', 'B'}) {
+        bool off = port == 'A' ? a_off : b_off;
+        // The lowest address bit used
+        int lsb = 7;
+        if (!sdp) {
+            int width = 0;
+            for (const char *dir : {"RD", "WR"}) {
+                int w = int_or_default(ci.params, ctx->idf("%c_%s_WIDTH", port, dir), 0);
+                if (w > 0 && (width == 0 || w < width))
+                    width = w;
+            }
+            lsb = width <= 1 ? 1 : width <= 2 ? 2 : width <= 5 ? 3 : width <= 10 ? 4 : width <= 20 ? 5 : 6;
+        }
+        for (int i = 0; i < 16; i++)
+            if (off || i < lsb || (is_split && i == 6))
+                disconnect(ctx->idf("%c_ADDR[%d]", port, i));
+        if (never_writes(port)) {
+            for (int i = 0; i < items; i++) {
+                disconnect(ctx->idf("%c_DI[%d]", port, i));
+                disconnect(ctx->idf("%c_BM[%d]", port, i));
+            }
+        }
+    }
+}
+
 void GateMatePacker::pack_ram_cell(CellInfo &ci, CellInfo *cell, bool is_split)
 {
     // Port Widths
@@ -349,6 +400,8 @@ void GateMatePacker::pack_ram()
             cell->params[id_RAM_cfg_sram_mode] = Property(ram_mode << 1 | split, 2);
         }
 
+        if (!is_fifo && cascade == 0 && a_ecc_en == 0 && b_ecc_en == 0)
+            disconnect_ignored_ram_inputs(ci, split, ram_mode == 1);
         pack_ram_cell(ci, item, split);
 
         if (is_fifo) {

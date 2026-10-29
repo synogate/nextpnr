@@ -136,6 +136,7 @@ struct GateMatePacker
     void flush_cells();
     void remove_from_cluster(CellInfo *cell, std::vector<CellInfo *> &members);
     void pack_ram_cell(CellInfo &ci, CellInfo *cell, bool is_split);
+    void disconnect_ignored_ram_inputs(CellInfo &ci, bool is_split, bool sdp);
     void copy_constraint(const NetInfo *in_net, NetInfo *out_net);
 
     pool<IdString> packed_cells;
