@@ -574,9 +574,6 @@ TEST_P(GateMateRandomLogicTest, timing_arcs_cover_dependencies)
         if (avoiding_bug(KnownBug::ADDER_CPOUT_NOT_TIMED) && type.in(id_CPE_ADDF, id_CPE_ADDF2) &&
             arc.to.in(id_CPOUT1, id_CPOUT2))
             return true;
-        if (avoiding_bug(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && type == id_IOSEL &&
-            bool_or_default(arc.cell->params, id_OUT_SIGNAL) && bool_or_default(arc.cell->params, id_OE_ENABLE))
-            return true;
         return false;
     };
     missing.erase(std::remove_if(missing.begin(), missing.end(), known), missing.end());

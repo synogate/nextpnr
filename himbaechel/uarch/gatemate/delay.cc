@@ -281,9 +281,14 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             return false;
         if (toPort == id_GPIO_OUT && iosel_out_ff(cell))
             return false;
-        if (output && fromPort != o_s)
+        // Each path from its own source: the output from the selected output, the enable from the
+        // selected enable (when it comes from the fabric), the inputs from the pad (or, without an
+        // output or enable, from an output fed back)
+        if (toPort == id_GPIO_OUT && (!output || fromPort != o_s))
             return false;
-        if (enable && fromPort != oe_s)
+        if (toPort == id_GPIO_EN && (!enable || !cell->params.count(id_OE_SIGNAL) || fromPort != oe_s))
+            return false;
+        if (toPort.in(id_IN1, id_IN2) && fromPort != id_GPIO_IN && (output || enable))
             return false;
         return get_delay_from_tmg_db(ctx->idf("timing_io_sel_%s_%s", fromPort.c_str(ctx), toPort.c_str(ctx)), delay);
     } else if (cell->type.in(id_CLKIN)) {

@@ -28,13 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // delay.cc getCellDelay: an IOSEL with both an output and an output enable (tristate and
-    // bidirectional pads) has no timing arcs at all, so paths from bidirectional pads are not
-    // analysed.
-    // Tests: GateMateTimingArcTest.bidirectional_pad_input_is_timed,
-    // Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/io
-    IOSEL_ARCS_WITH_OUTPUT_ENABLE,
-
     // delay.cc: a carry from the middle of a chain that is also used as an ordinary signal leaves
     // the adder CPE through CPOUT2, which has neither a timing class nor arcs for
     // CPE_ADDF/CPE_ADDF2.

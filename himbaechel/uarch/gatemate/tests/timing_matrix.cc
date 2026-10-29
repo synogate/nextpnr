@@ -357,7 +357,11 @@ class GateMateTimingMatrixTest : public GateMatePathTest, public ::testing::With
         case Source::PAD:
             return {{input("src"), Event{}}};
         case Source::BIDIRECTIONAL_PAD:
-            return {{bidirectional("src", input("src_a"), input("src_t")), Event{}}};
+            // (its own data and enable from registers on a clock of their own: from pads, their paths
+            // would be launched as the pad's is)
+            return {{bidirectional("src", dff("src_af", input("src_a"), global("cz"))->getPort(id_Q),
+                                   dff("src_tf", input("src_t"), global("cz"))->getPort(id_Q)),
+                     Event{}}};
         case Source::FF:
             return {{ff(false), rising("cs")}};
         case Source::FF_FALLING:
@@ -424,7 +428,9 @@ class GateMateTimingMatrixTest : public GateMatePathTest, public ::testing::With
             output(prefix, via());
             return {Event{}};
         case Sink::TRISTATE_ENABLE:
-            tristate_output(prefix, input(name("_a")), via());
+            // (constant data: a data path from a pad would be launched as the enable's is by a pad
+            // source)
+            tristate_output(prefix, vcc(), via());
             return {Event{}};
         case Sink::FF:
         case Sink::FF_FALLING: {
@@ -483,10 +489,6 @@ TEST_P(GateMateTimingMatrixTest, path_is_timed)
 {
     Source source = GetParam().first;
     Sink sink = GetParam().second;
-    if (avoid(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && source == Source::BIDIRECTIONAL_PAD)
-        GTEST_SKIP() << "bidirectional pads have no input arc";
-    if (avoid(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && sink == Sink::TRISTATE_ENABLE)
-        GTEST_SKIP() << "an IOSEL with an output enable has no arc to it";
     auto launches = build_source(source);
     std::vector<std::vector<Event>> expected;
     for (int i = 0; i < int(launches.size()); i++)
