@@ -26,8 +26,84 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+// Take a cell that is about to be deleted out of its cluster, so that no cell refers to it: its
+// children go to its parent, or, if it is the root, the first of them becomes the root
+void GateMatePacker::remove_from_cluster(CellInfo *cell, std::vector<CellInfo *> &members)
+{
+    CellInfo *parent = nullptr;
+    for (CellInfo *m : members) {
+        auto &ch = m->constr_children;
+        auto it = std::find(ch.begin(), ch.end(), cell);
+        if (it != ch.end()) {
+            ch.erase(it);
+            parent = m;
+        }
+    }
+    members.erase(std::remove(members.begin(), members.end(), cell), members.end());
+    std::vector<CellInfo *> children = cell->constr_children;
+    cell->constr_children.clear();
+    cell->cluster = ClusterId();
+    if (children.empty())
+        return;
+    // The offset of the children from the parent they get, before placement
+    int dx = cell->constr_x, dy = cell->constr_y, dz = cell->constr_z;
+    bool abs_z = cell->constr_abs_z;
+    if (!parent) {
+        parent = children.front();
+        children.erase(children.begin());
+        dx = -parent->constr_x;
+        dy = -parent->constr_y;
+        dz = -parent->constr_z;
+        abs_z = parent->constr_abs_z;
+        parent->constr_x = 0;
+        parent->constr_y = 0;
+        if (parent->bel != BelId()) {
+            parent->constr_z = ctx->getBelLocation(parent->bel).z;
+            parent->constr_abs_z = true;
+        }
+        for (CellInfo *m : members)
+            m->cluster = parent->name;
+    }
+    for (CellInfo *child : children) {
+        if (child->bel != BelId() && parent->bel != BelId()) {
+            // Placed: the offset the two cells have now
+            Loc lc = ctx->getBelLocation(child->bel), lp = ctx->getBelLocation(parent->bel);
+            child->constr_x = lc.x - lp.x;
+            child->constr_y = lc.y - lp.y;
+            child->constr_z = lc.z;
+            child->constr_abs_z = true;
+        } else if (child->constr_z < PLACE_DB_CONSTR) {
+            child->constr_x += dx;
+            child->constr_y += dy;
+            if (!child->constr_abs_z && !abs_z)
+                child->constr_z += dz;
+        }
+        parent->constr_children.push_back(child);
+    }
+}
+
 void GateMatePacker::flush_cells()
 {
+    dict<ClusterId, std::vector<CellInfo *>> clusters;
+    for (auto pcell : packed_cells)
+        if (ctx->cells[pcell]->cluster != ClusterId())
+            clusters[ctx->cells[pcell]->cluster];
+    if (!clusters.empty()) {
+        for (auto &c : ctx->cells)
+            if (clusters.count(c.second->cluster))
+                clusters[c.second->cluster].push_back(c.second.get());
+        for (auto pcell : packed_cells) {
+            CellInfo *ci = ctx->cells[pcell].get();
+            if (ci->cluster != ClusterId()) {
+                ClusterId cluster = ci->cluster;
+                remove_from_cluster(ci, clusters[cluster]);
+                // The cluster got a new root
+                auto &members = clusters[cluster];
+                if (!members.empty() && members.front()->cluster != cluster)
+                    clusters[members.front()->cluster] = std::move(members);
+            }
+        }
+    }
     for (auto pcell : packed_cells) {
         for (auto &port : ctx->cells[pcell]->ports) {
             ctx->cells[pcell]->disconnectPort(port.first);
