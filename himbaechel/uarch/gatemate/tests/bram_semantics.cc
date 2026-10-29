@@ -738,8 +738,7 @@ class GateMateFifoTest : public GateMateTest, public ::testing::WithParamInterfa
              {id_F_FULL, id_F_EMPTY, id_F_ALMOST_FULL, id_F_ALMOST_EMPTY, id_F_RD_ERROR, id_F_WR_ERROR})
             output("o_" + flag.str(ctx), connect_output(f, flag));
         for (int i = 0; i < 16; i++) {
-            if (!(avoid(KnownBug::FIFO_READ_POINTER_SHARED_CPE) && (i == 0 || i == 2 || i == 5)))
-                output(stringf("rd_ptr%d", i), connect_output(f, ctx->idf("F_RD_PTR[%d]", i)));
+            output(stringf("rd_ptr%d", i), connect_output(f, ctx->idf("F_RD_PTR[%d]", i)));
             output(stringf("wr_ptr%d", i), connect_output(f, ctx->idf("F_WR_PTR[%d]", i)));
         }
         for (int k = 0; k < d.width; k++)

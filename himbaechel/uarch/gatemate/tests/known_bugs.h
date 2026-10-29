@@ -28,12 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // pack_bram.cc: the FIFO read pointer outputs F_RD_PTR[0], [2] and [5] share a CPE with the
-    // fabric read clock, the pop enable and the reset; each gets a CPE of its own at the same
-    // location, so the FIFO cannot be placed.
-    // Test: GateMateBramTest.fifo_read_pointer_outputs
-    FIFO_READ_POINTER_SHARED_CPE,
-
     // delay.cc getPortTimingClass: all RAM ports starting with 'F' are TMG_IGNORE, among them the
     // FIFO status outputs (F_EMPTY[0], F_FULL[0], ...) and pointers (FRD_ADDR, FWR_ADDR), so
     // paths from them are not analysed.

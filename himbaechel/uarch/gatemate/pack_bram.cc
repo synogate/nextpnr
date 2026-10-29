@@ -410,12 +410,30 @@ void GateMatePacker::pack_ram()
             move_ram_io(&ci, ctx->idf("DOA[%d]", i), ctx->idf("DIA[%d]", i));
             move_ram_io(&ci, ctx->idf("DOB[%d]", i), ctx->idf("DIB[%d]", i));
         }
+        // A FIFO's read pointer bits 0, 1, 2 and 5 leave the RAM through the same CPE halves as the read
+        // clock, global write enable, enable and reset go in: one RAM pin cell each for both
+        pool<IdString> paired;
+        if (is_fifo) {
+            for (int i = 0; i < 16; i++)
+                ci.renamePort(ctx->idf("F_RD_PTR[%d]", i), ctx->idf("FRD_ADDR[%d]", i));
+            ci.renamePort(id_F_RST_N, ctx->id("F_RSTN"));
+            for (auto [out, in] : {std::pair{"FRD_ADDR[0]", "CLKA[0]"}, std::pair{"FRD_ADDR[1]", "GLWEA[0]"},
+                                   std::pair{"FRD_ADDR[2]", "ENA[0]"}, std::pair{"FRD_ADDR[5]", "F_RSTN"}}) {
+                move_ram_io(&ci, ctx->id(out), ctx->id(in));
+                paired.insert(ctx->id(out));
+                paired.insert(ctx->id(in));
+            }
+        }
+        auto move_in = [&](IdString port) {
+            if (!paired.count(port))
+                move_ram_o(&ci, port);
+        };
         for (int i = 0; i < 4; i++) {
-            move_ram_o(&ci, ctx->idf("CLKA[%d]", i));
+            move_in(ctx->idf("CLKA[%d]", i));
             move_ram_o(&ci, ctx->idf("CLKB[%d]", i));
-            move_ram_o(&ci, ctx->idf("ENA[%d]", i));
+            move_in(ctx->idf("ENA[%d]", i));
             move_ram_o(&ci, ctx->idf("ENB[%d]", i));
-            move_ram_o(&ci, ctx->idf("GLWEA[%d]", i));
+            move_in(ctx->idf("GLWEA[%d]", i));
             move_ram_o(&ci, ctx->idf("GLWEB[%d]", i));
             move_ram_i(&ci, ctx->idf("ECC1B_ERRA[%d]", i));
             move_ram_i(&ci, ctx->idf("ECC1B_ERRB[%d]", i));
@@ -445,12 +463,9 @@ void GateMatePacker::pack_ram()
             ci.renamePort(id_F_RD_ERROR, ctx->id("FRD_ERR[0]"));
             move_ram_i(&ci, ctx->id("FRD_ERR[0]"));
 
-            ci.renamePort(id_F_RST_N, ctx->id("F_RSTN"));
-            move_ram_o(&ci, ctx->id("F_RSTN"));
-
             for (int i = 0; i < 16; i++) {
-                ci.renamePort(ctx->idf("F_RD_PTR[%d]", i), ctx->idf("FRD_ADDR[%d]", i));
-                move_ram_i(&ci, ctx->idf("FRD_ADDR[%d]", i));
+                if (!paired.count(ctx->idf("FRD_ADDR[%d]", i)))
+                    move_ram_i(&ci, ctx->idf("FRD_ADDR[%d]", i));
 
                 ci.renamePort(ctx->idf("F_WR_PTR[%d]", i), ctx->idf("FWR_ADDR[%d]", i));
                 move_ram_i(&ci, ctx->idf("FWR_ADDR[%d]", i));
