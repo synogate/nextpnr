@@ -566,17 +566,7 @@ TEST_P(GateMateRandomLogicTest, timing_arcs_cover_dependencies)
     } catch (const std::exception &e) {
         GTEST_SKIP() << "implementation failed (see matches_reference): " << e.what();
     }
-    bool avoiding = GetParam().avoid_known_bugs;
-    auto avoiding_bug = [&](KnownBug bug) { return avoiding && avoid(bug); };
     auto missing = missing_timing_arcs(GetParam().seed);
-    auto known = [&](const MissingArc &arc) {
-        IdString type = arc.cell->type;
-        if (avoiding_bug(KnownBug::ADDER_CPOUT_NOT_TIMED) && type.in(id_CPE_ADDF, id_CPE_ADDF2) &&
-            arc.to.in(id_CPOUT1, id_CPOUT2))
-            return true;
-        return false;
-    };
-    missing.erase(std::remove_if(missing.begin(), missing.end(), known), missing.end());
     EXPECT_TRUE(missing.empty()) << "dependencies without a timing arc:" << describe_arcs(missing);
 }
 

@@ -196,18 +196,16 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             // Bug 37: the first bit's sum does not depend on the second bit's operands
             if (cell->type == id_CPE_ADDF2 && tp == id_OUT1 && fp.in(id_IN1, id_IN2, id_IN3, id_IN4))
                 return false;
-            // Bug 33: a carry from the middle of a chain leaving through CPOUT, estimated as the carry
-            // out plus the CPOUT driver
-            if (tp.in(id_CPOUT1, id_CPOUT2)) {
-                if (!get_delay_from_tmg_db(fp == id_CINY1 ? ctx->id("timing__ADDF2Y1_CINY1_COUTY")
-                                                          : ctx->idf("timing__ADDF2Y1_%s_COUTY1", fp.c_str(ctx)),
-                                           delay))
-                    return false;
-                DelayQuad cpout;
-                if (get_delay_from_tmg_db(ctx->id("timing_CPOUT_cpout"), cpout))
-                    delay += cpout;
-                return true;
-            }
+        }
+        // A carry from the middle of a chain leaving through CPOUT, estimated as the carry out plus
+        // the CPOUT driver
+        if (tp.in(id_CPOUT1, id_CPOUT2)) {
+            if (!getCellDelay(cell, fromPort, id_COUTY1, delay))
+                return false;
+            DelayQuad cpout;
+            if (get_delay_from_tmg_db(ctx->id("timing_CPOUT_cpout"), cpout))
+                delay += cpout;
+            return true;
         }
         return get_delay_from_tmg_db(ctx->idf("timing__ADDF2Y1_%s_%s", fp.c_str(ctx), tp.c_str(ctx)), delay);
     } else if (cell->type.in(id_CPE_MX4)) {
@@ -329,7 +327,7 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
                     id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10, id_D0_02, id_D1_02, id_D0_03, id_D1_03, id_D0_11,
                     id_D1_11))
             return TMG_COMB_INPUT;
-        if (port.in(id_OUT1, id_OUT2, id_COUTY1) || (timing_fixes && port.in(id_CPOUT1, id_CPOUT2))) // bug 33
+        if (port.in(id_OUT1, id_OUT2, id_COUTY1, id_CPOUT1, id_CPOUT2))
             return TMG_COMB_OUTPUT;
         return TMG_IGNORE;
     } else if (cell->type.in(id_CPE_MX4)) {

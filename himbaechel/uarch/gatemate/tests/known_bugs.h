@@ -28,12 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // delay.cc: a carry from the middle of a chain that is also used as an ordinary signal leaves
-    // the adder CPE through CPOUT2, which has neither a timing class nor arcs for
-    // CPE_ADDF/CPE_ADDF2.
-    // Test: Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/adder_carry_used
-    ADDER_CPOUT_NOT_TIMED,
-
     // common/kernel/timing_log.cc log_fmax: a path between two related clock domains that both
     // have no Fmax entry (no register-to-register paths of their own) throws std::out_of_range
     // from clock_fmax.at(), here during placement, once any other clock has an Fmax entry. With
