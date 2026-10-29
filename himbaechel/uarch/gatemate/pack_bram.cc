@@ -632,6 +632,37 @@ void GateMatePacker::repack_ram()
         BelId bel = ctx->getBelByLocation({ram.first.x, ram.first.y, RAM_FULL_Z});
         ctx->bindBel(bel, cell, PlaceStrength::STRENGTH_FIXED);
 
+        // The new cell takes over the CPEs at the pins of the halves, as the root of their cluster, at the
+        // offsets they have now (the pin constraints of the halves do not apply to the merged RAM)
+        cell->cluster = cell->name;
+        Loc cell_loc = ctx->getBelLocation(bel);
+        for (CellInfo *half : {ram.second.first, ram.second.second}) {
+            if (!half)
+                continue;
+            std::vector<CellInfo *> keep;
+            for (CellInfo *child : half->constr_children) {
+                // A RAM cascaded below stays with the half, which is deleted
+                if (child->type.in(id_RAM, id_RAM_HALF, id_RAM_HALF_DUMMY) || child->bel == BelId()) {
+                    keep.push_back(child);
+                    continue;
+                }
+                Loc l = ctx->getBelLocation(child->bel);
+                child->constr_x = l.x - cell_loc.x;
+                child->constr_y = l.y - cell_loc.y;
+                child->constr_z = l.z;
+                child->constr_abs_z = true;
+                cell->constr_children.push_back(child);
+                std::vector<CellInfo *> todo = {child};
+                while (!todo.empty()) {
+                    CellInfo *c = todo.back();
+                    todo.pop_back();
+                    c->cluster = cell->cluster;
+                    todo.insert(todo.end(), c->constr_children.begin(), c->constr_children.end());
+                }
+            }
+            half->constr_children = keep;
+        }
+
         if (ram.second.first) {
             remap_ram_half(ram.second.first, cell, 0);
             packed_cells.insert(ram.second.first->name);
