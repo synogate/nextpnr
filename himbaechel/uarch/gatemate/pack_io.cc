@@ -156,6 +156,14 @@ void GateMatePacker::pack_io()
             log_error("Port '%s' doesn't seem to have a corresponding top level IO (internal cell type mismatch).\n",
                       ctx->nameOf(port.first));
 
+        // The port connects to logic directly (a netlist synthesised without IO buffers): no pad would
+        // drive it or be driven, and removing the port's own buffer would leave the logic unconnected
+        if (top_port.cell != nullptr &&
+            !top_port.cell->type.in(id_CC_IBUF, id_CC_OBUF, id_CC_TOBUF, id_CC_IOBUF, id_CC_LVDS_IBUF,
+                                    id_CC_LVDS_OBUF, id_CC_LVDS_TOBUF, id_CC_LVDS_IOBUF))
+            log_error("Top level port '%s' connects to '%s' without an IO buffer (synthesise with IO buffers, "
+                      "not with -noiopad).\n",
+                      ctx->nameOf(port.first), ctx->nameOf(top_port.cell));
         if (top_port.cell == nullptr) {
             log_info("Trimming port '%s' as it is unused.\n", ctx->nameOf(port.first));
         } else {
