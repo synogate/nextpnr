@@ -75,14 +75,24 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     }
     auto has_cpe = [&](int tile) { return !anchor_index[chip->tile_insts[tile].type].empty(); };
 
-    // One CPE tile near the centre per phase
+    // One CPE tile near the centre per phase, the nearest (on devices of several dies the centre
+    // can lie between them)
     std::vector<int> sample(PHASES, -1);
-    for (int dy = 0; dy < 4; dy++)
-        for (int dx = 0; dx < 4; dx++) {
-            int x = chip->width / 2 + dx, y = chip->height / 2 + dy, tile = tile_by_xy(chip, x, y);
-            if (has_cpe(tile) && sample[phase(x, y)] == -1)
-                sample[phase(x, y)] = tile;
-        }
+    int missing = PHASES;
+    for (int d = 0; missing > 0 && d < std::max(chip->width, chip->height); d++)
+        for (int dy = -d; dy <= d; dy++)
+            for (int dx = -d; dx <= d; dx++) {
+                if (std::max(std::abs(dx), std::abs(dy)) != d)
+                    continue;
+                int x = chip->width / 2 + dx, y = chip->height / 2 + dy;
+                if (x < 0 || y < 0 || x >= chip->width || y >= chip->height)
+                    continue;
+                int tile = tile_by_xy(chip, x, y);
+                if (has_cpe(tile) && sample[phase(x, y)] == -1) {
+                    sample[phase(x, y)] = tile;
+                    missing--;
+                }
+            }
     for (int p = 0; p < PHASES; p++)
         NPNR_ASSERT(sample[p] != -1);
 
