@@ -447,7 +447,15 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
             return TMG_CLOCK_INPUT;
         if (boost::ends_with(name, "_CI") || boost::ends_with(name, "_CO"))
             return TMG_IGNORE;
-        if (name[0] == 'F') // Ignore forward and FIFO pins
+        // A FIFO's flags and pointers come from registers; its other F pins (and the forward ones) are
+        // not timed
+        auto fifo = ram_signal_clk.find(port);
+        if (fifo != ram_signal_clk.end() && fifo->second.kind == RamPinKind::FIFO_STATUS &&
+            cell->ports.at(port).type == PORT_OUT) {
+            clockInfoCount = 1;
+            return TMG_REGISTER_OUTPUT;
+        }
+        if (name[0] == 'F')
             return TMG_IGNORE;
         for (auto c : boost::adaptors::reverse(name)) {
             if (std::isdigit(c) || c == 'X' || c == '[' || c == ']')
@@ -591,6 +599,12 @@ TimingClockingInfo GateMateImpl::getPortClockingInfo(const CellInfo *cell, IdStr
                      int_or_default(cell->params, id_RAM_cfg_a1_set_outputreg, 0);
         bool reg_b = int_or_default(cell->params, id_RAM_cfg_b0_set_outputreg, 0) ||
                      int_or_default(cell->params, id_RAM_cfg_b1_set_outputreg, 0);
+        // A FIFO's flags and pointers: the database has nothing of their own; as the data output of
+        // their side, an approximation
+        auto fifo = ram_signal_clk.find(port);
+        if (fifo != ram_signal_clk.end() && fifo->second.kind == RamPinKind::FIFO_STATUS)
+            get_delay_from_tmg_db(fifo->second.port_b ? id_timing_RAM_NOECC_IOPATH_3 : id_timing_RAM_NOECC_IOPATH_2,
+                                  info.clockToQ);
         if (boost::starts_with(name, "DOA") && reg_a)
             get_delay_from_tmg_db(ctx->id("timing_RAM_REG_IOPATH_2"), info.clockToQ);
         else if (boost::starts_with(name, "DOA")) {

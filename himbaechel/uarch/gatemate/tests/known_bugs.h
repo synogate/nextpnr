@@ -28,12 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // delay.cc getPortTimingClass: all RAM ports starting with 'F' are TMG_IGNORE, among them the
-    // FIFO status outputs (F_EMPTY[0], F_FULL[0], ...) and pointers (FRD_ADDR, FWR_ADDR), so
-    // paths from them are not analysed.
-    // Test: GateMateTimingArcTest.fifo_status_outputs_are_timed
-    FIFO_STATUS_NOT_TIMED,
-
     // delay.cc getCellDelay: an IOSEL with both an output and an output enable (tristate and
     // bidirectional pads) has no timing arcs at all, so paths from bidirectional pads are not
     // analysed.

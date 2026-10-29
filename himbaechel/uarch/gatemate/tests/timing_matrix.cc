@@ -483,8 +483,6 @@ TEST_P(GateMateTimingMatrixTest, path_is_timed)
 {
     Source source = GetParam().first;
     Sink sink = GetParam().second;
-    if (avoid(KnownBug::FIFO_STATUS_NOT_TIMED) && source == Source::FIFO_STATUS)
-        GTEST_SKIP() << "FIFO status outputs are not timing start points";
     if (avoid(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && source == Source::BIDIRECTIONAL_PAD)
         GTEST_SKIP() << "bidirectional pads have no input arc";
     if (avoid(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && sink == Sink::TRISTATE_ENABLE)

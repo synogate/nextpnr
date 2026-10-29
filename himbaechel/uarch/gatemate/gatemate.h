@@ -284,6 +284,7 @@ struct GateMateImpl : HimbaechelAPI
         ADDR,
         CTRL,
         ECC_STATUS,
+        FIFO_STATUS, // a FIFO's flags and pointers: the read side on port A, the write side on B
     };
     struct RamPinInfo
     {

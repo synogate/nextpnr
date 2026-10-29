@@ -387,6 +387,15 @@ void GateMateImpl::init(Context *ctx)
             ram_signal_clk.emplace(ctx->idf("DOB[%d]", i + num * 20), RamPinInfo{RamPinKind::DATA_OUT, true, num});
         }
     }
+    // A FIFO's status outputs, in the read clock's domain (port A) or the write clock's (port B)
+    for (const char *flag : {"F_EMPTY[0]", "F_AL_EMPTY[0]", "FRD_ERR[0]"})
+        ram_signal_clk.emplace(ctx->id(flag), RamPinInfo{RamPinKind::FIFO_STATUS, false, 0});
+    for (const char *flag : {"F_FULL[0]", "F_AL_FULL[0]", "FWR_ERR[0]"})
+        ram_signal_clk.emplace(ctx->id(flag), RamPinInfo{RamPinKind::FIFO_STATUS, true, 0});
+    for (int i = 0; i < 16; i++) {
+        ram_signal_clk.emplace(ctx->idf("FRD_ADDR[%d]", i), RamPinInfo{RamPinKind::FIFO_STATUS, false, 0});
+        ram_signal_clk.emplace(ctx->idf("FWR_ADDR[%d]", i), RamPinInfo{RamPinKind::FIFO_STATUS, true, 0});
+    }
 
     const GateMateChipExtraDataPOD *extra =
             reinterpret_cast<const GateMateChipExtraDataPOD *>(ctx->chip_info->extra_data.get());
