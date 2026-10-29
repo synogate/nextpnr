@@ -74,8 +74,8 @@ sum, a mid-chain carry out (33) the adder's carry out plus `CPOUT_cpout`.
 ## Latent or unclear
 
 - `pack_bram.cc` `ram_clk_signal` and the `CLOCK%d` handling in `pack_io.cc` only cover global
-  clocks 0–3. Clocks 4–7 (second die on CCGM1A2) can't occur while bug 8 holds;
-  `GateMateBramSemanticsTest.six_global_clocks_on_two_dies` covers them once it is fixed.
+  clocks 0–3. Clocks 4–7 (second die on CCGM1A2) couldn't occur while bug 8 held. With bug 8
+  fixed, `GateMateBramSemanticsTest.six_global_clocks_on_two_dies` covers them and passes.
 - A FIFO in SDP mode configures `input_config_b0`/`output_config_a0`, while a RAM in SDP mode
   uses a0 for writes and b0 for reads. Possibly swapped; needs hardware or the vendor tool to
   decide.
