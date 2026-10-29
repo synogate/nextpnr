@@ -528,9 +528,8 @@ TimingClockingInfo GateMateImpl::getPortClockingInfo(const CellInfo *cell, IdStr
         if (port.in(id_DIN, id_EN, id_SR) || (timing_fixes && port == id_EN_INT))
             get_setuphold_from_tmg_db(id_timing_del_Setup_D_L, id_timing_del_Hold_D_L, info.setup, info.hold);
         if (port.in(id_DOUT)) {
-            // Bug 7: registers sit at CPE_FF_U_Z/CPE_FF_L_Z
-            bool is_upper = (cell->bel != BelId()) &&
-                            (ctx->getBelLocation(cell->bel).z == (timing_fixes ? CPE_FF_U_Z : CPE_LT_U_Z));
+            // (registers sit at CPE_FF_U_Z/CPE_FF_L_Z)
+            bool is_upper = (cell->bel != BelId()) && (ctx->getBelLocation(cell->bel).z == CPE_FF_U_Z);
             get_delay_from_tmg_db(id_timing__SEQ_CLK_FF1_Q, info.clockToQ);
             DelayQuad delay = DelayQuad{0};
             get_delay_from_tmg_db(is_upper ? id_timing_Q2_OUT2 : id_timing_Q1_OUT1, delay);
