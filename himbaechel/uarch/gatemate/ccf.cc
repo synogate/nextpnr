@@ -86,7 +86,7 @@ struct GateMateCCFReader
                     log_error("Unknown location '%s' used in line %d.\n", value.c_str(), lineno);
                 if (!uarch->available_pads.count(ctx->id(value)))
                     log_error("Pad '%s' used in line %d not available.\n", value.c_str(), lineno);
-                props->emplace(id_LOC, Property(value));
+                (*props)[id_LOC] = Property(value);
                 for (int i = 0; i < uarch->dies; i++) {
                     if (uarch->locations.count(std::make_pair(ctx->id(value), i)))
                         count[i]++;
@@ -101,7 +101,7 @@ struct GateMateCCFReader
                     uarch->available_pads.erase(ctx->id("SER_CLK"));
             } else if (name == "DIE") {
                 if (uarch->die_to_index.count(ctx->id(value))) {
-                    props->emplace(ctx->id(name), Property(value));
+                    (*props)[ctx->id(name)] = Property(value);
                 } else
                     log_error("Unknown value '%s' for parameter '%s' in line %d.\n", value.c_str(), name.c_str(),
                               lineno);
@@ -112,9 +112,9 @@ struct GateMateCCFReader
                 else if (value == "0")
                     value = "FALSE";
                 if (value == "TRUE") {
-                    props->emplace(ctx->id(name), Property(Property::State::S1));
+                    (*props)[ctx->id(name)] = Property(Property::State::S1);
                 } else if (value == "FALSE") {
-                    props->emplace(ctx->id(name), Property(Property::State::S0));
+                    (*props)[ctx->id(name)] = Property(Property::State::S0);
                 } else
                     log_error("Unknown value '%s' for parameter '%s' in line %d, must be TRUE or FALSE.\n",
                               value.c_str(), name.c_str(), lineno);
@@ -124,7 +124,7 @@ struct GateMateCCFReader
                 else if (value == "0" || value == "FALSE")
                     value = "FAST";
                 if (value == "FAST" || value == "SLOW") {
-                    props->emplace(ctx->id(name), Property(value));
+                    (*props)[ctx->id(name)] = Property(value);
                 } else
                     log_error("Unknown value '%s' for parameter '%s' in line %d, must be SLOW or FAST.\n",
                               value.c_str(), name.c_str(), lineno);
@@ -132,7 +132,7 @@ struct GateMateCCFReader
                 try {
                     int drive = boost::lexical_cast<int>(value.c_str());
                     if (drive == 3 || drive == 6 || drive == 9 || drive == 12) {
-                        props->emplace(ctx->id(name), Property(drive, 2));
+                        (*props)[ctx->id(name)] = Property(drive, 2);
                     } else
                         log_error("Parameter '%s' must have value 3,6,9 or 12 in line %d.\n", name.c_str(), lineno);
                 } catch (boost::bad_lexical_cast const &) {
@@ -142,7 +142,7 @@ struct GateMateCCFReader
                 try {
                     int delay = boost::lexical_cast<int>(value.c_str());
                     if (delay >= 0 && delay <= 15) {
-                        props->emplace(ctx->id(name), Property(delay, 4));
+                        (*props)[ctx->id(name)] = Property(delay, 4);
                     } else
                         log_error("Parameter '%s' must have value from 0 to 15 in line %d.\n", name.c_str(), lineno);
                 } catch (boost::bad_lexical_cast const &) {
