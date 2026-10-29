@@ -64,7 +64,7 @@ void GateMatePacker::sort_bufg(unsigned max_num)
     if (bufg.size() > max_num) {
         log_warning("More than %d BUFG used. Those with highest fan-out will be used.\n", max_num);
         std::sort(bufg.begin(), bufg.end(), [](const ItemBufG &a, const ItemBufG &b) { return a.fan_out > b.fan_out; });
-        for (size_t i = 4; i < bufg.size(); i++) {
+        for (size_t i = max_num; i < bufg.size(); i++) {
             log_warning("Removing BUFG cell %s.\n", bufg.at(i).cell->name.c_str(ctx));
             CellInfo *cell = bufg.at(i).cell;
             NetInfo *i_net = cell->getPort(id_I);
