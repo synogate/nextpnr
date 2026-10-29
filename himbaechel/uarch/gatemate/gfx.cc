@@ -2249,6 +2249,27 @@ void GateMateImpl::drawTileWire(std::vector<GraphicElement> &g, GraphicElement::
             draw_route_from_driver(g, GraphicElement::STYLE_HIDDEN, tile_wire, here, true);
         return;
     }
+    // The trunk of a used global clock it drives (see update_gui_routing)
+    if (style == GraphicElement::STYLE_ACTIVE) {
+        std::vector<std::array<float, 4>> trunk;
+        {
+            std::lock_guard<std::mutex> lock(gui_labels_mutex_);
+            auto it = gui_trunks_.find({tile, tilewire});
+            if (it != gui_trunks_.end())
+                trunk = it->second;
+        }
+        if (!trunk.empty()) {
+            // as the stubs where it arrives
+            size_t from = g.size();
+            for (auto &l : trunk)
+                line(g, GraphicElement::STYLE_ROUTING, l[0], l[1], l[2], l[3]);
+            lod(g, from, 0, LOD_TILE);
+            size_t near = g.size();
+            for (auto &l : trunk)
+                line(g, style, l[0], l[1], l[2], l[3]);
+            lod(g, near, LOD_TILE);
+        }
+    }
     // A wire fed by a fixed connection from a wire arriving from another tile is the same physical
     // wire: when it is selected, show the way it came (hidden otherwise)
     const auto &uphill = chip_wire_info(ctx->chip_info, tile_wire).pips_uphill;
@@ -2450,10 +2471,49 @@ void GateMateImpl::update_gui_routing()
         for (size_t i = 0; i < spans.size(); i++)
             tracks[{spans[i].second, c.first}] = 0.006f + spacing * assigned[i];
     }
+    // Global clocks: a trunk from the clock buffer along the edge of the chip in the channel of its
+    // row, and up and down the left channel of each column the clock reaches, as far as it reaches;
+    // on the inner side of the channels, beside their tracks
+    const float side = CHAN - 0.004f;
+    std::map<std::pair<int, int>, std::map<int, std::pair<float, float>>> reach; // driver -> column -> rows
+    pool<WireId> global_nodes;
+    for (auto &p : pips) {
+        const auto &pd = chip_pip_info(ctx->chip_info, p.first);
+        if (!ends_with(tile_wire_name(ctx, p.first.tile, pd.src_wire), "_n"))
+            continue;
+        WireId drv = node_driver(ctx, p.second, p.first.tile, pd.src_wire);
+        if (drv == WireId())
+            continue;
+        Pt S = placed(ctx, drv.tile, drv.index).pos(), D = placed(ctx, p.first.tile, pd.dst_wire).pos();
+        if (!is_global(S, D))
+            continue;
+        global_nodes.insert(p.second);
+        auto &rows = reach[{drv.tile, drv.index}];
+        auto it = rows.find(int(std::floor(D.x)));
+        if (it == rows.end())
+            rows[int(std::floor(D.x))] = {D.y, D.y};
+        else
+            it->second = {std::min(it->second.first, D.y), std::max(it->second.second, D.y)};
+    }
+    dict<std::pair<int, int>, std::vector<std::array<float, 4>>> trunks;
+    for (auto &r : reach) {
+        Pt P = placed(ctx, r.first.first, r.first.second).pos();
+        float y = std::floor(P.y) + side;
+        auto &lines = trunks[r.first];
+        lines.push_back({P.x, P.y, P.x, y});
+        float x0 = std::min(P.x, r.second.begin()->first + side);
+        float x1 = std::max(P.x, r.second.rbegin()->first + side);
+        lines.push_back({x0, y, x1, y});
+        for (auto &c : r.second)
+            lines.push_back({c.first + side, std::min(y, c.second.first), c.first + side,
+                             std::max(y, c.second.second)});
+    }
     std::lock_guard<std::mutex> lock(gui_labels_mutex_);
     gui_lanes_ = std::move(lanes);
     gui_tracks_ = std::move(tracks);
     gui_arrivals_ = std::move(arrivals);
+    gui_trunks_ = std::move(trunks);
+    gui_global_nodes_ = std::move(global_nodes);
 }
 
 bool GateMateImpl::gui_arrival_used(int tile, int index) const
@@ -2475,6 +2535,14 @@ float GateMateImpl::gui_track(WireId node, int channel, float track) const
     auto it = gui_tracks_.find({node, channel});
     return it == gui_tracks_.end() ? track : it->second;
 }
+
+bool GateMateImpl::guiSelectsNet(WireId wire) const
+{
+    std::lock_guard<std::mutex> lock(gui_labels_mutex_);
+    return gui_global_nodes_.count(wire) > 0;
+}
+
+bool GateMateImpl::guiSelectsNet(PipId pip) const { return guiSelectsNet(ctx->getPipSrcWire(pip)); }
 
 bool GateMateImpl::guiDrawsUnusedRouting() const { return false; }
 

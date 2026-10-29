@@ -138,6 +138,8 @@ struct HimbaechelAPI
     virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const { return {}; }
     virtual void drawDetail(std::vector<GraphicElement> &g, DecalId decal) {}
     virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const { return {}; }
+    virtual bool guiSelectsNet(WireId wire) const { return false; }
+    virtual bool guiSelectsNet(PipId pip) const { return false; }
     virtual float getGuiColumnX(int x) const { return x; }
     virtual std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const { return {}; }
     virtual std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const { return {}; }

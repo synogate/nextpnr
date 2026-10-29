@@ -534,8 +534,13 @@ void DesignWidget::onClickedBel(BelId bel, bool keep)
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
 }
 
+static NetInfo *bound_net(Context *ctx, WireId wire) { return ctx->getBoundWireNet(wire); }
+static NetInfo *bound_net(Context *ctx, PipId pip) { return ctx->getBoundPipNet(pip); }
+
 void DesignWidget::onClickedWire(WireId wire, bool keep)
 {
+    if (clickedNet(wire, keep))
+        return;
     boost::optional<TreeModel::Item *> item;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
@@ -558,6 +563,8 @@ void DesignWidget::onClickedWire(WireId wire, bool keep)
 
 void DesignWidget::onClickedPip(PipId pip, bool keep)
 {
+    if (clickedNet(pip, keep))
+        return;
     boost::optional<TreeModel::Item *> item;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
@@ -577,6 +584,35 @@ void DesignWidget::onClickedPip(PipId pip, bool keep)
         tabWidget->setCurrentIndex(index);
     selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::PIP)->indexFromNode(*item),
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
+}
+
+// For a wire or pip whose click selects its net (see guiSelectsNet): select the net, as a click in
+// the net list does
+template <typename T> bool DesignWidget::clickedNet(T element, bool keep)
+{
+    boost::optional<TreeModel::Item *> item;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+
+        if (!ctx->guiSelectsNet(element))
+            return false;
+        NetInfo *net = bound_net(ctx, element);
+        if (net == nullptr)
+            return false;
+        item = getTreeByElementType(ElementType::NET)->nodeForId(IdStringList(net->name));
+        if (!item)
+            return false;
+        Q_EMIT selected(getDecals(ElementType::NET, IdStringList(net->name)), keep);
+    }
+    int index = getIndexByElementType(ElementType::NET);
+    if (!keep)
+        clearAllSelectionModels();
+    if (tabWidget->currentIndex() != index)
+        tabWidget->setCurrentIndex(index);
+    selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::NET)->indexFromNode(*item),
+                                           keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
+    return true;
 }
 
 void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QItemSelection &)

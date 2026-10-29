@@ -793,6 +793,8 @@ struct Arch : BaseArch<ArchRanges>
         return uarch->getDetailPips(decal, x, y);
     }
     float getGuiColumnX(int x) const override { return uarch->getGuiColumnX(x); }
+    bool guiSelectsNet(WireId wire) const override { return uarch->guiSelectsNet(wire); }
+    bool guiSelectsNet(PipId pip) const override { return uarch->guiSelectsNet(pip); }
     std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override
     {
         return uarch->getBelAttrs(bel);
