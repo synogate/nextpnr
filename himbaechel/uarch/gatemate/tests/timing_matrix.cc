@@ -890,8 +890,9 @@ TEST_F(GateMateTimingArcTest, critical_path_runs_through_carry_chain)
         for (IdString cell : {seg.from.first, seg.to.first})
             if (ctx->cells.at(cell)->type.in(id_CPE_ADDF, id_CPE_ADDF2))
                 adders.insert(cell);
-    // 16 bits in 8 CPEs of two bits each
-    EXPECT_GE(int(adders.size()), 8) << "path:" << describe(*path);
+    // 16 bits in 8 CPEs of two bits each; with the clock skew of the global clock the path may start
+    // at the register of the second CPE
+    EXPECT_GE(int(adders.size()), 7) << "path:" << describe(*path);
 }
 
 // The CPE that brings a carry input into the chain, and pass-through connections, go through

@@ -19,6 +19,9 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/range/adaptor/reversed.hpp>
+#include <map>
+#include <mutex>
+#include <queue>
 
 #include "gatemate.h"
 
@@ -44,8 +47,83 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
     return 100 + 100 * (std::abs(dx - sx) + std::abs(dy - sy)) + d2d;
 }
 
+const dict<WireId, delay_t> &GateMateImpl::clock_tree_delays(WireId src) const
+{
+    // (A search takes some seconds; std::map keeps references to its elements valid.)
+    static std::mutex mutex;
+    static std::map<std::string, dict<WireId, delay_t>> cache;
+    std::string key = stringf("%s %d %d %d%d%d %d %d", ctx->args.device.c_str(), timing_mode, fpga_mode,
+                              int(use_cp_for_clk), int(use_cp_for_cpe), int(use_bridges), src.tile, src.index);
+    std::lock_guard<std::mutex> lock(mutex);
+    auto found = cache.find(key);
+    if (found != cache.end())
+        return found->second;
+    dict<WireId, delay_t> &sinks = cache[key];
+    dict<WireId, delay_t> delay_map;
+    std::priority_queue<std::pair<delay_t, WireId>, std::vector<std::pair<delay_t, WireId>>,
+                        std::greater<std::pair<delay_t, WireId>>>
+            visit;
+    // The clock inputs. Each global clock reaches the register clocks of all CPEs, but only some of
+    // the clock inputs of RAMs and IOs: the search ends a little after it has reached all CPEs.
+    pool<WireId> cpe_clocks, other_clocks;
+    for (BelId bel : ctx->getBels()) {
+        BelBucketId bucket = ctx->getBelBucketForBel(bel);
+        if (bucket == id_CPE_FF)
+            cpe_clocks.insert(ctx->getBelPinWire(bel, id_CLK_INT));
+        else if (bucket.in(id_RAM_HALF, id_IOSEL))
+            for (IdString pin : {id_CLOCK1, id_CLOCK2, id_CLOCK3, id_CLOCK4})
+                other_clocks.insert(ctx->getBelPinWire(bel, pin));
+    }
+    cpe_clocks.erase(WireId());
+    delay_t last = 0;
+    delay_map[src] = 0;
+    visit.emplace(0, src);
+    while (!visit.empty()) {
+        auto [delay, wire] = visit.top();
+        visit.pop();
+        if (delay_map.at(wire) < delay)
+            continue;
+        if (cpe_clocks.empty() && delay > last + 1000)
+            break;
+        if (cpe_clocks.erase(wire) || other_clocks.count(wire)) {
+            sinks[wire] = delay;
+            last = delay;
+        }
+        for (PipId pip : ctx->getPipsDownhill(wire)) {
+            // As route_clock(): through a CPE only from CINY2 to COUTY2, and, unlike there, through no
+            // CPE used as a bridge (most CPEs are used)
+            const auto &extra_data = *pip_extra_data(pip);
+            if (!pip_allowed_by_options(pip))
+                continue;
+            if (extra_data.type == PipExtra::PIP_EXTRA_MUX && extra_data.resource != 0 &&
+                !(extra_data.resource == PipMask::C_CY2_I && extra_data.value == 0))
+                continue;
+            if (extra_data.type == PipExtra::PIP_EXTRA_MUX && (extra_data.flags & MUX_ROUTING))
+                continue;
+            WireId dst = ctx->getPipDstWire(pip);
+            delay_t next = delay + ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(dst).maxDelay();
+            auto prev = delay_map.find(dst);
+            if (prev != delay_map.end() && prev->second <= next)
+                continue;
+            delay_map[dst] = next;
+            visit.emplace(next, dst);
+        }
+    }
+    return sinks;
+}
+
 delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const
 {
+    // A global clock reaches its sinks through the clock network, with delays unrelated to distance
+    if (ctx->getBelType(src_bel) == id_GLBOUT) {
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        if (src != WireId() && dst != WireId()) {
+            const auto &sinks = clock_tree_delays(src);
+            auto found = sinks.find(dst);
+            if (found != sinks.end())
+                return found->second;
+        }
+    }
     int d2d = 0;
     if (tile_extra_data(src_bel.tile)->die != tile_extra_data(dst_bel.tile)->die)
         d2d += 2000;

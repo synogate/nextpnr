@@ -278,6 +278,10 @@ struct GateMateImpl : HimbaechelAPI
     dict<IdString, std::pair<IdString, IdString>> ff_routed_ports;
     IdString ff_clock_port(const CellInfo *cell) const;
     IdString ff_enable_port(const CellInfo *cell) const;
+    // The delays of the global clock network from a global clock driver's wire to the clock inputs it
+    // reaches, the way route_clock() routes them (computed when first needed, for all contexts with the
+    // same device and settings)
+    const dict<WireId, delay_t> &clock_tree_delays(WireId src) const;
     std::map<IdString, const GateMateTimingExtraDataPOD *> timing;
 
     enum class RamPinKind
