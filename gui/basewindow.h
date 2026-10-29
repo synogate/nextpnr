@@ -69,7 +69,7 @@ class BaseMainWindow : public QMainWindow
     virtual void new_proj() = 0;
 
     void open_json();
-    void save_json();
+    virtual void save_json();
     void place();
 
     void execute_python();

@@ -58,6 +58,9 @@ struct GateMateImpl : HimbaechelAPI
     void postPlace() override;
     void preRoute() override;
     void postRoute() override;
+    bool hasRouteRepair() const override { return true; }
+    void repairRoute() override;
+    void finishRoute() override;
     void assignArchInfo() override;
 
     virtual std::string getDefaultRouter() const override { return "router2"; };

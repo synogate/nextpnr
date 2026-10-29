@@ -23,6 +23,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <set>
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -204,6 +205,12 @@ void TimingWidget::analyse()
 
 void TimingWidget::updatePaths()
 {
+    // The selected path stays selected (by its endpoint) if it is still listed
+    int current = pathList->indexOfTopLevelItem(pathList->currentItem());
+    std::optional<CellPortKey> keep;
+    if (current >= 0 && current < int(paths.size()))
+        keep = paths.at(current).timing.endpoint;
+
     paths.clear();
     pathList->clear();
     segmentList->clear();
@@ -271,6 +278,15 @@ void TimingWidget::updatePaths()
     pathList->addTopLevelItems(items);
     for (int column = 0; column < 3; column++)
         pathList->resizeColumnToContents(column);
+    if (keep) {
+        auto found = std::find_if(paths.begin(), paths.end(),
+                                  [&](const Path &path) { return path.timing.endpoint == *keep; });
+        if (found != paths.end()) {
+            pathList->setCurrentItem(pathList->topLevelItem(found - paths.begin()));
+            return; // with its details as summary
+        }
+        Q_EMIT TimingWidget::selected({}, false);
+    }
 
     if (selected.empty())
         summary->setText(endpoints.empty() ? "No timing paths." : "No paths between these clocks.");

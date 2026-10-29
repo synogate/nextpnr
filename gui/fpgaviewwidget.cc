@@ -577,11 +577,13 @@ void FPGAViewWidget::renderLines(void)
     std::vector<std::pair<DecalXY, GroupId>> groupDecals;
     std::vector<std::pair<DecalXY, BoundingBox>> detailDecals;
     bool decalsChanged = false;
+    // Drawing a decal can read the netlist (an architecture draws a used bel by its cell's
+    // configuration): hold the Context while rendering, so that what changes the netlist under the
+    // lock waits for it.
+    std::unique_lock<std::mutex> lock_ui(ctx_->ui_mutex);
+    std::lock_guard<std::mutex> lock(ctx_->mutex);
     {
-        // Take the UI/Normal mutex on the Context, copy over all we need as
-        // fast as we can.
-        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
-        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        // Take the UI mutex only to copy over all we need as fast as we can.
 
         // For now, collapse any decal changes into change of all decals.
         // TODO(q3k): fix this
@@ -646,6 +648,7 @@ void FPGAViewWidget::renderLines(void)
             detailDecals = ctx_->getDetailDecals();
         }
     }
+    lock_ui.unlock();
 
     // Arguments from the main UI thread on what we should render.
     std::vector<DecalXY> selectedDecals;

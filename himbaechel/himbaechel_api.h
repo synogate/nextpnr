@@ -163,6 +163,11 @@ struct HimbaechelAPI
     virtual void postPlace() {};
     virtual void preRoute() {};
     virtual void postRoute() {};
+    // A postRoute that improves the routing before finishing it splits into these two, so that the GUI
+    // can run the improvement on demand (Arch::defer_route_finish)
+    virtual bool hasRouteRepair() const { return false; }
+    virtual void repairRoute() {};
+    virtual void finishRoute() {};
     // Called at the end of Arch::assignArchInfo, e.g. after a placed and routed design was loaded
     virtual void assignArchInfo() {};
 
