@@ -456,12 +456,14 @@ void GateMatePacker::pack_pll()
         int clk270_doub = 0;
         int clk180_doub = 0;
         if (ci.type == id_CC_PLL) {
-            int low_jitter = int_or_default(ci.params, id_LOW_JITTER, 0);
+            // (both default to 1: the primitives library and yosys's cells_bb.v, which does not write
+            // default parameters)
+            int low_jitter = int_or_default(ci.params, id_LOW_JITTER, 1);
             int ci_const = int_or_default(ci.params, id_CI_FILTER_CONST, 0);
             int cp_const = int_or_default(ci.params, id_CP_FILTER_CONST, 0);
             clk270_doub = int_or_default(ci.params, id_CLK270_DOUB, 0);
             clk180_doub = int_or_default(ci.params, id_CLK180_DOUB, 0);
-            int lock_req = int_or_default(ci.params, id_LOCK_REQ, 0);
+            int lock_req = int_or_default(ci.params, id_LOCK_REQ, 1);
 
             if (!ci.getPort(id_CLK_FEEDBACK))
                 ci.params[id_LOCK_REQ] = Property(lock_req, 1);
