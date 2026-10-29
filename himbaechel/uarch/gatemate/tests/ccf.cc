@@ -375,7 +375,8 @@ TEST_F(GateMateCcfTest, die_parameter)
 struct CcfErrorCase
 {
     const char *name;
-    // CCF content; %s is replaced with a valid package pin
+    // CCF content; each %s (up to two) is replaced with the same valid package pin (no %1$s, which the
+    // MSVC runtime does not support)
     const char *ccf;
     const char *error;
 };
@@ -387,7 +388,7 @@ class GateMateCcfErrorTest : public GateMateCcfTest, public ::testing::WithParam
 TEST_P(GateMateCcfErrorTest, rejected)
 {
     auto c = GetParam();
-    init_with_ccf(stringf(c.ccf, pins[0].c_str()), {"--allow-unconstrained"});
+    init_with_ccf(stringf(c.ccf, pins[0].c_str(), pins[0].c_str()), {"--allow-unconstrained"});
     small_design();
     EXPECT_LOG_ERROR(pack(), c.error);
 }
@@ -397,7 +398,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
                 CcfErrorCase{"unknown_location", "NET \"a\" Loc = \"IO_XX_Z99\";\n",
                              "Unknown location 'IO_XX_Z99' used in line 1."},
-                CcfErrorCase{"location_used_twice", "NET \"a\" Loc = \"%1$s\";\nNET \"b\" Loc = \"%1$s\";\n",
+                CcfErrorCase{"location_used_twice", "NET \"a\" Loc = \"%s\";\nNET \"b\" Loc = \"%s\";\n",
                              "used in line 2 not available."},
                 CcfErrorCase{"location_in_defaults", "default_GPIO | Loc = \"%s\";\n",
                              "Value 'LOC' can not be defined for default GPIO in line 1."},
