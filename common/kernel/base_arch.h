@@ -335,6 +335,8 @@ template <typename R> struct BaseArch : ArchAPI<R>
     virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return {}; }
     virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override { return {}; }
     virtual float getGuiColumnX(int x) const override { return x; }
+    virtual bool guiSelectsNet(WireId /*wire*/) const override { return false; }
+    virtual bool guiSelectsNet(PipId /*pip*/) const override { return false; }
 
     // Cell timing methods
     virtual bool getCellDelay(const CellInfo * /*cell*/, IdString /*fromPort*/, IdString /*toPort*/,

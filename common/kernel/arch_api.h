@@ -140,6 +140,10 @@ template <typename R> struct ArchAPI : BaseCtx
     // Where the GUI draws tile column x: the x of its left edge, a column being one unit wide.
     // Columns may be spread out, to make room for something drawn between them.
     virtual float getGuiColumnX(int x) const = 0;
+    // Whether clicking a used wire or pip in the GUI selects its net rather than the wire or pip:
+    // for a net that is hard to make out by its wires, like a global clock reaching every tile
+    virtual bool guiSelectsNet(WireId wire) const = 0;
+    virtual bool guiSelectsNet(PipId pip) const = 0;
     // Cell timing methods
     virtual bool getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const = 0;
     virtual TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const = 0;

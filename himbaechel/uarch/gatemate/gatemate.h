@@ -182,6 +182,9 @@ struct GateMateImpl : HimbaechelAPI
     float gui_track(WireId node, int channel, float track) const;
     // Whether a pip from this wire arriving from another tile is used
     bool gui_arrival_used(int tile, int index) const;
+    // A used global clock: clicking its trunk or a pip from it selects the net
+    bool guiSelectsNet(WireId wire) const override;
+    bool guiSelectsNet(PipId pip) const override;
     bool fixed_pip(PipId pip) const;
     // Where the GUI draws a tile wire, and where the drawing of a pip starts (at its source, or for
     // a source arriving from another tile, at its driver) and ends; for checking the drawings
@@ -314,6 +317,9 @@ struct GateMateImpl : HimbaechelAPI
     dict<std::pair<int, int>, float> gui_lanes_;
     dict<std::pair<WireId, int>, float> gui_tracks_;
     pool<std::pair<int, int>> gui_arrivals_;
+    // The trunks of the used global clocks, as lines, by the tile wire driving them; their nodes
+    dict<std::pair<int, int>, std::vector<std::array<float, 4>>> gui_trunks_;
+    pool<WireId> gui_global_nodes_;
 
     bool getChildPlacement(const BaseClusterInfo *cluster, Loc root_loc,
                            std::vector<std::pair<CellInfo *, BelId>> &placement) const;

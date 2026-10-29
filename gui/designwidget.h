@@ -59,6 +59,7 @@ class DesignWidget : public QWidget
     ~DesignWidget();
 
   private:
+    template <typename T> bool clickedNet(T element, bool keep);
     void clearProperties();
     QtProperty *addTopLevelProperty(const QString &id);
     QtProperty *addSubGroup(QtProperty *topItem, const QString &name);
