@@ -228,16 +228,14 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
     } else if (cell->type.in(id_CPE_FF, id_CPE_LATCH, id_CPE_FF_L, id_CPE_FF_U)) {
         return false;
     } else if (cell->type.in(id_CPE_CPLINES)) {
-        if (timing_fixes) {
-            // Bug 28: from a LUT output (comb12_*), from the comparator (comb12_compout_*), carries
-            // passing through (_ROUTING_*); zero where the database has nothing
-            IdString name = fromPort.in(id_OUT1, id_OUT2) ? ctx->idf("timing_comb12_%s", toPort.c_str(ctx))
-                            : fromPort == id_COMPOUT
-                                    ? ctx->idf("timing_comb12_compout_%s", toPort.c_str(ctx))
-                                    : ctx->idf("timing__ROUTING_%s_%s", fromPort.c_str(ctx), toPort.c_str(ctx));
-            if (!get_delay_from_tmg_db(name, delay))
-                delay = DelayQuad{0};
-        }
+        // From a LUT output (comb12_*), from the comparator (comb12_compout_*), carries
+        // passing through (_ROUTING_*); zero where the database has nothing
+        IdString name = fromPort.in(id_OUT1, id_OUT2) ? ctx->idf("timing_comb12_%s", toPort.c_str(ctx))
+                        : fromPort == id_COMPOUT
+                                ? ctx->idf("timing_comb12_compout_%s", toPort.c_str(ctx))
+                                : ctx->idf("timing__ROUTING_%s_%s", fromPort.c_str(ctx), toPort.c_str(ctx));
+        if (!get_delay_from_tmg_db(name, delay))
+            delay = DelayQuad{0};
         return true;
     } else if (cell->type.in(id_CPE_BRIDGE)) {
         return true;
