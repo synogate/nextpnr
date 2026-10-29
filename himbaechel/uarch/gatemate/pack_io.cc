@@ -50,6 +50,58 @@ void GateMatePacker::pack_io()
             }
         }
     }
+    // The clock and edge of the registers a port reaches through logic (forward from an input, back from an
+    // output), the most common one; only clocks coming in through a port of the partition count
+    auto is_sequential = [&](const CellInfo *ci) {
+        return ci->type.in(id_CC_DFF, id_CC_DLT, id_CC_BRAM_20K, id_CC_BRAM_40K, id_CC_FIFO_40K);
+    };
+    auto is_port_clock = [&](const NetInfo *clk) {
+        if (!clk || !clk->driver.cell || clk->driver.cell->type != id_CC_BUFG)
+            return false;
+        const NetInfo *in = clk->driver.cell->getPort(id_I);
+        return in && (!in->driver.cell || in->driver.cell->type == ctx->id("$nextpnr_ibuf"));
+    };
+    auto port_clock = [&](NetInfo *start, bool forward) {
+        dict<std::pair<IdString, bool>, int> count;
+        pool<IdString> seen;
+        std::vector<NetInfo *> todo = {start};
+        auto reg = [&](CellInfo *ci) {
+            NetInfo *clk = ci->getPort(id_CLK);
+            if (ci->type == id_CC_DFF && is_port_clock(clk))
+                count[{clk->name, bool_or_default(ci->params, id_CLK_INV)}]++;
+        };
+        while (!todo.empty()) {
+            NetInfo *net = todo.back();
+            todo.pop_back();
+            if (!net || net == net_PACKER_GND || net == net_PACKER_VCC || !seen.insert(net->name).second)
+                continue;
+            auto visit = [&](CellInfo *ci) {
+                if (!ci || ci->type == id_CC_BUFG || ci->type.str(ctx).rfind("$nextpnr", 0) == 0)
+                    return;
+                if (is_sequential(ci)) {
+                    reg(ci);
+                    return;
+                }
+                for (auto &port : ci->ports)
+                    if (port.second.type == (forward ? PORT_OUT : PORT_IN))
+                        todo.push_back(port.second.net);
+            };
+            if (forward)
+                for (auto &usr : net->users)
+                    visit(usr.cell);
+            else
+                visit(net->driver.cell);
+        }
+        std::pair<NetInfo *, bool> best{nullptr, false};
+        int most = 0;
+        for (auto &c : count)
+            if (c.second > most) {
+                most = c.second;
+                best = {ctx->nets.at(c.first.first).get(), c.first.second};
+            }
+        return best;
+    };
+    int clocked_stand_ins = 0;
     // Trim nextpnr IOBs - assume IO buffer insertion has been done in synthesis
     for (auto &port : ctx->ports) {
         if (!ctx->cells.count(port.first))
@@ -86,16 +138,33 @@ void GateMatePacker::pack_io()
             // Each port gets a cell standing in for the design outside until after routing, so routing the
             // partition leaves a way in to its sinks and out from its drivers: a register driving an input (a
             // LUT would be merged into the CPE of a register it feeds) and a LUT on an output (a register
-            // would be merged into the CPE driving it)
+            // would be merged into the CPE driving it). The stand-in registers are clocked on the edge opposite
+            // to the registers on the port's other side, so the paths through the port are timed with half a
+            // period, the other half being left for the logic the importing design adds outside. An output
+            // driven by a register needs no such reserve; its LUT stays unclocked.
             bool is_input = ci->type == ctx->id("$nextpnr_ibuf");
             if (net && !is_clock && (is_input || net->driver.cell)) {
                 IdString name = ctx->idf("%s$partition_port", ctx->nameOf(port.first));
+                std::pair<NetInfo *, bool> clock{nullptr, false};
+                if (is_input || !is_sequential(net->driver.cell))
+                    clock = port_clock(net, is_input);
+                auto make_dff = [&](IdString dff_name) {
+                    CellInfo *dff = ctx->createCell(dff_name, id_CC_DFF);
+                    for (IdString p : {id_D, id_CLK, id_EN, id_SR})
+                        dff->addInput(p);
+                    dff->addOutput(id_Q);
+                    if (clock.first) {
+                        dff->connectPort(id_CLK, clock.first);
+                        dff->params[id_CLK_INV] = Property(clock.second ? 0 : 1, 1);
+                    }
+                    dff->attrs[ctx->id("keep")] = Property(1);
+                    if (outside != IdString())
+                        ctx->constrainCellToRegion(dff->name, outside);
+                    return dff;
+                };
                 CellInfo *dummy;
                 if (is_input) {
-                    dummy = ctx->createCell(name, id_CC_DFF);
-                    for (IdString p : {id_D, id_CLK, id_EN, id_SR})
-                        dummy->addInput(p);
-                    dummy->addOutput(id_Q);
+                    dummy = make_dff(name);
                     dummy->connectPort(id_Q, net);
                 } else {
                     dummy = ctx->createCell(name, id_CC_LUT1);
@@ -103,11 +172,25 @@ void GateMatePacker::pack_io()
                     dummy->addOutput(id_O);
                     dummy->params[id_INIT] = Property(1, 2); // an inverter, which is not optimised away
                     dummy->connectPort(id_I0, net);
+                    if (clock.first) {
+                        // (named after the LUT, so detach_partition_ports takes it out with it)
+                        CellInfo *dff = make_dff(ctx->idf("%s$ff", name.c_str(ctx)));
+                        NetInfo *d = ctx->createNet(ctx->idf("%s$d", name.c_str(ctx)));
+                        dummy->connectPort(id_O, d);
+                        dff->connectPort(id_D, d);
+                    }
                 }
                 dummy->attrs[ctx->id("keep")] = Property(1);
                 uarch->partition_port_cells.insert(dummy->name);
+                clocked_stand_ins += clock.first != nullptr;
                 if (outside != IdString())
                     ctx->constrainCellToRegion(dummy->name, outside);
+                if (ctx->verbose)
+                    log_info("    stand-in on port '%s'%s\n", ctx->nameOf(port.first),
+                             clock.first ? stringf(" clocked by '%s' on the %s edge", ctx->nameOf(clock.first),
+                                                   clock.second ? "rising" : "falling")
+                                                 .c_str()
+                                         : " (not clocked)");
             }
             continue;
         }
@@ -198,6 +281,9 @@ void GateMatePacker::pack_io()
         ci->disconnectPort(id_O);
         ctx->cells.erase(port.first);
     }
+    if (uarch->as_partition)
+        log_info("Partition ports: %d stand-ins clocked on the opposite edge, %d not clocked.\n", clocked_stand_ins,
+                 int(uarch->partition_port_cells.size()) - clocked_stand_ins);
 
     // The pads the netlist assigns (PIN_NAME, LOC) are not for the unconstrained IOs, whichever comes
     // first (the CCF's ones left the pool when it was read)

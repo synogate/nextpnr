@@ -233,8 +233,15 @@ struct GateMateImpl : HimbaechelAPI
     // With partition_open the design may place cells in the free tiles of the partitions' areas too
     bool partition_open = false;
     // Cells imported from partitions, and the tiles of the rectangles they cover, where no other cell may go
+    // while placing
     pool<IdString> partition_cells;
     pool<int> partition_tiles;
+    // The placement strength the partition's cells had when it was implemented; they are locked while placing
+    // and get it back after, so the passes after placement may change the partitions too
+    dict<IdString, PlaceStrength> partition_strength;
+    void release_partitions();
+    // Nets of partitions whose routing was imported (weakly bound, open to the router and the repairs)
+    pool<IdString> partition_nets;
     // Tiles the locked routing of partitions passes through, where the fixed multiplier paths may be taken
     pool<int> partition_routed_tiles;
 

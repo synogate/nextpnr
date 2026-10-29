@@ -56,6 +56,10 @@ int GateMateImpl::replicate_drivers(int min_fanout, bool all)
                     int tx = cx + dx, ty = cy + dy;
                     if (tx < 0 || ty < 0 || tx >= ctx->getGridDimX() || ty >= ctx->getGridDimY())
                         continue;
+                    // Not into imported partitions, nor into the CPEs a partition keeps free for IOs
+                    int tile = tile_by_xy(ctx->chip_info, tx, ty);
+                    if (partition_tiles.count(tile) || (as_partition && partition_io_tiles.count(tile)))
+                        continue;
                     bool special = false;
                     for (int z :
                          {CPE_RAMIO_U_Z, CPE_RAMIO_L_Z, CPE_COMP_Z, CPE_CPLINES_Z, CPE_LT_FULL_Z, CPE_BRIDGE_Z}) {

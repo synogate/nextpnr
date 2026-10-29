@@ -306,6 +306,8 @@ void GateMateImpl::import_partition(const std::string &spec)
 
     // The cells, placed at their moved bels
     int num_cells = 0;
+    dict<std::string, IdString> cell_names;                     // in the partition -> here
+    std::vector<std::pair<CellInfo *, std::string>> cluster_roots; // cells and their cluster roots' names
     std::vector<std::string> unmovable;
     BoundingBox area(std::numeric_limits<int>::max(), std::numeric_limits<int>::max(), -1, -1);
     for (auto &cell : mod["cells"].object_items()) {
@@ -333,11 +335,23 @@ void GateMateImpl::import_partition(const std::string &spec)
         if (CellInfo *other = ctx->getBoundBelCell(moved))
             log_error("Cell '%s' of partition '%s' would be placed on %s, which '%s' uses already.\n",
                       cell.first.c_str(), inst_name.c_str(), ctx->nameOfBel(moved), ctx->nameOf(other));
+        // Locked while placing, see release_partitions
         ctx->bindBel(moved, ci, STRENGTH_LOCKED);
+        auto strength = ci->attrs.find(id_BEL_STRENGTH);
+        // (files written before the clusters were stored keep their cells locked: the passes would not see them)
+        partition_strength[ci->name] = strength != ci->attrs.end() && setting("partition-clusters")
+                                               ? PlaceStrength(strength->second.as_int64())
+                                               : STRENGTH_LOCKED;
         ci->attrs.erase(id_NEXTPNR_BEL);
         ci->attrs.erase(id_BEL_STRENGTH);
         restore_partition_attrs(ci);
         partition_cells.insert(ci->name);
+        auto cluster = ci->attrs.find(id_GATEMATE_CLUSTER);
+        if (cluster != ci->attrs.end()) {
+            cluster_roots.emplace_back(ci, cluster->second.as_string());
+            ci->attrs.erase(cluster);
+        }
+        cell_names[cell.first] = ci->name;
         Loc loc = ctx->getBelLocation(moved);
         area.x0 = std::min(area.x0, loc.x);
         area.y0 = std::min(area.y0, loc.y);
@@ -425,6 +439,15 @@ void GateMateImpl::import_partition(const std::string &spec)
         log_error("Partition '%s' can not be moved by (%d, %d): %d cells would land on other kinds of tile.\n",
                   inst_name.c_str(), dx, dy, int(unmovable.size()));
     }
+    for (auto &c : cluster_roots) {
+        auto root = cell_names.find(c.second);
+        if (root == cell_names.end())
+            continue; // (a stand-in, gone)
+        CellInfo *ci = c.first;
+        ci->cluster = root->second;
+        if (ci->name != root->second)
+            ctx->cells.at(root->second)->constr_children.push_back(ci);
+    }
 
     // The constant nets (see detach_partition_ports) get drivers as the JSON frontend makes them, which packing
     // joins with this design's constants
@@ -445,18 +468,24 @@ void GateMateImpl::import_partition(const std::string &spec)
     }
 
     // Bind the routing of the nets inside the partition and check it reaches every sink; a net whose
-    // routing can not be moved is routed again
+    // routing can not be moved is routed again. It is bound as the router binds its routing, so the router
+    // and the repairs after it may change it, but for the fixed multiplier paths (route_mult), locked as there.
     int locked = 0, rerouted = 0;
     for (auto &r : routing) {
         NetInfo *net = ctx->nets.at(r.first).get();
         std::string why;
         WireId src = net->driver.cell ? ctx->getNetinfoSourceWire(net) : WireId();
+        IdString drv = net->driver.cell ? net->driver.cell->name : IdString();
+        bool fixed = net->driver.port == id_OUT &&
+                     (multiplier_a_passthru_lowers.count(drv) || multiplier_a_passthru_uppers.count(drv) ||
+                      multiplier_zero_drivers.count(drv));
+        PlaceStrength strength = fixed ? STRENGTH_LOCKED : STRENGTH_WEAK;
         if (src == WireId())
             why = "no source wire";
         else if (NetInfo *other = ctx->getBoundWireNet(src))
             why = stringf("source wire %s used by '%s'", ctx->nameOfWire(src), ctx->nameOf(other));
         else
-            ctx->bindWire(src, net, STRENGTH_LOCKED);
+            ctx->bindWire(src, net, strength);
         for (auto &pip : r.second) {
             if (!why.empty())
                 break;
@@ -467,7 +496,7 @@ void GateMateImpl::import_partition(const std::string &spec)
                 why = stringf("wire %s used by '%s'", ctx->nameOfWire(ctx->getPipDstWire(pip.first)),
                               ctx->nameOf(other));
             else
-                ctx->bindPip(pip.first, net, STRENGTH_LOCKED);
+                ctx->bindPip(pip.first, net, strength);
         }
         for (auto &usr : net->users) {
             for (WireId sink : ctx->getNetinfoSinkWires(net, usr)) {
@@ -488,6 +517,8 @@ void GateMateImpl::import_partition(const std::string &spec)
                 if (w.second.pip != PipId())
                     partition_routed_tiles.insert(w.second.pip.tile);
             }
+            if (!fixed)
+                partition_nets.insert(net->name);
             locked++;
             continue;
         }
@@ -496,11 +527,23 @@ void GateMateImpl::import_partition(const std::string &spec)
             log_info("    routing net '%s' again: %s\n", ctx->nameOf(net), why.c_str());
         ctx->ripupNet(net->name);
     }
-    log_info("    %d cells, %d nets with locked routing, %d nets to route again (%d pips on other kinds of "
+    log_info("    %d cells, %d nets with imported routing, %d nets to route again (%d pips on other kinds of "
              "tile).\n",
              num_cells, locked, rerouted, unmovable_pips);
     if (partition_open)
         open_partition_area(area);
+}
+
+void GateMateImpl::release_partitions()
+{
+    // After placing, the partitions' cells may move as any other: they get back the strength they had
+    for (auto &s : partition_strength) {
+        auto found = ctx->cells.find(s.first);
+        if (found != ctx->cells.end() && found->second->belStrength == STRENGTH_LOCKED)
+            found->second->belStrength = s.second;
+    }
+    // The cells of the design may go into the partitions' areas now; the partitions' routing gives way to them
+    partition_tiles.clear();
 }
 
 void GateMateImpl::open_partition_area(const BoundingBox &area)
@@ -593,6 +636,17 @@ void GateMateImpl::restore_partition_attrs(CellInfo *ci)
     auto constr_x = ci->attrs.find(id_GATEMATE_CONSTR_X);
     if (constr_x != ci->attrs.end())
         ci->constr_x = constr_x->second.as_int64();
+    auto constr = ci->attrs.find(id_GATEMATE_CONSTR);
+    if (constr != ci->attrs.end()) {
+        int x, y, z, abs_z;
+        if (sscanf(constr->second.as_string().c_str(), "%d,%d,%d,%d", &x, &y, &z, &abs_z) == 4) {
+            ci->constr_x = x;
+            ci->constr_y = y;
+            ci->constr_z = z;
+            ci->constr_abs_z = abs_z;
+        }
+        ci->attrs.erase(constr);
+    }
 }
 
 pool<IdString> GateMateImpl::partition_detached_cells() const
@@ -782,6 +836,7 @@ void GateMateImpl::detach_partition_ports()
 
 void GateMateImpl::save_partition_attrs()
 {
+    ctx->settings[ctx->id("partition-clusters")] = 1;
     if (partition_area.x0 >= 0)
         ctx->settings[ctx->id("partition-area")] = stringf("%d,%d,%d,%d", partition_area.x0, partition_area.y0,
                                                            partition_area.x1, partition_area.y1);
@@ -796,6 +851,12 @@ void GateMateImpl::save_partition_attrs()
             ci->attrs[id_GATEMATE_MULT] = std::string("zero_driver");
         if (ci->type == id_CPE_MULT)
             ci->attrs[id_GATEMATE_CONSTR_X] = Property(ci->constr_x, 32);
+        // The clusters, which the passes after placement respect (a register merged with its LUT, chains)
+        if (ci->cluster != ClusterId()) {
+            ci->attrs[id_GATEMATE_CLUSTER] = ci->cluster.str(ctx);
+            ci->attrs[id_GATEMATE_CONSTR] = stringf("%d,%d,%d,%d", ci->constr_x, ci->constr_y, ci->constr_z,
+                                                    int(ci->constr_abs_z));
+        }
         // The JSON writer writes the ports name[i] of a cell as a bus from the lowest i, without that index
         dict<std::string, int> offsets;
         for (auto &port : ci->ports) {

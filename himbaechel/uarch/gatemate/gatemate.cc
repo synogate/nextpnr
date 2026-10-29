@@ -603,6 +603,7 @@ void GateMateImpl::check_regions()
 
 void GateMateImpl::postPlace()
 {
+    release_partitions();
     if (timing_opt_after_place) {
         // Only cells outside clusters move, so these are LUT trees not merged with a register
         TimingOptCfg cfg(ctx);
@@ -755,8 +756,9 @@ void GateMateImpl::preRoute()
         }
     }
     prerouted_nets.clear();
+    // (the routing imported with partitions is the router's to change, as is that of the repairs)
     for (auto &net : ctx->nets)
-        if (!net.second->wires.empty())
+        if (!net.second->wires.empty() && !partition_nets.count(net.first))
             prerouted_nets.insert(net.first);
 }
 
@@ -989,6 +991,9 @@ void GateMateImpl::postRoute()
         // into the CPE inputs the routing reaches, which needs the routing of the ports, done on import
         detach_partition_ports();
         save_partition_attrs();
+        // The timing results kept for the report name the stand-ins just taken out (the paths through the ports
+        // are in the log above)
+        timing_analysis(ctx, false, false, false, false, true);
         if (ctx->args.options.count("out"))
             log_warning("No bitstream is written for a partition.\n");
         return;

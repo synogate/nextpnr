@@ -1,9 +1,11 @@
 # Partitions: placing and routing a design in parts
 
 A partition is a module placed and routed on its own. Another design can then use it as a finished block. The
-partition's cells and the routing inside it are taken over as they are, locked, and optionally moved by whole
-tiles. Only the rest of the design and the connections to the partition are placed and routed. One partition
-file can be used several times, at different places.
+partition's cells and the routing inside it are taken over, optionally moved by whole tiles. The placer keeps
+them where they are and places only the rest of the design. After that, the partition is part of the design
+like any other logic: the passes after placement (the placement and routing repairs, LUT input swaps, driver
+replication) and the router may change its cells and routing too, where that helps. One partition file can be
+used several times, at different places.
 
 ## Flow
 
@@ -77,9 +79,10 @@ again, and the log reports how many there are (`--verbose` names them and gives 
 
 ## What the importing design keeps out of
 
-- The rectangle of each partition: its area, or where its cells are if they reach further. The placer puts no
-  cell there except cells fixed by packing (the CPEs next to the IO pads), because a cell in a gap would be
-  closed in by the partition's locked routing. A compact area wastes the least.
+- While placing, the rectangle of each partition: its area, or where its cells are if they reach further. The
+  placer puts no cell there except cells fixed by packing (the CPEs next to the IO pads), because a cell in a
+  gap would have the router take the partition's routing apart. A compact area wastes the least. The passes
+  after placement may use the free places there.
 - The RAM sites whose CPEs fall into that rectangle, even those the partition does not use. A RAM uses CPEs
   from 6 tiles left to 4 tiles right of its column, so a partition area within that distance of a RAM column
   takes the RAM sites along it. Keep partitions without RAMs away from the RAM columns, or the rest of the
@@ -88,13 +91,13 @@ again, and the log reports how many there are (`--verbose` names them and gives 
 - The CPEs next to the IOs and the clocking (whichever the design uses): a partition never places cells on
   them or routes into them, but placing its area along the IO ring still narrows the routing there.
 
-With `--vopt partition-open` the design may also place cells in the free tiles of a partition's rectangle, but
-only where the partition's locked routing leaves a way into every CPE input there: a flood over the free wires,
+With `--vopt partition-open` the placer may also put cells in the free tiles of a partition's rectangle, but
+only where the partition's routing leaves a way into every CPE input there: a flood over the free wires,
 starting from the outputs of all bels outside the partitions' cells, has to reach each input. Without it, a
 partition without region closes most of the device. With it, on the dmg_soc, a partition of everything but
 the pixel pipeline left 10041 of 10402 tiles of its rectangle open; the closed ones hold bridges of its
-routing. Multipliers never go into tiles that the locked routing of a partition passes through, since their
-fixed routing could not get through there.
+routing. Multipliers never go into tiles that the routing of a partition passes through, since their fixed
+routing could not get through there. The fixed routing of the partition's own multipliers stays locked.
 
 ## Timing
 
@@ -106,20 +109,29 @@ pixel pipeline as partitions, the 33 MHz clock went from 31.1 MHz (flat) to abou
 being the same one with longer connections around the CPU. Floorplan partitions where their neighbours will
 be, and register the signals that cross their edges where timing matters.
 
-In step 1 a port's stand-in is not clocked, so paths that end or start at a port are not timed there. Logic
-in the partition that feeds an IO register of the design is then placed and sized as if it had all the time,
-and far from the IO. On the dmg_soc, with everything but the pixel pipeline as one partition without region,
+In step 1 the paths through the ports are timed with half a period. A port's stand-in is a register clocked
+on the edge opposite to the registers the port reaches through the partition's logic (the most common clock
+and edge among them, if that clock is a clock input of the partition), so the logic between the port and
+those registers gets half the period, and the other half is left for what the importing design adds outside.
+An output driven straight by a register (or a RAM) keeps an unclocked stand-in, as do ports reaching no
+register on a clock input; paths through them are not timed in step 1. The log names how many stand-ins are
+clocked (`--verbose` lists them).
+
+Without that reserve, the logic between a port and the partition's registers was placed and routed as if it
+had all the time. On the dmg_soc, with everything but the pixel pipeline as one partition without region,
 step 1 reached 30.7 MHz (flat 31.1), but in the whole design the critical path became one from a RAM in the
 partition, 15.8 ns through its logic, to a DDR output register of the HyperBus PHY on the falling edge (half
-a period), with 4.7 ns from the partition to the IO: 21.4 MHz. Keep logic that feeds IO registers out of
-partitions, or register it at the partition's edge.
+a period), with 4.7 ns from the partition to the IO: 21.4 MHz. Half a period is a guess: logic that feeds IO
+registers on the other edge, or long paths outside, still need registers at the partition's edge.
 
 ## Limits
 
 - Partitions have no inout ports, no IO buffers of their own and no PLLs. Up to 4 clock inputs are allowed,
   and each must be a global clock in the importing design. RAMs of the partition are reconnected to the
   global clock lines the importing design uses for those clocks.
-- The timing inside a partition is optimised only when the partition is placed and routed on its own. Moving it
-  changes only the connections to the rest of the design.
+- The placement inside a partition is made when it is placed and routed on its own; the importing design only
+  repairs it (the repairs move single LUT trees and registers, not clusters such as chains or multipliers).
+- The clusters of the partition (registers merged with their LUTs, chains, multipliers) are stored with it
+  since the passes after placement respect them; the cells of partition files written before that stay locked.
 - Loading a placed and routed design to place and route it again is not supported. Implement it as a partition
   instead.
