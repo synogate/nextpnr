@@ -41,6 +41,7 @@ set(TEST_SOURCES
     tests/config_output.cc
     tests/errors.cc
     tests/harness.cc
+    tests/hierarchy.cc
     tests/io_registers.cc
     tests/io_semantics.cc
     tests/known_bugs.h
