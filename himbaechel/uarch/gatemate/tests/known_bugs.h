@@ -62,11 +62,6 @@ enum class KnownBug
     // Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/ram
     RAM_OUTPUT_CPE_IGNORED,
 
-    // delay.cc getPortClockingInfo: the enable of a CPE register (EN_INT after packing) has no
-    // setup time.
-    // Test: GateMateTimingArcTest.register_enable_setup_time
-    REGISTER_ENABLE_SETUP_MISSING,
-
     // common/kernel/timing_log.cc log_fmax: a path between two related clock domains that both
     // have no Fmax entry (no register-to-register paths of their own) throws std::out_of_range
     // from clock_fmax.at(), here during placement, once any other clock has an Fmax entry. With

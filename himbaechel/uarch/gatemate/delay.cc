@@ -524,8 +524,8 @@ TimingClockingInfo GateMateImpl::getPortClockingInfo(const CellInfo *cell, IdStr
         bool inverted = int_or_default(cell->params, id_C_CPE_CLK, 0) == 0b01;
         info.edge = inverted ? FALLING_EDGE : RISING_EDGE;
         info.clock_port = id_CLK_INT;
-        // Bug 26: the packer renames the enable to EN_INT
-        if (port.in(id_DIN, id_EN, id_SR) || (timing_fixes && port == id_EN_INT))
+        // (the packer renames the enable to EN_INT, routing to EN)
+        if (port.in(id_DIN, id_EN, id_EN_INT, id_SR))
             get_setuphold_from_tmg_db(id_timing_del_Setup_D_L, id_timing_del_Hold_D_L, info.setup, info.hold);
         if (port.in(id_DOUT)) {
             // (registers sit at CPE_FF_U_Z/CPE_FF_L_Z)

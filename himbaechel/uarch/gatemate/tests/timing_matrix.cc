@@ -522,8 +522,7 @@ TEST_P(GateMateTimingMatrixTest, path_is_timed)
                 EXPECT_EQ(int(first->type), int(CriticalPath::Segment::Type::CLK_TO_Q)) << "path:" << describe(*path);
                 EXPECT_GT(first->delay, 0) << "clock to output of the source; path:" << describe(*path);
             }
-            bool enable_setup_missing = avoid(KnownBug::REGISTER_ENABLE_SETUP_MISSING) && last.to.second == id_EN_INT;
-            if (registered(sink) && !enable_setup_missing) {
+            if (registered(sink)) {
                 EXPECT_EQ(int(last.type), int(CriticalPath::Segment::Type::SETUP)) << "path:" << describe(*path);
                 EXPECT_GT(last.delay, 0) << "setup time of the sink; path:" << describe(*path);
             }
@@ -537,8 +536,6 @@ TEST_P(GateMateTimingMatrixTest, path_is_timed)
                 IdString port = arrival.cell_port.second;
                 if (!belongs_to(ctx->nets.at(net.first).get(), cell->name, prefix) ||
                     !(event(arrival.clock_pair.start) == launch))
-                    continue;
-                if (avoid(KnownBug::REGISTER_ENABLE_SETUP_MISSING) && port == id_EN_INT)
                     continue;
                 int count = 0;
                 ASSERT_EQ(ctx->getPortTimingClass(cell, port, count), TMG_REGISTER_INPUT)
