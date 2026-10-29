@@ -41,15 +41,6 @@ enum class KnownBug
     // Test: Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/adder_carry_used
     ADDER_CPOUT_NOT_TIMED,
 
-    // delay.cc getCellDelay: CPE_L2T4 cells fed from the CPE's internal inputs COMBIN and CINY1
-    // have no arcs to OUT (no such entries in the timing database): paths through a LUT that
-    // drives a register and further logic, through the fifth input of 5-input LUT trees, through
-    // the carry out of adder chains (comparators) and multiplier carry logic are not analysed.
-    // (Fed only from CINX/PINX/PINY1, the output is TMG_IGNORE, which stops required times.)
-    // Tests: GateMateLaunchTest.*, Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/
-    // luts, adder, multiplier
-    CPE_INTERNAL_INPUT_ARCS_MISSING,
-
     // common/kernel/timing_log.cc log_fmax: a path between two related clock domains that both
     // have no Fmax entry (no register-to-register paths of their own) throws std::out_of_range
     // from clock_fmax.at(), here during placement, once any other clock has an Fmax entry. With

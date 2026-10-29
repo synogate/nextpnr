@@ -173,16 +173,14 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             if (map_lower.count(tp))
                 tp = map_lower[tp];
         }
-        if (timing_fixes) {
-            // Bug 31: the database has no arcs from the CPE's internal inputs. From COMBIN (the upper
-            // half's result) the upper half's own arc covers the path: its inputs reach the lower
-            // output (ARBLUT_IN1_OUT1) about as fast as its own (ARBLUT_IN1_OUT2). From CINY1, a
-            // carry in, the adder's carry-in-to-sum delay.
-            if (fp == id_COMBIN)
-                return true;
-            if (fp == id_CINY1)
-                return get_delay_from_tmg_db(ctx->idf("timing__ADDF2Y1_CINY1_%s", tp.c_str(ctx)), delay);
-        }
+        // The database has no arcs from the CPE's internal inputs. From COMBIN (the upper half's
+        // result) the upper half's own arc covers the path: its inputs reach the lower output
+        // (ARBLUT_IN1_OUT1) about as fast as its own (ARBLUT_IN1_OUT2). From CINY1, a carry in, the
+        // adder's carry-in-to-sum delay.
+        if (fp == id_COMBIN)
+            return true;
+        if (fp == id_CINY1)
+            return get_delay_from_tmg_db(ctx->idf("timing__ADDF2Y1_CINY1_%s", tp.c_str(ctx)), delay);
         return get_delay_from_tmg_db(ctx->idf("timing__ARBLUT_%s_%s", fp.c_str(ctx), tp.c_str(ctx)), delay);
     } else if (cell->type.in(id_CPE_ADDF, id_CPE_ADDF2)) {
         IdString fp = fromPort, tp = toPort;

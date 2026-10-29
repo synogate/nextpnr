@@ -574,10 +574,6 @@ TEST_P(GateMateRandomLogicTest, timing_arcs_cover_dependencies)
         if (avoiding_bug(KnownBug::ADDER_CPOUT_NOT_TIMED) && type.in(id_CPE_ADDF, id_CPE_ADDF2) &&
             arc.to.in(id_CPOUT1, id_CPOUT2))
             return true;
-        if (avoiding_bug(KnownBug::CPE_INTERNAL_INPUT_ARCS_MISSING) && type == id_CPE_L2T4)
-            for (IdString port : arc.from)
-                if (port.in(id_CINX, id_CINY1, id_CINY2, id_PINX, id_PINY1, id_COMBIN))
-                    return true;
         if (avoiding_bug(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && type == id_IOSEL &&
             bool_or_default(arc.cell->params, id_OUT_SIGNAL) && bool_or_default(arc.cell->params, id_OE_ENABLE))
             return true;
