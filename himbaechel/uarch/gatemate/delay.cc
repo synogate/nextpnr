@@ -585,12 +585,12 @@ TimingClockingInfo GateMateImpl::getPortClockingInfo(const CellInfo *cell, IdStr
             else
                 get_delay_from_tmg_db(id_timing_RAM_NOECC_IOPATH_1, info.clockToQ);
         }
-        // Bug 25: with output registers, the registered clock-to-out
+        // With output registers, the registered clock-to-out
         // (after placement, the settings of the half the RAM sits in: a0/b0 or a1/b1)
-        bool reg_a = timing_fixes && (int_or_default(cell->params, id_RAM_cfg_a0_set_outputreg, 0) ||
-                                      int_or_default(cell->params, id_RAM_cfg_a1_set_outputreg, 0));
-        bool reg_b = timing_fixes && (int_or_default(cell->params, id_RAM_cfg_b0_set_outputreg, 0) ||
-                                      int_or_default(cell->params, id_RAM_cfg_b1_set_outputreg, 0));
+        bool reg_a = int_or_default(cell->params, id_RAM_cfg_a0_set_outputreg, 0) ||
+                     int_or_default(cell->params, id_RAM_cfg_a1_set_outputreg, 0);
+        bool reg_b = int_or_default(cell->params, id_RAM_cfg_b0_set_outputreg, 0) ||
+                     int_or_default(cell->params, id_RAM_cfg_b1_set_outputreg, 0);
         if (boost::starts_with(name, "DOA") && reg_a)
             get_delay_from_tmg_db(ctx->id("timing_RAM_REG_IOPATH_2"), info.clockToQ);
         else if (boost::starts_with(name, "DOA")) {
