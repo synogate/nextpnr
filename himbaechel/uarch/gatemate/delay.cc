@@ -247,9 +247,8 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
         if (fromPort == id_I && toPort == id_RAM_O)
             return get_delay_from_tmg_db(z ? id_timing_comb12_RAM_O1 : id_timing_comb12_RAM_O2, delay);
         if (fromPort == id_RAM_I && toPort == id_OUT) {
-            // Bug 24: about 0.1 ns, not zero
-            if (timing_fixes)
-                get_delay_from_tmg_db(ctx->id(z ? "timing__ARBLUT_RAM_I1_OUT1" : "timing__ARBLUT_RAM_I2_OUT2"), delay);
+            // About 0.1 ns, not zero
+            get_delay_from_tmg_db(ctx->id(z ? "timing__ARBLUT_RAM_I1_OUT1" : "timing__ARBLUT_RAM_I2_OUT2"), delay);
             return true;
         }
         return false;
