@@ -76,7 +76,7 @@ such an arc changes what is visible:
 - So results of rewrites that touch these structures (`mux-chains`, `fuse-luts`,
   `enable-to-lut`) say little until the bug is fixed, and the user design's ranking of what
   matters will change.
-- `--vopt timing-fixes` (TEMPORARY) fixes bug 31 and the other simple timing bugs (7, 23, 24, 25,
+- `--vopt timing-fixes` (TEMPORARY; since then these fixes are the default and the option has no effect) fixes bug 31 and the other simple timing bugs (7, 23, 24, 25,
   26, 28, 29, 33, 37; see tests/BUGS.md) to measure with a truer model now. Variants `*_tf` in
   `compare.py`. With it (all their failing tests pass, nothing else fails):
 

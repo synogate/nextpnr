@@ -12,10 +12,9 @@ synthesizes them, runs nextpnr and prints the part of its output that shows the 
 timing bugs, typically that nextpnr finds no register-to-register path in a design that has
 exactly one, or the delay it uses for one arc. It needs yosys and jq, and writes into `repro/out/`.
 
-Simple fixes for the timing bugs 7, 23, 24, 25, 26, 28, 29, 31, 33 and 37 are behind
-`--vopt timing-fixes` (`delay.cc`, marked TEMPORARY), to measure with a truer timing model until
-the timing model is fixed for real; the environment variable `GATEMATE_TIMING_FIXES` turns them on
-for the tests, whose failing tests for these bugs then pass. Bug 31 also needed the internal inputs
+The fixes of the timing bugs 7, 23, 24, 25, 26, 28, 29, 31, 33 and 37 were first behind
+`--vopt timing-fixes` (and the environment variable `GATEMATE_TIMING_FIXES` for the tests); they
+are the default now, and the option has no effect. Bug 31 also needed the internal inputs
 counted in `getPortTimingClass`: a LUT fed only through `COMBIN` counted as a constant, so its
 output was ignored. The estimates where the database has nothing: `COMBIN` -> `OUT` zero (an upper
 input reaches the lower output about as fast as its own), `CINY1` -> `OUT` the adder's carry-in to

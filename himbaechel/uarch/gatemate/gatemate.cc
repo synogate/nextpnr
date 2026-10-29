@@ -90,11 +90,11 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("route-repair", po::value<int>(),
                            "after routing, rounds of re-routing critical connections on their ideal path (default: until "
                            "timing is met or nothing is left to try; 0 turns it off)");
-    // TEMPORARY until the timing model is fixed upstream (tests/BUGS.md; docs/timing_experiments.md)
+    // No effect any more (the fixes are the default); kept for the scripts that pass it
     specific.add_options()(
             "timing-fixes",
-            "fix the timing bugs with simple fixes (tests/BUGS.md 7, 23, 24, 25, 26, 28, 29, 31, 33, 37), "
-            "to measure with a truer timing model");
+            "no effect: the fixes of the timing bugs it turned on (tests/BUGS.md 7, 23, 24, 25, 26, 28, 29, 31, 33, "
+            "37) are the default now (kept so that scripts using it keep working)");
     // TEMPORARY until measured (docs/timing_experiments.md)
     specific.add_options()("rewrite-crit-in", po::value<std::string>(),
                            "apply mux-chains, fuse-luts and enable-to-lut only to cells driving nets that were "
@@ -252,7 +252,6 @@ void GateMateImpl::init_database(Arch *arch)
     if (args.options.count("route-repair"))
         route_repair = args.options["route-repair"].as<int>();
     // TEMPORARY: the environment variable lets the bug tests run with the fixes
-    timing_fixes = args.options.count("timing-fixes") || getenv("GATEMATE_TIMING_FIXES");
     if (args.options.count("place-repair"))
         place_repair = args.options["place-repair"].as<int>();
     if (args.options.count("repair-margin"))

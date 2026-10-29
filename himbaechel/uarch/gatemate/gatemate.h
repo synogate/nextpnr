@@ -97,7 +97,6 @@ struct GateMateImpl : HimbaechelAPI
     void repair_critical_routing(int rounds);
     int route_repair = -1;
     // The simple timing model fixes (--vopt timing-fixes; delay.cc). TEMPORARY until fixed upstream
-    bool timing_fixes = false;
     // After the routing repair, up to `rounds` moves of LUT trees on the critical paths, with rounds < 0
     // until timing is met (reroute.cc)
     void repair_critical_placement(int rounds);
