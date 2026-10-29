@@ -41,12 +41,6 @@ enum class KnownBug
     // Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/io
     IOSEL_ARCS_WITH_OUTPUT_ENABLE,
 
-    // delay.cc getCellDelay: the carry arc of CPE_ADDF/CPE_ADDF2 (CINY1 -> COUTY1) is looked up
-    // under a name the timing database doesn't have, so carry chains are cut into single stages.
-    // Tests: GateMateTimingArcTest.carry_in_to_carry_out, critical_path_runs_through_carry_chain,
-    // Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/adder
-    CARRY_ARC_MISSING,
-
     // delay.cc: a carry from the middle of a chain that is also used as an ordinary signal leaves
     // the adder CPE through CPOUT2, which has neither a timing class nor arcs for
     // CPE_ADDF/CPE_ADDF2.

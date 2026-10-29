@@ -571,9 +571,6 @@ TEST_P(GateMateRandomLogicTest, timing_arcs_cover_dependencies)
     auto missing = missing_timing_arcs(GetParam().seed);
     auto known = [&](const MissingArc &arc) {
         IdString type = arc.cell->type;
-        if (avoiding_bug(KnownBug::CARRY_ARC_MISSING) && type.in(id_CPE_ADDF, id_CPE_ADDF2) &&
-            arc.to == id_COUTY1 && arc.from == std::vector<IdString>{id_CINY1})
-            return true;
         if (avoiding_bug(KnownBug::ADDER_CPOUT_NOT_TIMED) && type.in(id_CPE_ADDF, id_CPE_ADDF2) &&
             arc.to.in(id_CPOUT1, id_CPOUT2))
             return true;

@@ -190,10 +190,11 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             fp = map_both[fp];
         if (map_both.count(tp))
             tp = map_both[tp];
+        // The carry arc: ..._COUTY1, in older databases ..._COUTY
+        if (fp == id_CINY1 && tp == id_COUTY1)
+            return get_delay_from_tmg_db(ctx->id("timing__ADDF2Y1_CINY1_COUTY1"), delay) ||
+                   get_delay_from_tmg_db(ctx->id("timing__ADDF2Y1_CINY1_COUTY"), delay);
         if (timing_fixes) {
-            // Bug 23: the database calls the carry arc ..._COUTY
-            if (fp == id_CINY1 && tp == id_COUTY1)
-                return get_delay_from_tmg_db(ctx->id("timing__ADDF2Y1_CINY1_COUTY"), delay);
             // Bug 37: the first bit's sum does not depend on the second bit's operands
             if (cell->type == id_CPE_ADDF2 && tp == id_OUT1 && fp.in(id_IN1, id_IN2, id_IN3, id_IN4))
                 return false;

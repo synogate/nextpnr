@@ -858,7 +858,7 @@ class GateMateTimingArcTest : public GateMatePathTest
 };
 
 // The carry chain: each adder CPE needs an arc from its carry input to its carry output (in the
-// timing database: _ADDF2Y1_CINY1_COUTY).
+// timing database: _ADDF2Y1_CINY1_COUTY1, in older ones _ADDF2Y1_CINY1_COUTY).
 TEST_F(GateMateTimingArcTest, carry_in_to_carry_out)
 {
     registered_adder();
@@ -870,7 +870,9 @@ TEST_F(GateMateTimingArcTest, carry_in_to_carry_out)
                 continue;
             DelayQuad delay;
             EXPECT_TRUE(ctx->getCellDelay(cell, id_CINY1, id_COUTY1, delay)) << cell->name.c_str(ctx);
-            EXPECT_EQ(delay.maxDelay(), timing_db("_ADDF2Y1_CINY1_COUTY")) << cell->name.c_str(ctx);
+            EXPECT_EQ(delay.maxDelay(), timing_db(has_timing("_ADDF2Y1_CINY1_COUTY1") ? "_ADDF2Y1_CINY1_COUTY1"
+                                                                                      : "_ADDF2Y1_CINY1_COUTY"))
+                    << cell->name.c_str(ctx);
             checked++;
         }
     }
