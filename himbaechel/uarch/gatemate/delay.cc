@@ -361,8 +361,8 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
     } else if (cell->type.in(id_CPE_RAMI, id_CPE_RAMO, id_CPE_RAMIO, id_CPE_RAMIO_U, id_CPE_RAMIO_L)) {
         if (port.in(id_I, id_RAM_I))
             return TMG_COMB_INPUT;
-        // Bug 29: OUT, the fabric side output, is one too
-        if (port.in(id_O, id_RAM_O) || (timing_fixes && port == id_OUT))
+        // (OUT, the fabric side output, is one too)
+        if (port.in(id_O, id_RAM_O, id_OUT))
             return TMG_COMB_OUTPUT;
         return TMG_IGNORE;
     } else if (cell->type.in(id_CPE_COMP)) {

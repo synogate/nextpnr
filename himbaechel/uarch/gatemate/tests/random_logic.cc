@@ -578,9 +578,6 @@ TEST_P(GateMateRandomLogicTest, timing_arcs_cover_dependencies)
             for (IdString port : arc.from)
                 if (port.in(id_CINX, id_CINY1, id_CINY2, id_PINX, id_PINY1, id_COMBIN))
                     return true;
-        if (avoiding_bug(KnownBug::RAM_OUTPUT_CPE_IGNORED) && type.in(id_CPE_RAMI, id_CPE_RAMIO) &&
-            arc.to == id_OUT)
-            return true;
         if (avoiding_bug(KnownBug::IOSEL_ARCS_WITH_OUTPUT_ENABLE) && type == id_IOSEL &&
             bool_or_default(arc.cell->params, id_OUT_SIGNAL) && bool_or_default(arc.cell->params, id_OE_ENABLE))
             return true;

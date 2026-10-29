@@ -56,12 +56,6 @@ enum class KnownBug
     // luts, adder, multiplier
     CPE_INTERNAL_INPUT_ARCS_MISSING,
 
-    // delay.cc getPortTimingClass: the fabric side output (OUT) of CPE_RAMI/CPE_RAMIO is
-    // TMG_IGNORE, so required times are not propagated back to the RAM outputs.
-    // Tests: GateMateTimingArcTest.ram_output_slack_is_known,
-    // Designs/GateMateArcCoverageTest.every_dependency_has_an_arc/ram
-    RAM_OUTPUT_CPE_IGNORED,
-
     // common/kernel/timing_log.cc log_fmax: a path between two related clock domains that both
     // have no Fmax entry (no register-to-register paths of their own) throws std::out_of_range
     // from clock_fmax.at(), here during placement, once any other clock has an Fmax entry. With
