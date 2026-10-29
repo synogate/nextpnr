@@ -1377,12 +1377,13 @@ struct Router2
 
         bool success = true;
         std::vector<WireId> net_wires;
+        // Ripup wires and pips used by the nets in nextpnr's structures, all before binding any, so that routing
+        // bound before the router ran (and changed by it) does not block the nets bound first
         for (auto net : nets_by_udata) {
 #ifdef ARCH_ECP5
             if (net->is_global)
                 continue;
 #endif
-            // Ripup wires and pips used by the net in nextpnr's structures
             net_wires.clear();
             for (auto &w : net->wires) {
                 if (w.second.strength <= STRENGTH_STRONG) {
@@ -1398,7 +1399,12 @@ struct Router2
             if (ctx->debug) {
                 log("Ripped up %zu wires on net %s\n", net_wires.size(), ctx->nameOf(net));
             }
-
+        }
+        for (auto net : nets_by_udata) {
+#ifdef ARCH_ECP5
+            if (net->is_global)
+                continue;
+#endif
             // Bind the arcs using the routes we have discovered
             for (auto usr : net->users.enumerate()) {
                 for (size_t phys_pin = 0; phys_pin < nets.at(net->udata).arcs.at(usr.index.idx()).size(); phys_pin++) {
