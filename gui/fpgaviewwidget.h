@@ -104,6 +104,30 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     QSize minimumSizeHint() const override;
     QSize sizeHint() const override;
     void leaveEvent(QEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) Q_DECL_OVERRIDE;
+    void keyPressEvent(QKeyEvent *event) Q_DECL_OVERRIDE;
+
+  public:
+    // Rectangles drawn over the view (world coordinates), with a label in the upper left corner
+    struct Overlay
+    {
+        float x0, y0, x1, y1;
+        QColor color;
+        QString label;
+        bool fill = false;
+    };
+    void setOverlays(std::vector<Overlay> overlays);
+    // While picking, the left mouse button picks positions (the picked signal, with a PickEvent)
+    // instead of selecting; Escape cancels (pickCanceled)
+    enum PickEvent
+    {
+        PICK_MOVE,
+        PICK_PRESS,
+        PICK_DRAG,
+        PICK_RELEASE
+    };
+    void setPicking(bool on);
+    bool isPicking() const { return picking_; }
 
   public Q_SLOTS:
     void newContext(Context *ctx);
@@ -122,8 +146,14 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void clickedBel(BelId bel, bool add);
     void clickedWire(WireId wire, bool add);
     void clickedPip(PipId pip, bool add);
+    void picked(int event, float x, float y);
+    void pickCanceled();
 
   private:
+    std::vector<Overlay> overlays_;
+    bool picking_ = false;
+    void drawOverlays();
+
     QString movieDir;
     long currentMovieFrame;
     long currentFrameSkip;

@@ -31,6 +31,13 @@ set(GUI_SOURCES
     ${family}/mainwindow.h
 )
 
+if (family STREQUAL "himbaechel")
+    list(APPEND GUI_SOURCES
+        himbaechel/partitionwidget.cc
+        himbaechel/partitionwidget.h
+    )
+endif()
+
 qt6_add_resources(GUI_QT_RESOURCES
 	base.qrc
 	${family}/nextpnr.qrc

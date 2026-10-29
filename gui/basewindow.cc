@@ -184,7 +184,7 @@ void BaseMainWindow::createMenusAndBars()
     actionPack->setIcon(QIcon(":/icons/resources/pack.png"));
     actionPack->setStatusTip("Pack current design");
     actionPack->setEnabled(false);
-    connect(actionPack, &QAction::triggered, task, &TaskManager::pack);
+    connect(actionPack, &QAction::triggered, this, &BaseMainWindow::pack);
 
     actionPlace = new QAction("Place", this);
     actionPlace->setIcon(QIcon(":/icons/resources/place.png"));
@@ -517,6 +517,12 @@ void BaseMainWindow::taskPaused()
     disableActions();
     actionPlay->setEnabled(true);
     actionStop->setEnabled(true);
+}
+
+void BaseMainWindow::pack()
+{
+    if (beforePack())
+        Q_EMIT task->pack();
 }
 
 void BaseMainWindow::place() { Q_EMIT task->place(timing_driven); }

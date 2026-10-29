@@ -25,6 +25,8 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+class PartitionWidget;
+
 class MainWindow : public BaseMainWindow
 {
     Q_OBJECT
@@ -39,6 +41,7 @@ class MainWindow : public BaseMainWindow
   protected:
     void onDisableActions() override;
     void onUpdateActions() override;
+    bool beforePack() override;
 
   protected Q_SLOTS:
     void new_proj() override;
@@ -53,6 +56,7 @@ class MainWindow : public BaseMainWindow
     QAction *actionRepair;
     QTimer *repairTimer;
     QAction *actionFinish;
+    PartitionWidget *partitionview;
     std::string running;
 };
 
