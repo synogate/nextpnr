@@ -273,6 +273,11 @@ struct GateMateImpl : HimbaechelAPI
     };
     std::vector<GateMateCellInfo> fast_cell_info;
     std::map<BelId, std::map<IdString, const GateMateBelPinConstraintPOD *>> pin_to_constr;
+    // The pins the clock and enable inputs (CLK_INT, EN_INT) of the registers are renamed to after
+    // routing, for the timing model
+    dict<IdString, std::pair<IdString, IdString>> ff_routed_ports;
+    IdString ff_clock_port(const CellInfo *cell) const;
+    IdString ff_enable_port(const CellInfo *cell) const;
     std::map<IdString, const GateMateTimingExtraDataPOD *> timing;
 
     enum class RamPinKind

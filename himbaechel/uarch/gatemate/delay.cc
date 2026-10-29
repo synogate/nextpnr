@@ -348,7 +348,7 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
             return TMG_COMB_OUTPUT;
         return TMG_COMB_INPUT;
     } else if (cell->type.in(id_CPE_FF, id_CPE_FF_L, id_CPE_FF_U, id_CPE_LATCH)) {
-        if (port.in(id_CLK_INT))
+        if (port == ff_clock_port(cell))
             return TMG_CLOCK_INPUT;
         clockInfoCount = 1;
         if (port == id_DOUT)
@@ -519,6 +519,22 @@ int GateMateImpl::ram_clock_index(const CellInfo *cell, const RamPinInfo &pin) c
     return (domain_b ? 2 : 0) + (split ? pin.half : 0);
 }
 
+IdString GateMateImpl::ff_clock_port(const CellInfo *cell) const
+{
+    auto found = ff_routed_ports.find(cell->name);
+    if (found != ff_routed_ports.end() && !cell->ports.count(id_CLK_INT) && found->second.first != IdString())
+        return found->second.first;
+    return id_CLK_INT;
+}
+
+IdString GateMateImpl::ff_enable_port(const CellInfo *cell) const
+{
+    auto found = ff_routed_ports.find(cell->name);
+    if (found != ff_routed_ports.end() && !cell->ports.count(id_EN_INT) && found->second.second != IdString())
+        return found->second.second;
+    return id_EN;
+}
+
 TimingClockingInfo GateMateImpl::getPortClockingInfo(const CellInfo *cell, IdString port, int index) const
 {
     TimingClockingInfo info;
@@ -528,9 +544,9 @@ TimingClockingInfo GateMateImpl::getPortClockingInfo(const CellInfo *cell, IdStr
     if (cell->type.in(id_CPE_FF, id_CPE_FF_L, id_CPE_FF_U, id_CPE_LATCH)) {
         bool inverted = int_or_default(cell->params, id_C_CPE_CLK, 0) == 0b01;
         info.edge = inverted ? FALLING_EDGE : RISING_EDGE;
-        info.clock_port = id_CLK_INT;
-        // (the packer renames the enable to EN_INT, routing to EN)
-        if (port.in(id_DIN, id_EN, id_EN_INT, id_SR))
+        info.clock_port = ff_clock_port(cell);
+        // (the packer renames the enable to EN_INT, routing to EN or the CPE input it took)
+        if (port.in(id_DIN, id_EN_INT, id_SR) || port == ff_enable_port(cell))
             get_setuphold_from_tmg_db(id_timing_del_Setup_D_L, id_timing_del_Hold_D_L, info.setup, info.hold);
         if (port.in(id_DOUT)) {
             // (registers sit at CPE_FF_U_Z/CPE_FF_L_Z)

@@ -1323,6 +1323,7 @@ void GateMateImpl::postRoute()
                 cell.second->params[id_C_CPE_EN] = Property(val ? 3 : 0, 2);
                 cell.second->params[id_C_ENSEL] = Property(1, 1);
             }
+            ff_routed_ports[cell.first] = {port_mapping[id_CLK_INT], port_mapping[id_EN_INT]};
             cell.second->renamePort(id_CLK_INT, port_mapping[id_CLK_INT]);
             cell.second->renamePort(id_EN_INT, port_mapping[id_EN_INT]);
         }
