@@ -85,8 +85,20 @@ void Worker::route()
     }
 }
 
+void Worker::run(std::function<bool()> step)
+{
+    Q_EMIT taskStarted();
+    try {
+        Q_EMIT run_finished(step());
+    } catch (WorkerInterruptionRequested) {
+        Q_EMIT taskCanceled();
+    }
+}
+
 TaskManager::TaskManager() : toTerminate(false), toPause(false)
 {
+    qRegisterMetaType<std::function<bool()>>("std::function<bool()>");
+
     Worker *worker = new Worker(this);
     worker->moveToThread(&workerThread);
 
@@ -95,6 +107,7 @@ TaskManager::TaskManager() : toTerminate(false), toPause(false)
     connect(this, &TaskManager::pack, worker, &Worker::pack);
     connect(this, &TaskManager::place, worker, &Worker::place);
     connect(this, &TaskManager::route, worker, &Worker::route);
+    connect(this, &TaskManager::run, worker, &Worker::run);
 
     connect(this, &TaskManager::contextChanged, worker, &Worker::newContext);
 
@@ -102,6 +115,7 @@ TaskManager::TaskManager() : toTerminate(false), toPause(false)
     connect(worker, &Worker::pack_finished, this, &TaskManager::pack_finished);
     connect(worker, &Worker::place_finished, this, &TaskManager::place_finished);
     connect(worker, &Worker::route_finished, this, &TaskManager::route_finished);
+    connect(worker, &Worker::run_finished, this, &TaskManager::run_finished);
 
     connect(worker, &Worker::taskCanceled, this, &TaskManager::taskCanceled);
     connect(worker, &Worker::taskStarted, this, &TaskManager::taskStarted);

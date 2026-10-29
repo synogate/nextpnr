@@ -107,6 +107,8 @@ void GateMateImpl::route_learning(int runs)
     Routing best_routing = save();
     log_info("Routing %d more times, learning criticality by '%s', starting at %.2f MHz.\n", runs, mode.c_str(), best);
     for (int run = 1; run <= runs; run++) {
+        // the GUI can show the design as it stands
+        ctx->routeRepairProgress();
         // Learn from the routing so far: criticality 1 is on the longest path, 0 has the most slack
         TimingAnalyser tmg(ctx);
         tmg.setup();
@@ -584,6 +586,8 @@ void GateMateImpl::repair_critical_routing(int rounds)
     log_info("Repairing the routing of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0;
     for (int round = 1; rounds < 0 || round <= rounds; round++) {
+        // the GUI can show the design as it stands
+        ctx->routeRepairProgress();
         if (rounds < 0 && timing_met(*current, repair_margin)) {
             log_info("    round %d: timing met\n", round);
             break;
@@ -731,6 +735,8 @@ void GateMateImpl::repair_critical_nets(int rounds)
     log_info("Repairing whole nets of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0;
     for (int round = 1; round <= rounds; round++) {
+        // the GUI can show the design as it stands
+        ctx->routeRepairProgress();
         NetInfo *net = nullptr;
         float loss = 0;
         int sinks = 0;
@@ -1236,6 +1242,8 @@ int GateMateImpl::move_critical_cells(int rounds)
     log_info("Moving cells of critical paths, starting at %.2f MHz.\n", best);
     int kept = 0, kept_pairs = 0, kept_muxes = 0;
     for (int round = 1; rounds < 0 || round <= rounds; round++) {
+        // the GUI can show the design as it stands
+        ctx->routeRepairProgress();
         if (rounds < 0 && timing_met(*current, repair_margin)) {
             log_info("    round %d: timing met\n", round);
             break;

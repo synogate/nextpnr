@@ -32,7 +32,9 @@
 #include "router2.h"
 #include "util.h"
 
+#include <chrono>
 #include <filesystem>
+#include <thread>
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -307,11 +309,81 @@ bool Arch::route()
     } else {
         log_error("Himbächel architecture does not support router '%s'\n", router.c_str());
     }
-    uarch->postRoute();
+    if (defer_route_finish && uarch->hasRouteRepair())
+        route_finish_pending = true;
+    else
+        uarch->postRoute();
     getCtx()->settings[getCtx()->id("route")] = 1;
     archInfoToAttributes();
     set_fast_pip_delays(false);
     return result;
+}
+
+namespace {
+// The Context held while changing the netlist under the GUI's eyes (also when interrupted)
+struct ContextLock
+{
+    Context *ctx;
+    bool &locked;
+    ContextLock(Context *ctx, bool &locked) : ctx(ctx), locked(locked)
+    {
+        ctx->lock();
+        locked = true;
+    }
+    ~ContextLock()
+    {
+        locked = false;
+        ctx->unlock();
+    }
+};
+} // namespace
+
+bool Arch::repairRoute()
+{
+    NPNR_ASSERT(route_finish_pending);
+    set_fast_pip_delays(true);
+    {
+        ContextLock lock(getCtx(), repair_locked);
+        uarch->repairRoute();
+    }
+    archInfoToAttributes();
+    set_fast_pip_delays(false);
+    return true;
+}
+
+void Arch::routeRepairProgress()
+{
+    if (!repair_locked)
+        return;
+    repair_progress = true;
+    if (!repair_ui_wants) {
+        // let the GUI draw
+        getCtx()->yield();
+        return;
+    }
+    unlock();
+    repair_waiting = true;
+    auto start = std::chrono::steady_clock::now();
+    while (repair_ui_wants && std::chrono::steady_clock::now() - start < std::chrono::seconds(10))
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    repair_waiting = false;
+    lock();
+}
+
+bool Arch::finishRoute()
+{
+    NPNR_ASSERT(route_finish_pending);
+    set_fast_pip_delays(true);
+    {
+        // It makes new nets and cells: the GUI must not draw meanwhile
+        bool locked;
+        ContextLock lock(getCtx(), locked);
+        uarch->finishRoute();
+    }
+    route_finish_pending = false;
+    archInfoToAttributes();
+    set_fast_pip_delays(false);
+    return true;
 }
 
 void Arch::assignArchInfo()

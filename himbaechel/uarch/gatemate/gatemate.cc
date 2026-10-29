@@ -986,6 +986,12 @@ void GateMateImpl::reassign_cplines(NetInfo *ni, const dict<WireId, PipMap> &net
 
 void GateMateImpl::postRoute()
 {
+    repairRoute();
+    finishRoute();
+}
+
+void GateMateImpl::repairRoute()
+{
     release_partition_routing();
     if (route_runs > 0)
         route_learning(route_runs);
@@ -1021,6 +1027,10 @@ void GateMateImpl::postRoute()
                 out << net.first.str(ctx) << "\t" << crit << "\n";
         }
     }
+}
+
+void GateMateImpl::finishRoute()
+{
     if (as_partition) {
         // A partition stays as routed: what follows turns bridges and CP lines into cells and the LUT inputs
         // into the CPE inputs the routing reaches, which needs the routing of the ports, done on import
