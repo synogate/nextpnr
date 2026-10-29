@@ -36,13 +36,6 @@ enum class KnownBug
     // Tests: GateMateTimingTest.related_clocks_without_own_paths,
     // Seeds/GateMateRandomLogicTest.matches_reference/full_seed20 (and full_with_rams_*)
     FMAX_OF_RELATED_CLOCKS_WITHOUT_PATHS,
-
-    // delay.cc getCellDelay: a CPE_ADDF2 gets arcs from all operand inputs to both sums, also from
-    // the second bit's operands to the first bit's sum (OUT1). When the second bit of a chain adds
-    // the first bit's sum, the packer puts both in one CPE, and timing analysis stops with a
-    // combinational loop.
-    // Test: GateMateAdderTest.sum_into_next_bit
-    ADDER_SUM_INTO_NEXT_BIT,
 };
 
 // Whether tests still avoid the given bug. Kept as a function so that a restriction reads as

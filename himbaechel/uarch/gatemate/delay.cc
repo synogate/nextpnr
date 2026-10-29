@@ -192,11 +192,9 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
         if (fp == id_CINY1 && tp == id_COUTY1)
             return get_delay_from_tmg_db(ctx->id("timing__ADDF2Y1_CINY1_COUTY1"), delay) ||
                    get_delay_from_tmg_db(ctx->id("timing__ADDF2Y1_CINY1_COUTY"), delay);
-        if (timing_fixes) {
-            // Bug 37: the first bit's sum does not depend on the second bit's operands
-            if (cell->type == id_CPE_ADDF2 && tp == id_OUT1 && fp.in(id_IN1, id_IN2, id_IN3, id_IN4))
-                return false;
-        }
+        // The first bit's sum does not depend on the second bit's operands
+        if (cell->type == id_CPE_ADDF2 && tp == id_OUT1 && fp.in(id_IN1, id_IN2, id_IN3, id_IN4))
+            return false;
         // A carry from the middle of a chain leaving through CPOUT, estimated as the carry out plus
         // the CPOUT driver
         if (tp.in(id_CPOUT1, id_CPOUT2)) {
