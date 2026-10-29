@@ -428,6 +428,51 @@ void GateMatePacker::optimize_ff()
     flush_cells();
 }
 
+// An inverter on a clock goes into the clock inversion of the registers and RAMs behind it, so that
+// these get the clock itself, which can then be a global clock, instead of a fabric signal
+void GateMatePacker::fold_clock_inverters()
+{
+    // The clock inputs that can be inverted in the cell, with the parameter that does it
+    auto inversion = [&](const PortRef &usr) -> IdString {
+        if (usr.cell->type.in(id_CC_DFF, id_CC_IDDR, id_CC_ODDR) && usr.port == id_CLK)
+            return id_CLK_INV;
+        if (usr.cell->type == id_CC_DLT && usr.port == id_G)
+            return id_G_INV;
+        if (usr.cell->type.in(id_CC_BRAM_20K, id_CC_BRAM_40K, id_CC_FIFO_40K)) {
+            if (usr.port == id_A_CLK)
+                return id_A_CLK_INV;
+            if (usr.port == id_B_CLK)
+                return id_B_CLK_INV;
+        }
+        return IdString();
+    };
+    int folded = 0;
+    for (auto &cell : ctx->cells) {
+        CellInfo &ci = *cell.second;
+        if (ci.type != id_CC_LUT1 || (int_or_default(ci.params, id_INIT, 0) & 0b11) != 0b01)
+            continue;
+        NetInfo *in = ci.getPort(id_I0), *out = ci.getPort(id_O);
+        if (!in || !out || !in->driver.cell || in == net_PACKER_GND || in == net_PACKER_VCC)
+            continue;
+        std::vector<PortRef> clocks;
+        for (auto &usr : out->users)
+            if (inversion(usr) != IdString())
+                clocks.push_back(usr);
+        for (auto &usr : clocks) {
+            IdString inv = inversion(usr);
+            usr.cell->params[inv] = Property(!bool_or_default(usr.cell->params, inv, false), 1);
+            usr.cell->disconnectPort(usr.port);
+            usr.cell->connectPort(usr.port, in);
+            folded++;
+        }
+        if (out->users.empty())
+            packed_cells.insert(ci.name);
+    }
+    flush_cells();
+    if (folded)
+        log_info("Folded clock inverters into %d clock inputs.\n", folded);
+}
+
 void GateMatePacker::cleanup()
 {
     log_info("Running cleanups..\n");
@@ -757,6 +802,7 @@ void GateMateImpl::pack()
     if (args.options.count("cpe-merge"))
         packer.merge_into_cpes(args.options["cpe-merge"].as<int>());
     packer.cleanup();
+    packer.fold_clock_inverters();
     packer.pack_io();
     packer.insert_clocking();
     packer.pack_pll();

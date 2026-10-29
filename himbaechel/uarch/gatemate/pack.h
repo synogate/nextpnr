@@ -67,6 +67,7 @@ struct GateMatePacker
     void remove_double_constrained();
 
     void cleanup();
+    void fold_clock_inverters();
     void fuse_luts();
     void fuse_l2t5_inputs();
     void enables_into_luts(int min_fanout);
