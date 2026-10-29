@@ -17,6 +17,8 @@
  *
  */
 
+#include <set>
+
 #include "design_utils.h"
 #include "pack.h"
 
@@ -474,6 +476,55 @@ void GateMatePacker::pack_ram()
         }
     }
     flush_cells();
+
+    // Fix the RAMs with a LOC parameter, with all the CPEs at their pins, at the RAM block it names:
+    // D<die>X<column>Y<row>, counted among the RAM blocks of the die
+    std::vector<std::set<int>> xs(uarch->dies), ys(uarch->dies);
+    for (BelId bel : ctx->getBels()) {
+        if (ctx->getBelType(bel) == id_RAM) {
+            int die = uarch->tile_extra_data(bel.tile)->die;
+            xs.at(die).insert(ctx->getBelLocation(bel).x);
+            ys.at(die).insert(ctx->getBelLocation(bel).y);
+        }
+    }
+    for (auto item : rams) {
+        CellInfo &ci = *item;
+        std::string loc = str_or_default(ci.params, id_LOC, "UNPLACED");
+        if (loc == "UNPLACED")
+            continue;
+        int die, x, y;
+        char end;
+        if (sscanf(loc.c_str(), "D%dX%dY%d%c", &die, &x, &y, &end) != 3 || die < 0 || die >= uarch->dies || x < 0 ||
+            x >= int(xs[die].size()) || y < 0 || y >= int(ys[die].size()))
+            log_error("Invalid LOC parameter value '%s' for cell %s.\n", loc.c_str(), ctx->nameOf(&ci));
+        if (ci.cluster != ci.name)
+            log_error("RAM cell '%s' is cascaded below another RAM, only the upper one can take a LOC parameter.\n",
+                      ctx->nameOf(&ci));
+        int bx = *std::next(xs[die].begin(), x), by = *std::next(ys[die].begin(), y);
+        std::vector<Loc> candidates = {Loc(bx, by, RAM_FULL_Z)};
+        // A 20K half takes the lower half of the block if the upper one is used already
+        if (ci.type == id_RAM_HALF)
+            candidates.push_back(Loc(bx, by + 8, RAM_HALF_L_Z));
+        bool placed = false;
+        for (Loc l : candidates) {
+            std::vector<std::pair<CellInfo *, BelId>> placement;
+            BelId bel = ctx->getBelByLocation(l);
+            if (bel == BelId() || !uarch->getClusterPlacement(ci.cluster, bel, placement))
+                continue;
+            bool free = true;
+            for (auto &p : placement)
+                free &= p.second != BelId() && ctx->checkBelAvail(p.second);
+            if (!free)
+                continue;
+            for (auto &p : placement)
+                ctx->bindBel(p.second, p.first, PlaceStrength::STRENGTH_FIXED);
+            placed = true;
+            break;
+        }
+        if (!placed)
+            log_error("RAM cell '%s' can not be placed at LOC '%s', the RAM block or its CPEs are used already.\n",
+                      ctx->nameOf(&ci), loc.c_str());
+    }
 }
 
 void GateMatePacker::remap_ram_half(CellInfo *half, CellInfo *cell, int num)
