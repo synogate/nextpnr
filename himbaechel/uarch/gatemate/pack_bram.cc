@@ -248,9 +248,10 @@ void GateMatePacker::pack_ram()
             CellInfo *lower = nullptr;
             if (cas != "NONE" && ram_mode_str != "TDP")
                 log_error("Cascade feature only supported in TDP mode.\n");
-            int a_rd_width = int_or_default(ci.params, id_A_WIDTH, 0);
-            int b_wr_width = int_or_default(ci.params, id_B_WIDTH, 0);
-            if (cas != "NONE" && (a_rd_width > 1 || b_wr_width > 1))
+            int widest = 0;
+            for (IdString width : {id_A_RD_WIDTH, id_A_WR_WIDTH, id_B_RD_WIDTH, id_B_WR_WIDTH})
+                widest = std::max(widest, int_or_default(ci.params, width, 0));
+            if (cas != "NONE" && widest > 1)
                 log_error("Cascade feature only supported in 1 bit data width mode.\n");
             if (cas == "UPPER") {
                 if (!net_driven_by(ctx, ci.getPort(id_A_CI), is_bram_40k, id_A_CO))
