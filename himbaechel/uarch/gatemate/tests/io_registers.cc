@@ -223,21 +223,6 @@ class GateMateLvdsSemanticsTest : public GateMateTest
         return buffer;
     }
 
-    // The single-ended IOs get pins outside bank SA (unconstrained IOs could get the LVDS pins)
-    void pin_single_ended()
-    {
-        if (!avoid(KnownBug::PIN_NAME_PAD_REUSED))
-            return;
-        std::vector<std::string> pins;
-        for (auto &pin : package_pins())
-            if (pin.rfind("IO_SA_", 0) != 0)
-                pins.push_back(pin);
-        size_t next = 0;
-        for (auto &cell : ctx->cells)
-            if (cell.second->type.in(id_CC_IBUF, id_CC_OBUF, id_CC_TOBUF, id_CC_IOBUF))
-                cell.second->params[id_PIN_NAME] = Property(pins.at(next++));
-    }
-
     // An LVDS input, output, tristate output and bidirectional pad
     void lvds_pads(bool registers)
     {
@@ -268,7 +253,6 @@ class GateMateLvdsSemanticsTest : public GateMateTest
         NetInfo *lb_y = create_net("lb$y");
         lb->connectPort(id_Y, lb_y);
         output("o_lb", lut1("lb_inv", 0b01, lb_y));
-        pin_single_ended();
     }
 };
 
@@ -298,7 +282,6 @@ TEST_F(GateMateLvdsSemanticsTest, double_data_rate)
                 output("o_q1", q1);
                 CellInfo *lo = lvds(id_CC_LVDS_OBUF, "lo", 1);
                 lo->connectPort(id_A, oddr("lo_ddr", input("d0"), input("d1"), clk, sel));
-                pin_single_ended();
             },
             300));
 }

@@ -191,6 +191,20 @@ void GateMatePacker::pack_io()
         ctx->cells.erase(port.first);
     }
 
+    // The pads the netlist assigns (PIN_NAME, LOC) are not for the unconstrained IOs, whichever comes
+    // first (the CCF's ones left the pool when it was read)
+    for (auto &cell : ctx->cells) {
+        const CellInfo &ci = *cell.second;
+        if (!ci.type.in(id_CC_IBUF, id_CC_OBUF, id_CC_TOBUF, id_CC_IOBUF, id_CC_LVDS_IBUF, id_CC_LVDS_OBUF,
+                        id_CC_LVDS_TOBUF, id_CC_LVDS_IOBUF))
+            continue;
+        for (IdString key : {id_PIN_NAME, id_PIN_NAME_P, id_PIN_NAME_N, id_LOC}) {
+            std::string pad = str_or_default(ci.params, key, "UNPLACED");
+            if (!pad.empty() && pad != "UNPLACED")
+                uarch->available_pads.erase(ctx->id(pad));
+        }
+    }
+
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
         if (!ci.type.in(id_CC_IBUF, id_CC_OBUF, id_CC_TOBUF, id_CC_IOBUF, id_CC_LVDS_IBUF, id_CC_LVDS_OBUF,

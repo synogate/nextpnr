@@ -35,8 +35,7 @@ class GateMateQorTest : public GateMateTest
     void SetUp() override
     {
         GateMateTest::SetUp();
-        // "clk" on a clock capable pin, given in the CCF (pins given by PIN_NAME parameters
-        // stay available for unconstrained IOs, see PIN_NAME_PAD_REUSED)
+        // "clk" on a clock capable pin, given in the CCF
         std::string pin = package_pins(true).at(0);
         init_with_ccf(stringf("Pin_in \"clk\" Loc = \"%s\";\n", pin.c_str()), {"--allow-unconstrained"});
     }

@@ -28,12 +28,6 @@
 // is fixed, independent of these entries.
 enum class KnownBug
 {
-    // pack_io.cc pack_io: pins assigned through PIN_NAME parameters of IO buffers (not through the
-    // CCF) are not taken out of the pool for unconstrained IOs, so an unconstrained IO can get the
-    // same pin ("Can't place ... because it's already taken by ...").
-    // Test: GateMateTest.pin_name_and_unconstrained_ios
-    PIN_NAME_PAD_REUSED,
-
     // pack_bram.cc: the FIFO read pointer outputs F_RD_PTR[0], [2] and [5] share a CPE with the
     // fabric read clock, the pop enable and the reset; each gets a CPE of its own at the same
     // location, so the FIFO cannot be placed.

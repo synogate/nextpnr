@@ -262,10 +262,7 @@ class GateMateLvdsTest : public GateMateTest
             ibuf->params[id_PIN_NAME_N] = Property(n);
         NetInfo *y = create_net("lvds$y");
         ibuf->connectPort(id_Y, y);
-        CellInfo *obuf = output("o", lut1("inv", 0b01, y));
-        // Keep the output away from the pair
-        if (avoid(KnownBug::PIN_NAME_PAD_REUSED))
-            obuf->params[id_PIN_NAME] = Property("IO_SB_A5");
+        output("o", lut1("inv", 0b01, y));
     }
 };
 
@@ -313,16 +310,6 @@ TEST_F(GateMateTest, ddr_outputs_of_a_bank_need_the_same_select)
             Property("IO_SA_A0");
     output("o2", oddr("oddr2", input("b0"), input("b1"), clk, input("sel2")))->params[id_PIN_NAME] =
             Property("IO_SA_B0");
-    if (avoid(KnownBug::PIN_NAME_PAD_REUSED)) {
-        // Keep the other IOs away from the two pins
-        auto pins = package_pins();
-        int next = 0;
-        for (auto name : {"clk", "a0", "a1", "sel1", "b0", "b1", "sel2"}) {
-            while (pins[next] == "IO_SA_A0" || pins[next] == "IO_SA_B0")
-                next++;
-            ctx->cells.at(ctx->id(name))->params[id_PIN_NAME] = Property(pins[next++]);
-        }
-    }
     EXPECT_LOG_ERROR(pack(), "DDR port use signal different than already occupied DDR source.");
 }
 
