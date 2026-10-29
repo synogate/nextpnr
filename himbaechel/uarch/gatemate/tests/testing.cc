@@ -37,29 +37,9 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-namespace {
-// log_crit_paths() in common/kernel/timing_log.cc keeps a function-local static lambda that
-// captures the Context of the first critical path report printed in the process, and uses it for
-// every later report. Router2 prints such a report at the end of every run, so with one Context
-// per test the second routed test would use a deleted Context. Printing the first report with a
-// Context that is never deleted works around this. Temporary, see known_bugs.h.
-void pin_critical_path_log_context()
-{
-    static Context *pinned = nullptr;
-    if (pinned)
-        return;
-    ArchArgs args;
-    args.device = "CCGM1A1";
-    pinned = new Context(args);
-    TimingResult empty;
-    pinned->log_timing_results(empty, false, false, true, false);
-}
-} // namespace
-
 void GateMateTest::SetUp()
 {
     init_share_dirname();
-    pin_critical_path_log_context();
     init_context();
 }
 

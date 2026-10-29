@@ -40,7 +40,7 @@ static std::string clock_event_name(const Context *ctx, const ClockEvent &e, int
 
 static void log_crit_paths(const Context *ctx, TimingResult &result)
 {
-    static auto print_net_source = [ctx](const NetInfo *net) {
+    auto print_net_source = [ctx](const NetInfo *net) {
         // Check if this net is annotated with a source list
         auto sources = net->attrs.find(ctx->id("src"));
         if (sources == net->attrs.end()) {
@@ -68,7 +68,7 @@ static void log_crit_paths(const Context *ctx, TimingResult &result)
     };
 
     // A helper function for reporting one critical path
-    auto print_path_report = [ctx](const CriticalPath &path) {
+    auto print_path_report = [ctx, &print_net_source](const CriticalPath &path) {
         delay_t total(0), logic_total(0), route_total(0);
 
         log_info("      type curr  total name\n");

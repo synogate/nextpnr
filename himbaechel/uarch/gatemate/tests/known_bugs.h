@@ -42,11 +42,4 @@ enum class KnownBug
 // `if (avoid(KnownBug::X))` at the place where coverage is limited.
 constexpr bool avoid(KnownBug) { return true; }
 
-// Harness workarounds for problems outside the GateMate code, also temporary:
-//
-//  - common/kernel/timing_log.cc log_crit_paths() keeps the first Context in a static lambda, so
-//    critical path reports of later contexts use a deleted one. testing.cc
-//    (pin_critical_path_log_context) prints the first report with a context that is never
-//    deleted. Remove it once the static is fixed.
-
 #endif
