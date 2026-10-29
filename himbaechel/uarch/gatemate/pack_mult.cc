@@ -965,7 +965,7 @@ void GateMatePacker::pack_mult()
                             if (p_zero_sink->getPort(id_SR) != nullptr)
                                 p_zero_sr = p_zero_sink->getPort(id_SR)->name.c_str(ctx);
                             if (p_net_sink->getPort(id_SR) != nullptr)
-                                p_net_sr = p_net_sink->getPort(id_EN)->name.c_str(ctx);
+                                p_net_sr = p_net_sink->getPort(id_SR)->name.c_str(ctx);
                             log_info("        registers have inconsistent resets: %s vs %s\n", p_zero_sr, p_net_sr);
                             incompatible = true;
                         }
