@@ -21,6 +21,8 @@
 #define GATEMATE_LOOKAHEAD_H
 
 #include <functional>
+#include <iostream>
+#include <memory>
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -36,9 +38,17 @@ NEXTPNR_NAMESPACE_BEGIN
 // the value at the nearest offset of the same phase grows linearly with the remaining distance.
 struct GateMateLookahead
 {
-    // avail filters out pips that can never be used
-    void build(Context *ctx, int radius, std::function<bool(PipId)> avail);
-    bool built() const { return !values.empty(); }
+    // avail filters out pips that can never be used; `key` names the chip, timing and avail, see
+    // keep_built
+    void build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key = "");
+    // Keep the tables built with a key for the rest of the process, and copy them instead of
+    // building again for the same key and radius (the tests create a context for each test)
+    static bool keep_built;
+    // Write the kept tables to a stream, or add those of a stream to the kept tables (for the tests, which
+    // build them once for all their processes)
+    static void save_kept(std::ostream &out);
+    static void load_kept(std::istream &in);
+    bool built() const { return values && !values->empty(); }
 
     // Delay from src to dst if dst is a pin behind a CPE input or src a pin before a CPE output,
     // else -1
@@ -80,7 +90,8 @@ struct GateMateLookahead
     // Slot (phase, anchor, offset) holds the delays of all wires of tile type slot_type[(phase, offset)]
     std::vector<int> slot_type;
     std::vector<int64_t> slot_base;
-    std::vector<uint16_t> values;
+    // (shared by the copies of the tables, see keep_built)
+    std::shared_ptr<std::vector<uint16_t>> values;
     // remap[from_type][to_type][wire]: the wire of the same name in another tile type, or -1
     std::vector<std::vector<std::vector<int>>> remap;
     float slope_x = 0, slope_y = 0; // ps per tile beyond the radius

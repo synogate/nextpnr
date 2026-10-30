@@ -73,7 +73,9 @@ TEST_P(GateMatePllFrequencyTest, configured_frequency)
 {
     auto c = GetParam();
     int fpga_mode = std::string(c.mode) == "LOWPOWER" ? 1 : std::string(c.mode) == "ECONOMY" ? 2 : 3;
-    init_context("CCGM1A1", {"--allow-unconstrained", stringf("--fpga_mode=%d", fpga_mode)});
+    // (without the repairs, which would build delay tables for the speed grade; this only packs)
+    init_context("CCGM1A1", {"--allow-unconstrained", stringf("--fpga_mode=%d", fpga_mode), "--route-repair=0",
+                             "--place-repair=0"});
     CellInfo *cell = pll("pll", clock_input("clkin"),
                          {{id_REF_CLK, Property(stringf("%g", c.ref))},
                           {id_OUT_CLK, Property(stringf("%g", c.out))},

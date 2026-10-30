@@ -26,10 +26,12 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <thread>
 #include <tuple>
 #include <vector>
 #include "command.h"
 #include "netlist_eval.h"
+#include "test_runner.h"
 #include "uarch/gatemate/pack.h"
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
 #include "himbaechel_constids.h"
@@ -37,9 +39,52 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+namespace {
+// The delay tables and global clock delays for the options most tests share: those of init_context
+// on both devices, and the routing restrictions of the place-repair tests. The clock delays are
+// searched in a context of their own, without delay tables (which they do not depend on), at the
+// same time as the tables are built.
+TestWarmUp warm_up(
+        [](const std::string &file) {
+            init_share_dirname();
+            GateMateLookahead::keep_built = true;
+            const std::vector<std::pair<std::string, std::vector<std::string>>> configs = {
+                    {"CCGM1A1", {}}, {"CCGM1A2", {}}, {"CCGM1A1", {"--no-bridges", "--no-cpe-cp"}}};
+            std::vector<std::thread> threads;
+            for (auto &config : configs)
+                for (bool clocks : {false, true})
+                    threads.emplace_back([&config, clocks]() {
+                        ArchArgs args;
+                        args.device = config.first;
+                        args.vopts = {"--allow-unconstrained"};
+                        args.vopts.insert(args.vopts.end(), config.second.begin(), config.second.end());
+                        if (clocks)
+                            args.vopts.insert(args.vopts.end(), {"--route-repair=0", "--place-repair=0"});
+                        Context ctx(args);
+                        ctx.uarch->init(&ctx);
+                        ctx.late_init();
+                        if (clocks)
+                            static_cast<GateMateImpl *>(ctx.uarch.get())->prepare_clock_tree_delays();
+                    });
+            for (auto &thread : threads)
+                thread.join();
+            std::ofstream out(file, std::ios::binary);
+            GateMateLookahead::save_kept(out);
+            GateMateImpl::save_clock_tree_delays(out);
+        },
+        [](const std::string &file) {
+            GateMateLookahead::keep_built = true;
+            std::ifstream in(file, std::ios::binary);
+            GateMateLookahead::load_kept(in);
+            GateMateImpl::load_clock_tree_delays(in);
+        });
+} // namespace
+
 void GateMateTest::SetUp()
 {
     init_share_dirname();
+    // Every test creates a context; build the delay tables once per process
+    GateMateLookahead::keep_built = true;
     init_context();
 }
 

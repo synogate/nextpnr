@@ -39,7 +39,9 @@ TEST_F(GateMateTest, performance_and_timing_modes)
     for (auto c : {Case{"1", "1", 1, 1}, Case{"economy", "typical", 2, 2}, Case{"speed", "worst", 3, 3},
                    Case{"lowpower", "3", 1, 3}}) {
         SCOPED_TRACE(stringf("fpga_mode=%s time_mode=%s", c.fpga_mode, c.time_mode));
-        init_context("CCGM1A1", {stringf("--fpga_mode=%s", c.fpga_mode), stringf("--time_mode=%s", c.time_mode)});
+        // (without the repairs, which would build delay tables for each speed grade)
+        init_context("CCGM1A1", {stringf("--fpga_mode=%s", c.fpga_mode), stringf("--time_mode=%s", c.time_mode),
+                                 "--route-repair=0", "--place-repair=0"});
         EXPECT_EQ(impl->fpga_mode, c.fpga);
         EXPECT_EQ(impl->timing_mode, c.timing);
     }

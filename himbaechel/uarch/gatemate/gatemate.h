@@ -157,6 +157,13 @@ struct GateMateImpl : HimbaechelAPI
     bool isValidBelForCellType(IdString cell_type, BelId bel) const override;
     BelBucketId getBelBucketForBel(BelId bel) const override;
 
+    // Fill the process-wide cache of clock_tree_delays for every output of the global clock drivers,
+    // several searches at once (for the tests, whose processes are forked after this)
+    void prepare_clock_tree_delays() const;
+    // Write that cache to a stream, or add what a stream holds to it
+    static void save_clock_tree_delays(std::ostream &out);
+    static void load_clock_tree_delays(std::istream &in);
+
     Loc getRelativeConstraint(Loc &root_loc, IdString id) const;
 
     void configurePlacerHeap(PlacerHeapCfg &cfg) override;

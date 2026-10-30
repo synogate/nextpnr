@@ -24,6 +24,7 @@
 #include <climits>
 #include <queue>
 #include <random>
+#include <thread>
 #include "testing.h"
 
 USING_NEXTPNR_NAMESPACE
@@ -102,16 +103,54 @@ TEST_F(GateMateLookaheadTest, estimates_follow_shortest_paths)
     std::vector<Bucket> wires = {
             {0, 8, 25, {}, {}}, {9, 20, 50, {}, {}}, {21, 40, 150, {}, {}}, {41, 999, 300, {}, {}}};
     std::vector<Bucket> pins = wires;
+    // The sinks and the wires sampled for each, drawn first, so that the searches from the sinks
+    // can run at once (the draws do not depend on their results)
+    struct Sink
+    {
+        int sx, sy;
+        WireId wire;
+        std::vector<WireId> random_wires, source_pins;
+        std::vector<int> dist;
+    };
+    std::vector<Sink> drawn(8);
+    for (int n = 0; n < int(drawn.size()); n++) {
+        Sink &s = drawn[n];
+        s.sx = 20 + rng() % (chip->width - 40);
+        s.sy = 20 + rng() % (chip->height - 40);
+        s.wire = wire(s.sx, s.sy, sinks[n % sinks.size()]);
+        ASSERT_NE(s.wire, WireId());
+        // Random wires
+        for (int i = 0; i < 3000; i++) {
+            int tile = rng() % chip->tile_insts.ssize();
+            auto &type = chip_tile_info(chip, tile);
+            if (type.wires.ssize() == 0)
+                continue;
+            int index = rng() % type.wires.ssize();
+            if (is_root_wire(chip, tile, index))
+                s.random_wires.push_back(WireId(tile, index));
+        }
+        // Source pins
+        for (int i = 0; i < 300; i++) {
+            int x = rng() % chip->width, y = rng() % chip->height;
+            WireId w = wire(x, y, sources[i % sources.size()]);
+            if (w != WireId())
+                s.source_pins.push_back(w);
+        }
+    }
+    std::vector<std::thread> threads;
+    for (auto &s : drawn)
+        threads.emplace_back([&]() { s.dist = to_sink(s.wire); });
+    for (auto &thread : threads)
+        thread.join();
+
     int unknown = 0, samples = 0, inside = 0;
-    for (int n = 0; n < 8; n++) {
-        int sx = 20 + rng() % (chip->width - 40), sy = 20 + rng() % (chip->height - 40);
-        WireId sink = wire(sx, sy, sinks[n % sinks.size()]);
-        ASSERT_NE(sink, WireId());
-        auto dist = to_sink(sink);
+    for (auto &s : drawn) {
+        WireId sink = s.wire;
+        auto &dist = s.dist;
         auto add = [&](std::vector<Bucket> &buckets, WireId w, int exact) {
             int x, y;
             tile_xy(chip, w.tile, x, y);
-            int d = std::abs(x - sx) + std::abs(y - sy);
+            int d = std::abs(x - s.sx) + std::abs(y - s.sy);
             delay_t table = impl->lookahead.estimate(w, sink);
             samples++;
             if (table < 0) {
@@ -124,17 +163,9 @@ TEST_F(GateMateLookaheadTest, estimates_follow_shortest_paths)
                     b.linear.push_back(std::abs(100 + 100 * d - exact));
                 }
         };
-        // Random reachable wires
-        for (int i = 0; i < 3000; i++) {
-            int tile = rng() % chip->tile_insts.ssize();
-            auto &type = chip_tile_info(chip, tile);
-            if (type.wires.ssize() == 0)
-                continue;
-            int index = rng() % type.wires.ssize();
-            if (!is_root_wire(chip, tile, index) || dist[base[tile] + index] == INT_MAX)
-                continue;
-            add(wires, WireId(tile, index), dist[base[tile] + index]);
-        }
+        for (WireId w : s.random_wires)
+            if (dist[flat(w)] != INT_MAX)
+                add(wires, w, dist[flat(w)]);
         // The wires of the sink's CPE: those between its inputs and the pin once looked unreachable,
         // so the router avoided the last hops into the pin. (Its outputs only loop back through the
         // routing, and the tables, which hold a few percent of exceptions to the phase pattern, can
@@ -149,13 +180,9 @@ TEST_F(GateMateLookaheadTest, estimates_follow_shortest_paths)
                         << ctx->nameOfWire(w);
             }
         }
-        // Source pins
-        for (int i = 0; i < 300; i++) {
-            int x = rng() % chip->width, y = rng() % chip->height;
-            WireId w = wire(x, y, sources[i % sources.size()]);
-            if (w != WireId() && dist[flat(w)] != INT_MAX)
+        for (WireId w : s.source_pins)
+            if (dist[flat(w)] != INT_MAX)
                 add(pins, w, dist[flat(w)]);
-        }
     }
     auto check = [](const char *what, std::vector<Bucket> &buckets) {
         for (auto &b : buckets) {

@@ -19,9 +19,13 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/range/adaptor/reversed.hpp>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <queue>
+#if !defined(NPNR_DISABLE_THREADS)
+#include <thread>
+#endif
 
 #include "gatemate.h"
 
@@ -47,45 +51,112 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
     return 100 + 100 * (std::abs(dx - sx) + std::abs(dy - sy)) + d2d;
 }
 
+namespace {
+// The results of clock_tree_delays() for all contexts, by device, settings and source. (A search takes
+// some seconds; std::map keeps references to its elements valid.)
+std::mutex clock_tree_mutex;
+std::map<std::string, dict<WireId, delay_t>> clock_tree_cache;
+} // namespace
+
+void GateMateImpl::save_clock_tree_delays(std::ostream &out)
+{
+    std::lock_guard<std::mutex> lock(clock_tree_mutex);
+    auto write_int = [&](int64_t value) { out.write(reinterpret_cast<const char *>(&value), sizeof(value)); };
+    write_int(clock_tree_cache.size());
+    for (auto &entry : clock_tree_cache) {
+        write_int(entry.first.size());
+        out.write(entry.first.data(), entry.first.size());
+        write_int(entry.second.size());
+        for (auto &sink : entry.second) {
+            write_int(sink.first.tile);
+            write_int(sink.first.index);
+            write_int(sink.second);
+        }
+    }
+}
+
+void GateMateImpl::load_clock_tree_delays(std::istream &in)
+{
+    auto read_int = [&]() {
+        int64_t value = 0;
+        in.read(reinterpret_cast<char *>(&value), sizeof(value));
+        return value;
+    };
+    std::lock_guard<std::mutex> lock(clock_tree_mutex);
+    for (int64_t n = read_int(); n > 0 && in; n--) {
+        std::string key(read_int(), '\0');
+        in.read(&key[0], key.size());
+        dict<WireId, delay_t> sinks;
+        for (int64_t i = read_int(); i > 0 && in; i--) {
+            int tile = read_int(), index = read_int();
+            sinks[WireId(tile, index)] = read_int();
+        }
+        if (in)
+            clock_tree_cache.emplace(key, std::move(sinks));
+    }
+}
+
 const dict<WireId, delay_t> &GateMateImpl::clock_tree_delays(WireId src) const
 {
-    // (A search takes some seconds; std::map keeps references to its elements valid.)
-    static std::mutex mutex;
-    static std::map<std::string, dict<WireId, delay_t>> cache;
     std::string key = stringf("%s %d %d %d%d%d %d %d", ctx->args.device.c_str(), timing_mode, fpga_mode,
                               int(use_cp_for_clk), int(use_cp_for_cpe), int(use_bridges), src.tile, src.index);
-    std::lock_guard<std::mutex> lock(mutex);
-    auto found = cache.find(key);
-    if (found != cache.end())
-        return found->second;
-    dict<WireId, delay_t> &sinks = cache[key];
-    dict<WireId, delay_t> delay_map;
+    {
+        std::lock_guard<std::mutex> lock(clock_tree_mutex);
+        auto found = clock_tree_cache.find(key);
+        if (found != clock_tree_cache.end())
+            return found->second;
+    }
+    // (searched without the lock, so that several searches can run at once)
+    dict<WireId, delay_t> sinks;
+    // Wires by index, tile_base[tile] + index in the tile
+    const ChipInfoPOD *chip = ctx->chip_info;
+    std::vector<int> tile_base(chip->tile_insts.ssize() + 1, 0);
+    for (int tile = 0; tile < chip->tile_insts.ssize(); tile++)
+        tile_base[tile + 1] = tile_base[tile] + chip_tile_info(chip, tile).wires.ssize();
+    auto index = [&](WireId wire) { return tile_base[wire.tile] + wire.index; };
+    std::vector<delay_t> delay_map(tile_base.back(), std::numeric_limits<delay_t>::max());
     std::priority_queue<std::pair<delay_t, WireId>, std::vector<std::pair<delay_t, WireId>>,
                         std::greater<std::pair<delay_t, WireId>>>
             visit;
     // The clock inputs. Each global clock reaches the register clocks of all CPEs, but only some of
     // the clock inputs of RAMs and IOs: the search ends a little after it has reached all CPEs.
-    pool<WireId> cpe_clocks, other_clocks;
+    enum : uint8_t
+    {
+        CPE_CLOCK = 1,
+        OTHER_CLOCK = 2
+    };
+    std::vector<uint8_t> clock_kind(tile_base.back(), 0);
+    int cpe_clocks = 0;
     for (BelId bel : ctx->getBels()) {
         BelBucketId bucket = ctx->getBelBucketForBel(bel);
-        if (bucket == id_CPE_FF)
-            cpe_clocks.insert(ctx->getBelPinWire(bel, id_CLK_INT));
-        else if (bucket.in(id_RAM_HALF, id_IOSEL))
-            for (IdString pin : {id_CLOCK1, id_CLOCK2, id_CLOCK3, id_CLOCK4})
-                other_clocks.insert(ctx->getBelPinWire(bel, pin));
+        if (bucket == id_CPE_FF) {
+            WireId wire = ctx->getBelPinWire(bel, id_CLK_INT);
+            if (wire != WireId() && !(clock_kind[index(wire)] & CPE_CLOCK)) {
+                clock_kind[index(wire)] |= CPE_CLOCK;
+                cpe_clocks++;
+            }
+        } else if (bucket.in(id_RAM_HALF, id_IOSEL))
+            for (IdString pin : {id_CLOCK1, id_CLOCK2, id_CLOCK3, id_CLOCK4}) {
+                WireId wire = ctx->getBelPinWire(bel, pin);
+                if (wire != WireId())
+                    clock_kind[index(wire)] |= OTHER_CLOCK;
+            }
     }
-    cpe_clocks.erase(WireId());
     delay_t last = 0;
-    delay_map[src] = 0;
+    delay_map[index(src)] = 0;
     visit.emplace(0, src);
     while (!visit.empty()) {
         auto [delay, wire] = visit.top();
         visit.pop();
-        if (delay_map.at(wire) < delay)
+        if (delay_map[index(wire)] < delay)
             continue;
-        if (cpe_clocks.empty() && delay > last + 1000)
+        if (cpe_clocks == 0 && delay > last + 1000)
             break;
-        if (cpe_clocks.erase(wire) || other_clocks.count(wire)) {
+        uint8_t &kind = clock_kind[index(wire)];
+        if (kind) {
+            if (kind & CPE_CLOCK)
+                cpe_clocks--;
+            kind &= ~CPE_CLOCK;
             sinks[wire] = delay;
             last = delay;
         }
@@ -102,14 +173,35 @@ const dict<WireId, delay_t> &GateMateImpl::clock_tree_delays(WireId src) const
                 continue;
             WireId dst = ctx->getPipDstWire(pip);
             delay_t next = delay + ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(dst).maxDelay();
-            auto prev = delay_map.find(dst);
-            if (prev != delay_map.end() && prev->second <= next)
+            delay_t &prev = delay_map[index(dst)];
+            if (prev <= next)
                 continue;
-            delay_map[dst] = next;
+            prev = next;
             visit.emplace(next, dst);
         }
     }
-    return sinks;
+    std::lock_guard<std::mutex> lock(clock_tree_mutex);
+    return clock_tree_cache.emplace(key, std::move(sinks)).first->second;
+}
+
+void GateMateImpl::prepare_clock_tree_delays() const
+{
+    std::vector<WireId> sources;
+    for (BelId bel : ctx->getBels())
+        if (ctx->getBelType(bel) == id_GLBOUT)
+            for (IdString pin : ctx->getBelPins(bel))
+                if (ctx->getBelPinType(bel, pin) == PORT_OUT && ctx->getBelPinWire(bel, pin) != WireId())
+                    sources.push_back(ctx->getBelPinWire(bel, pin));
+#if !defined(NPNR_DISABLE_THREADS)
+    std::vector<std::thread> threads;
+    for (WireId src : sources)
+        threads.emplace_back([this, src]() { clock_tree_delays(src); });
+    for (auto &thread : threads)
+        thread.join();
+#else
+    for (WireId src : sources)
+        clock_tree_delays(src);
+#endif
 }
 
 delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const

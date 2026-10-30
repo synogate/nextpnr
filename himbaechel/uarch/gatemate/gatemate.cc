@@ -316,7 +316,10 @@ void GateMateImpl::init(Context *ctx)
     auto &options = ctx->args.options;
     if (table_route || table_place || lut_swap || lut_swap_rounds > 0 || route_repair != 0 || place_repair != 0) {
         int radius = options.count("lookahead-radius") ? options["lookahead-radius"].as<int>() : 12;
-        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); });
+        std::string key =
+                stringf("%s %s %d%d%d", ctx->chip_info->name.get(), IdString(ctx->speed_grade->name).c_str(ctx),
+                        use_cp_for_clk, use_cp_for_cpe, use_bridges);
+        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key);
     }
     if (sb_y_cost > 0 || sb_ydiag_cost > 0) {
         // Every switch box plane has four Y outputs, each driving a whole node, and a small switch

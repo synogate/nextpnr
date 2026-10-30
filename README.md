@@ -297,6 +297,7 @@ Testing
 -------
 
 - To build test binaries as well, use `-DBUILD_TESTS=ON` and after `make` run `make test` to run them, or you can run separate binaries.
+- `nextpnr-himbaechel-test` runs its tests in parallel, on Linux, macOS and Windows alike: after a warm-up that fills the caches the uarchs share between contexts (such as the GateMate delay tables) and writes them to a file, `--jobs=N` (or `NEXTPNR_TEST_JOBS=N`; default: all cores) worker processes load them and run the tests, shared out by the durations of the previous run (`<executable>.times`). Only the output of failing tests is shown; `NEXTPNR_TEST_KEEP_LOGS=1` keeps all logs. `--jobs=1`, a single test (`--gtest_filter=Suite.test`), sharding and gtest's report options run the tests in one process as usual, e.g. under a debugger.
 - To use code sanitizers use the `cmake` options:
   - `-DSANITIZE_ADDRESS=ON`
   - `-DSANITIZE_MEMORY=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++`

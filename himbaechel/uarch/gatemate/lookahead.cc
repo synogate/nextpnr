@@ -22,6 +22,8 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <map>
+#include <mutex>
 #include <queue>
 #if !defined(NPNR_DISABLE_THREADS)
 #include <thread>
@@ -40,8 +42,138 @@ int wire_delay(Context *ctx, WireId wire) { return ctx->getWireDelay(wire).maxDe
 int pip_delay(Context *ctx, PipId pip) { return ctx->getPipDelay(pip).maxDelay(); }
 } // namespace
 
-void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId)> avail)
+bool GateMateLookahead::keep_built = false;
+
+namespace {
+// The kept tables by key and radius
+std::mutex kept_mutex;
+std::map<std::pair<std::string, int>, GateMateLookahead> kept;
+
+template <typename T> void write_raw(std::ostream &out, const T &value)
 {
+    out.write(reinterpret_cast<const char *>(&value), sizeof(T));
+}
+
+template <typename T> void read_raw(std::istream &in, T &value)
+{
+    in.read(reinterpret_cast<char *>(&value), sizeof(T));
+}
+
+template <typename T> void write_vector(std::ostream &out, const std::vector<T> &values)
+{
+    write_raw(out, uint64_t(values.size()));
+    out.write(reinterpret_cast<const char *>(values.data()), values.size() * sizeof(T));
+}
+
+template <typename T> void read_vector(std::istream &in, std::vector<T> &values)
+{
+    uint64_t size = 0;
+    read_raw(in, size);
+    values.resize(size);
+    in.read(reinterpret_cast<char *>(values.data()), size * sizeof(T));
+}
+} // namespace
+
+void GateMateLookahead::save_kept(std::ostream &out)
+{
+    std::lock_guard<std::mutex> lock(kept_mutex);
+    write_raw(out, uint64_t(kept.size()));
+    for (auto &entry : kept) {
+        const GateMateLookahead &t = entry.second;
+        write_vector(out, std::vector<char>(entry.first.first.begin(), entry.first.first.end()));
+        for (int value : {t.radius, t.span, t.inputs})
+            write_raw(out, value);
+        for (float value : {t.slope_x, t.slope_y})
+            write_raw(out, value);
+        for (auto *hops : {&t.to_pin, &t.from_pin}) {
+            write_raw(out, uint64_t(hops->size()));
+            for (auto &h : *hops) {
+                write_vector(out, h.start);
+                write_vector(out, h.hops);
+            }
+        }
+        write_raw(out, uint64_t(t.inside.size()));
+        for (auto &i : t.inside) {
+            write_vector(out, i.id);
+            write_raw(out, i.size);
+            write_vector(out, i.delay);
+        }
+        write_vector(out, t.slot_type);
+        write_vector(out, t.slot_base);
+        write_vector(out, *t.values);
+        write_raw(out, uint64_t(t.remap.size()));
+        for (auto &from : t.remap) {
+            write_raw(out, uint64_t(from.size()));
+            for (auto &to : from)
+                write_vector(out, to);
+        }
+    }
+}
+
+void GateMateLookahead::load_kept(std::istream &in)
+{
+    uint64_t count = 0;
+    read_raw(in, count);
+    for (uint64_t n = 0; n < count && in; n++) {
+        GateMateLookahead t;
+        std::vector<char> key;
+        read_vector(in, key);
+        for (int *value : {&t.radius, &t.span, &t.inputs})
+            read_raw(in, *value);
+        for (float *value : {&t.slope_x, &t.slope_y})
+            read_raw(in, *value);
+        for (auto *hops : {&t.to_pin, &t.from_pin}) {
+            uint64_t size = 0;
+            read_raw(in, size);
+            hops->resize(size);
+            for (auto &h : *hops) {
+                read_vector(in, h.start);
+                read_vector(in, h.hops);
+            }
+        }
+        uint64_t size = 0;
+        read_raw(in, size);
+        t.inside.resize(size);
+        for (auto &i : t.inside) {
+            read_vector(in, i.id);
+            read_raw(in, i.size);
+            read_vector(in, i.delay);
+        }
+        read_vector(in, t.slot_type);
+        read_vector(in, t.slot_base);
+        t.values = std::make_shared<std::vector<uint16_t>>();
+        read_vector(in, *t.values);
+        read_raw(in, size);
+        t.remap.resize(size);
+        for (auto &from : t.remap) {
+            read_raw(in, size);
+            from.resize(size);
+            for (auto &to : from)
+                read_vector(in, to);
+        }
+        if (!in)
+            break;
+        std::lock_guard<std::mutex> lock(kept_mutex);
+        kept.emplace(std::make_pair(std::string(key.begin(), key.end()), t.radius), std::move(t));
+    }
+}
+
+void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key)
+{
+    const bool keep = keep_built && !key.empty();
+    std::unique_lock<std::mutex> lock(kept_mutex);
+    if (keep && kept.count({key, radius})) {
+        *this = kept.at({key, radius});
+        this->ctx = ctx;
+        anchor_names.clear();
+        for (int i = 1; i <= 8; i++)
+            anchor_names.push_back(ctx->idf("CPE.IN%d", i));
+        for (const char *name : {"CPE.CLK", "CPE.EN", "CPE.SR", "CPE.OUT1", "CPE.OUT2"})
+            anchor_names.push_back(ctx->id(name));
+        return;
+    }
+    lock.unlock();
+
     auto start_time = std::chrono::steady_clock::now();
     const ChipInfoPOD *chip = ctx->chip_info;
     this->ctx = ctx;
@@ -182,7 +314,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
                 }
             }
     }
-    values.assign(total, MISSING);
+    values = std::make_shared<std::vector<uint16_t>>(total, MISSING);
 
     // Shortest paths from each anchor of each phase's sample: backwards from the inputs, forwards
     // from the outputs. The last job searches the whole chip from an input, for the slopes.
@@ -229,7 +361,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
                 int ox = x - sx, oy = y - sy;
                 if (std::abs(ox) <= radius && std::abs(oy) <= radius) {
                     int o = (oy + radius) * span + (ox + radius);
-                    values[slot_base[(p * anchors + k) * offsets + o] + wire.index] = std::min(cost, MISSING - 1);
+                    (*values)[slot_base[(p * anchors + k) * offsets + o] + wire.index] = std::min(cost, MISSING - 1);
                 }
             }
             auto relax = [&](PipId pip, WireId next, int delay) {
@@ -333,8 +465,12 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     }
 
     log_info("Built the GateMate delay tables: radius %d, %.0f MB, %.1f/%.1f ps per tile beyond, %.1fs\n", radius,
-             values.size() * sizeof(uint16_t) / 1e6, slope_x, slope_y,
+             values->size() * sizeof(uint16_t) / 1e6, slope_x, slope_y,
              std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count());
+    if (keep) {
+        lock.lock();
+        kept.emplace(std::make_pair(key, radius), *this);
+    }
 }
 
 int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
@@ -364,7 +500,7 @@ int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
             return -1;
         index = map[index];
     }
-    uint16_t value = values[slot_base[(p * int(anchor_names.size()) + k) * offsets + o] + index];
+    uint16_t value = (*values)[slot_base[(p * int(anchor_names.size()) + k) * offsets + o] + index];
     if (value == MISSING)
         return UNREACHABLE;
     return value + int(slope_x * ex + slope_y * ey);
