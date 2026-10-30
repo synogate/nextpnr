@@ -97,12 +97,27 @@ struct GateMateImpl : HimbaechelAPI
     // The fastest path to sink branching off the routing of net, arriving inverted or not as `inverted`
     // says, through free wires or with `displace` also those of other nets that can be ripped up (reroute.cc)
     std::vector<PipId> parity_path(NetInfo *net, WireId sink, bool inverted, bool displace) const;
-    // After routing, route the data inputs of the 8:1 multiplexers that arrive inverted again, as they have no
-    // way to undo it (reroute.cc)
+    // After routing, invert nets and route the data inputs of the 8:1 multiplexers that still arrive inverted
+    // again, as they have no way to undo it (reroute.cc)
     void fix_mx8_inputs();
     void find_mx8_ways();
+    // Before routing them again, which nets put out the inverse of their signal, so that as many data inputs of
+    // 8:1 multiplexers as possible arrive as they need (inverted_nets; reroute.cc)
+    void choose_net_polarities();
+    // Whether a driver can put out the inverse of its signal, and whether a sink undoes an inversion on the
+    // way, as the bitstream does for routing (reroute.cc)
+    bool can_invert_driver(const PortRef &driver) const;
+    bool undoes_inversion(const PortRef &user) const;
+    // The configuration of a register storing the inverse (false where its set and reset cannot swap)
+    bool invert_register(dict<IdString, Property> &params) const;
+    // Whether the routing to the data input `port` of the 8:1 multiplexer `mux` must invert: when either its net
+    // or the multiplexer's output is inverted (with all its inputs)
+    bool mx8_input_inverted(const CellInfo *mux, IdString port) const;
+    // The nets whose driver puts out the inverse of their signal (all their sinks undo it, or are data inputs of
+    // 8:1 multiplexers that need it), set by fix_mx8_inputs()
+    pool<IdString> inverted_nets;
     // The wires that are the only way to a data input of an 8:1 multiplexer, with whether the signal on them
-    // must be inverted for it to arrive uninverted (set by fix_mx8_inputs(), kept to by
+    // must be inverted for it to arrive as the multiplexer needs (set by fix_mx8_inputs(), kept to by
     // parity_path())
     dict<WireId, bool> mx8_input_ways;
     // And those to its selects, with their nets

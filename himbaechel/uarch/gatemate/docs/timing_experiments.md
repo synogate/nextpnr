@@ -291,15 +291,15 @@ Pending when this was written: `fuse-luts` (see "Logic depth" below).
   LUT1s (S0 and S1 also over CINY2/PINY2), neither register usable. Its data inputs have nothing to
   undo an inversion on the way (unlike LUT inputs, the MX4's C bits or the register controls), and
   router2 knows nothing of polarity: about half of them arrive inverted.
-- After routing, `fix_mx8_inputs()` routes the inputs that arrive inverted again, with a search over
-  wire and polarity (displacing other nets where needed). What remains is an error.
-- dmg_soc with yosys' MX8 (272 of them, seed 46): 1096 of 2176 data inputs arrive inverted, too
-  many to route again, so the design fails; Fmax was also lower than the 28-31 MHz without MX8.
-  Synthesis keeps `-nomx8`; MX8 is for single places, where the repair succeeds.
-- Not on main (branch `mx8-net-polarity`): inverting nets instead (LUT trees by their last LUT,
-  registers storing the inverse with set/reset swapped, an MX8 output; their other sinks undo it).
-  On dmg_soc it left 630 instead of 1096 to route again, still 62 failing in the end. Routing the
-  inputs before router2 made other connections unroutable.
+- After routing, `fix_mx8_inputs()` first chooses which nets put out the inverse of their signal
+  (LUT trees by their last LUT, registers by storing the inverse with set/reset swapped, an MX8
+  output when all its inputs arrive inverted; their other sinks undo it), then routes what is still
+  wrong again with a search over wire and polarity. What remains is an error.
+- dmg_soc with yosys' MX8 (272 of them, seed 46): 1096 of 2176 data inputs arrive inverted; the
+  polarity choice leaves 630, routing again 62, so the design fails. The repair costs Fmax (27.75 ->
+  26.0 MHz) against 28-31 MHz without MX8. Routing the inputs before router2 made other connections
+  unroutable (removed). Synthesis keeps `-nomx8`; MX8 is for single places, where the repair
+  succeeds.
 - A parity-aware router2 would solve it properly but touches the common router.
 - The MX4 alternative (two 4:1 multiplexers per CPE, the second masking with the third select)
   depends on how the second multiplexer of a CPE shares the C and X bits, which the schematic and

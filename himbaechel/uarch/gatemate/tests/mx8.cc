@@ -54,7 +54,7 @@ class GateMateMx8Test : public GateMateTest
     }
 
     // Each data input arrives as the multiplexer needs it: from the source, through the bridges on the way
-    // (cells of their own after routing), not inverted
+    // (cells of their own after routing), inverted when either its net or the multiplexer's output is
     void expect_inputs_arrive_as_needed(const std::vector<CellInfo *> &found)
     {
         int inputs = 0;
@@ -64,12 +64,12 @@ class GateMateMx8Test : public GateMateTest
                 ASSERT_NE(net, nullptr);
                 const CellInfo *cell = mux;
                 IdString port = ctx->idf("IN%d", i);
-                bool inverted = false;
+                bool inverted = impl->inverted_nets.count(mux->getPort(id_MUXOUT)->name);
                 while (true) {
                     const NetInfo *n = cell->getPort(port);
                     WireId sink = ctx->getBelPinWire(cell->bel, port);
                     ASSERT_TRUE(n->wires.count(sink)) << mux->name.str(ctx) << ".IN" << i;
-                    inverted ^= impl->routed_inverted(n, sink);
+                    inverted ^= impl->routed_inverted(n, sink) != bool(impl->inverted_nets.count(n->name));
                     if (!n->driver.cell || n->driver.cell->type != id_CPE_BRIDGE)
                         break;
                     cell = n->driver.cell;
@@ -148,4 +148,73 @@ TEST_F(GateMateMx8Test, data_inputs_are_routed_without_inversion)
     std::ifstream cfg(out);
     std::string text((std::istreambuf_iterator<char>(cfg)), std::istreambuf_iterator<char>());
     EXPECT_NE(text.find("C_CPE_CLK"), std::string::npos);
+}
+
+// Between LUTs, which can invert what they put out and undo what arrives inverted, nets are inverted instead
+// of routing their multiplexer inputs again
+TEST_F(GateMateMx8Test, inverts_nets_between_luts)
+{
+    std::string out = write_temp_file("mx8_luts.cfg", "");
+    init_context("CCGM1A1", {"--allow-unconstrained", "--out=" + out});
+    std::mt19937 rng(4);
+    std::vector<NetInfo *> pool;
+    for (int i = 0; i < 12; i++)
+        pool.push_back(input(stringf("in%d", i)));
+    for (int m = 0; m < 16; m++) {
+        std::vector<NetInfo *> d, s;
+        for (int i = 0; i < 8; i++)
+            d.push_back(lut2(stringf("d%d_%d", m, i), 0b0110, pool[rng() % pool.size()], pool[rng() % pool.size()]));
+        for (int i = 0; i < 3; i++)
+            s.push_back(pool[rng() % pool.size()]);
+        NetInfo *y = mx8(stringf("mux%d", m), d, s);
+        output(stringf("out%d", m), lut2(stringf("o%d", m), 0b1000, y, pool[rng() % pool.size()]));
+    }
+    LogCapture info(LogLevel::INFO_MSG);
+    place_and_route();
+    auto found = muxes();
+    ASSERT_EQ(found.size(), 16u);
+    EXPECT_FALSE(impl->inverted_nets.empty()) << info.str();
+    for (auto &name : impl->inverted_nets) {
+        const NetInfo *net = ctx->nets.at(name).get();
+        EXPECT_TRUE(impl->can_invert_driver(net->driver)) << name.str(ctx);
+    }
+    expect_inputs_arrive_as_needed(found);
+}
+
+// Registers (some with a reset) store the inverse, with the LUT before them inverted too
+TEST_F(GateMateMx8Test, inverts_registers)
+{
+    std::string out = write_temp_file("mx8_ffs.cfg", "");
+    init_context("CCGM1A1", {"--allow-unconstrained", "--out=" + out});
+    std::mt19937 rng(5);
+    NetInfo *clk = global_clock("clk");
+    NetInfo *rst = input("rst");
+    std::vector<NetInfo *> pool;
+    for (int i = 0; i < 12; i++)
+        pool.push_back(input(stringf("in%d", i)));
+    for (int m = 0; m < 16; m++) {
+        std::vector<NetInfo *> d, s;
+        for (int i = 0; i < 8; i++) {
+            NetInfo *x = lut2(stringf("x%d_%d", m, i), 0b0110, pool[rng() % pool.size()], pool[rng() % pool.size()]);
+            d.push_back(dff(stringf("r%d_%d", m, i), x, clk, nullptr, i % 2 ? rst : nullptr)->getPort(id_Q));
+        }
+        for (int i = 0; i < 3; i++)
+            s.push_back(pool[rng() % pool.size()]);
+        NetInfo *y = mx8(stringf("mux%d", m), d, s);
+        output(stringf("out%d", m), lut2(stringf("o%d", m), 0b1000, y, pool[rng() % pool.size()]));
+    }
+    LogCapture info(LogLevel::INFO_MSG);
+    place_and_route();
+    auto found = muxes();
+    ASSERT_EQ(found.size(), 16u);
+    int registers = 0;
+    for (auto &name : impl->inverted_nets) {
+        const NetInfo *net = ctx->nets.at(name).get();
+        if (net->driver.cell->type == id_CPE_FF) {
+            registers++;
+            EXPECT_TRUE(impl->inverted_nets.count(net->driver.cell->getPort(id_DIN)->name)) << name.str(ctx);
+        }
+    }
+    EXPECT_GT(registers, 0) << info.str();
+    expect_inputs_arrive_as_needed(found);
 }

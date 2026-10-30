@@ -738,7 +738,8 @@ void GateMateImpl::find_mx8_ways()
                 continue;
             WireId pin = ctx->getBelPinWire(ci->bel, port.first);
             if (port.first.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8)) {
-                only_way(pin, [&](WireId w, bool inverted) { mx8_input_ways[w] = inverted; });
+                bool wanted = mx8_input_inverted(ci, port.first);
+                only_way(pin, [&](WireId w, bool inverted) { mx8_input_ways[w] = inverted ^ wanted; });
                 continue;
             }
             // The selects: CLK and EN come through the muxes of the register clock and enable, from the
@@ -752,11 +753,212 @@ void GateMateImpl::find_mx8_ways()
     }
 }
 
+bool GateMateImpl::mx8_input_inverted(const CellInfo *mux, IdString port) const
+{
+    const NetInfo *in = mux->getPort(port), *out = mux->getPort(id_MUXOUT);
+    return (in && inverted_nets.count(in->name)) != (out && inverted_nets.count(out->name));
+}
+
+bool GateMateImpl::can_invert_driver(const PortRef &driver) const
+{
+    // An 8:1 multiplexer when all its data inputs arrive inverted
+    const CellInfo *ci = driver.cell;
+    if (!ci || ci->bel == BelId())
+        return false;
+    if (ci->type == id_CPE_MX8) {
+        for (int i = 1; i <= 8; i++)
+            if (!ci->getPort(ctx->idf("IN%d", i)))
+                return false;
+        return driver.port == id_MUXOUT;
+    }
+    // A register by storing the inverse, from the LUT before it inverted too (its only sink), where the other
+    // register of the CPE keeps the configuration they share
+    if (ci->type == id_CPE_FF) {
+        dict<IdString, Property> params = ci->params;
+        const NetInfo *d = ci->getPort(id_DIN);
+        if (driver.port != id_DOUT || !invert_register(params) || !d || d->users.entries() != 1 ||
+            !can_invert_driver(d->driver))
+            return false;
+        Loc loc = ctx->getBelLocation(ci->bel);
+        loc.z = loc.z == CPE_FF_U_Z ? CPE_FF_L_Z : CPE_FF_U_Z;
+        const CellInfo *other = ctx->getBoundBelCell(ctx->getBelByLocation(loc));
+        if (other)
+            for (IdString param : {id_C_CPE_RES, id_C_CPE_SET, id_C_EN_SR, id_FF_INIT})
+                if (int_or_default(params, param, 0) != int_or_default(ci->params, param, 0))
+                    return false;
+        return true;
+    }
+    // A LUT tree by inverting the last LUT (INIT_L10 of the upper half, INIT_L20 of the lower or whole CPE)
+    // when nothing else uses its output
+    if (multiplier_a_passthru_lowers.count(ci->name) || multiplier_a_passthru_uppers.count(ci->name) ||
+        multiplier_zero_drivers.count(ci->name))
+        return false;
+    Loc loc = ctx->getBelLocation(ci->bel);
+    if (!((ci->type == id_CPE_L2T4 && (loc.z == CPE_LT_U_Z || loc.z == CPE_LT_L_Z) && driver.port == id_OUT) ||
+          (ci->type == id_CPE_LT_L && loc.z == CPE_LT_FULL_Z && driver.port == id_OUT1)))
+        return false;
+    for (auto &port : ci->ports)
+        if (port.second.type == PORT_OUT && port.second.net && port.first != driver.port && port.first != id_OUT2)
+            return false;
+    // (the upper LUT tree's output also leads into the lower one's last LUT, which passes on its own one)
+    if (loc.z == CPE_LT_U_Z) {
+        loc.z = CPE_LT_L_Z;
+        const CellInfo *lower = ctx->getBoundBelCell(ctx->getBelByLocation(loc));
+        if (lower && (lower->type != id_CPE_L2T4 || int_or_default(lower->params, id_INIT_L20, LUT_D1) != LUT_D1))
+            return false;
+    }
+    return true;
+}
+
+bool GateMateImpl::invert_register(dict<IdString, Property> &params) const
+{
+    // Reset and set swapped: from SR both, where either is not constant (the set comes from EN otherwise)
+    int res = int_or_default(params, id_C_CPE_RES, 0), set = int_or_default(params, id_C_CPE_SET, 0);
+    bool set_from_sr = int_or_default(params, id_C_EN_SR, 0);
+    auto constant = [](int cfg) { return cfg == 0b00 || cfg == 0b11; };
+    if (!constant(set) && !set_from_sr)
+        return false;
+    params[id_C_CPE_RES] = Property(set, 2);
+    params[id_C_CPE_SET] = Property(res, 2);
+    if (!constant(res))
+        params[id_C_EN_SR] = Property(1, 1);
+    // (bit 1: has an initial value, bit 0 the value)
+    int init = int_or_default(params, id_FF_INIT, 0);
+    if (init & 0b10)
+        params[id_FF_INIT] = Property(init ^ 0b01, 2);
+    return true;
+}
+
+bool GateMateImpl::undoes_inversion(const PortRef &user) const
+{
+    // As write_bitstream() undoes it, in the LUTs the inputs lead into and the LUT1s of the register clock,
+    // enable and set/reset (not in the cells of multipliers, which invert their inputs on their own)
+    const CellInfo *ci = user.cell;
+    if (ci->bel == BelId() || multiplier_a_passthru_lowers.count(ci->name) ||
+        multiplier_a_passthru_uppers.count(ci->name) || multiplier_zero_drivers.count(ci->name))
+        return false;
+    int z = ctx->getBelLocation(ci->bel).z;
+    auto set = [&](IdString param) { return int_or_default(ci->params, param, 0) != 0; };
+    std::vector<IdString> ports;
+    if (ci->type == id_CPE_L2T4 && z == CPE_LT_U_Z)
+        ports = {id_IN1, set(id_C_I1) ? id_PINY1 : id_IN2, id_IN3, set(id_C_I2) ? id_CINX : id_IN4};
+    else if (ci->type == id_CPE_L2T4 && z == CPE_LT_L_Z)
+        ports = {id_IN1, set(id_C_I3) ? id_PINY1 : id_IN2, id_IN3, set(id_C_I4) ? id_PINX : id_IN4};
+    else if (ci->type.in(id_CPE_ADDF, id_CPE_ADDF2, id_CPE_CONCAT) && z == CPE_LT_FULL_Z)
+        ports = {id_IN1, set(id_C_I1) ? id_PINY1 : id_IN2, id_IN3, set(id_C_I2) ? id_CINX : id_IN4,
+                 id_IN5, set(id_C_I3) ? id_PINY1 : id_IN6, id_IN7, set(id_C_I4) ? id_PINX : id_IN8};
+    else if (ci->type == id_CPE_MX4 && z == CPE_LT_FULL_Z) {
+        if (int_or_default(ci->params, id_INIT_L20, 0) == LUT_D0)
+            ports = {id_IN1, set(id_C_I1) ? id_PINY1 : id_IN2,
+                     id_IN3, set(id_C_I2) ? id_CINX : id_IN4,
+                     id_IN5, id_IN6,
+                     id_IN7, id_IN8};
+        else
+            ports = {id_IN1, id_IN2,
+                     id_IN3, id_IN4,
+                     id_IN5, set(id_C_I3) ? id_PINY1 : id_IN6,
+                     id_IN7, set(id_C_I4) ? id_PINX : id_IN8};
+    } else if (ci->type.in(id_CPE_FF, id_CPE_LATCH))
+        ports = {id_CLK, id_EN, id_SR};
+    else if (ci->type == id_CPE_MX8)
+        ports = {id_CLK, id_CINY2, id_EN, id_PINY2, id_SR};
+    // (an input undone twice is not undone)
+    return std::count(ports.begin(), ports.end(), user.port) == 1;
+}
+
+// A data input of an 8:1 multiplexer arrives as it needs when the inversions of its net, of its routing and of
+// the multiplexer's output agree. Each net whose driver can put out the inverse and whose other sinks undo it
+// is free to: one net at a time, inverted where that leaves fewer of the inputs it reaches or drives wrong,
+// until none does. (Moving the inversion of a multiplexer's inputs on to the logic after it, before routing
+// any of them again.)
+void GateMateImpl::choose_net_polarities()
+{
+    inverted_nets.clear();
+    struct Input
+    {
+        const NetInfo *net, *out;
+        bool routed_inverted;
+    };
+    std::vector<Input> inputs;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->type != id_CPE_MX8 || ci->bel == BelId())
+            continue;
+        for (int i = 1; i <= 8; i++) {
+            IdString port = ctx->idf("IN%d", i);
+            NetInfo *net = ci->getPort(port);
+            if (!net)
+                continue;
+            WireId sink = ctx->getNetinfoSinkWire(net, net->users.at(ci->ports.at(port).user_idx), 0);
+            if (sink != WireId() && net->wires.count(sink))
+                inputs.push_back({net, ci->getPort(id_MUXOUT), routed_inverted(net, sink)});
+        }
+    }
+    dict<IdString, bool> is_free;
+    auto can_choose = [&](const NetInfo *net) {
+        if (!net)
+            return false;
+        auto found = is_free.find(net->name);
+        if (found != is_free.end())
+            return found->second;
+        bool ok = !net->wires.empty() && can_invert_driver(net->driver);
+        for (auto &user : net->users)
+            ok = ok && (undoes_inversion(user) ||
+                        (user.cell->type == id_CPE_MX8 &&
+                         user.port.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8)));
+        return is_free[net->name] = ok;
+    };
+    dict<IdString, bool> inverted;           // of the free nets
+    dict<IdString, std::vector<int>> of_net; // their inputs
+    for (int i = 0; i < int(inputs.size()); i++)
+        if (inputs[i].net != inputs[i].out)
+            for (const NetInfo *net : {inputs[i].net, inputs[i].out})
+                if (can_choose(net)) {
+                    inverted.emplace(net->name, false);
+                    of_net[net->name].push_back(i);
+                }
+    auto wrong = [&](const Input &in) {
+        bool net = in.net && inverted.count(in.net->name) && inverted.at(in.net->name);
+        bool out = in.out && inverted.count(in.out->name) && inverted.at(in.out->name);
+        return in.routed_inverted != (net != out);
+    };
+    int before = 0;
+    for (auto &in : inputs)
+        before += wrong(in);
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto &[name, inv] : inverted) {
+            int gain = 0;
+            for (int i : of_net.at(name))
+                gain += wrong(inputs[i]) ? 1 : -1;
+            if (gain > 0) {
+                inv = !inv;
+                changed = true;
+            }
+        }
+    }
+    int after = 0;
+    for (auto &in : inputs)
+        after += wrong(in);
+    for (auto &[name, inv] : inverted)
+        if (inv) {
+            inverted_nets.insert(name);
+            // (with the net into an inverted register)
+            const PortRef &driver = ctx->nets.at(name)->driver;
+            if (driver.cell->type == id_CPE_FF)
+                inverted_nets.insert(driver.cell->getPort(id_DIN)->name);
+        }
+    if (!inverted_nets.empty())
+        log_info("Inverted %d nets (of %d free to), leaving %d of the %d inverted inputs of 8:1 multiplexers.\n",
+                 int(inverted_nets.size()), int(inverted.size()), after, before);
+}
+
 // The data inputs of an 8:1 multiplexer have no LUT to undo an inversion on the way, as all other CPE inputs
-// do, so each needs a route through an even number of inverting muxes. router2 does not know about that.
-// Route those that arrive inverted again, from where their nets reach (displacing other nets where needed,
-// to be routed again with all other routing held), a few rounds as routing a displaced net again can invert
-// another multiplexer input.
+// do, so each needs a route through an even number of inverting muxes, or an odd one where its net or the
+// multiplexer's output is inverted. router2 does not know about that. First invert nets where that leaves
+// fewer of them wrong; route those still wrong again, from where their nets reach (displacing other nets
+// where needed, to be routed again with all other routing held), a few rounds as routing a displaced net
+// again can invert another multiplexer input.
 void GateMateImpl::fix_mx8_inputs()
 {
     auto inverted_inputs = [&] {
@@ -772,12 +974,16 @@ void GateMateImpl::fix_mx8_inputs()
                     continue;
                 PortRef user = net->users.at(ci->ports.at(port).user_idx);
                 WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
-                if (sink != WireId() && net->wires.count(sink) && routed_inverted(net, sink))
+                if (sink != WireId() && net->wires.count(sink) &&
+                    routed_inverted(net, sink) != mx8_input_inverted(ci, port))
                     found.emplace_back(net, user);
             }
         }
         return found;
     };
+    // (not for a partition, whose routing is written without them)
+    if (!as_partition)
+        choose_net_polarities();
     auto todo = inverted_inputs();
     if (todo.empty())
         return;

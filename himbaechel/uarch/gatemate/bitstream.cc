@@ -64,7 +64,8 @@ struct BitstreamBackend
             return false;
 
         WireId cursor = dst_wire;
-        bool invert = false;
+        // (from a driver that puts out the inverse, fix_mx8_inputs())
+        bool invert = uarch->inverted_nets.count(net_info->name);
         if (net_info->driver.cell && uarch->pass_backtrace.count(net_info->driver.cell->name)) {
             auto &bt = uarch->pass_backtrace[net_info->driver.cell->name];
             if (bt.count(net_info->driver.port)) {
@@ -377,6 +378,12 @@ struct BitstreamBackend
                 }
 
                 if (cell.second->type.in(id_CPE_FF, id_CPE_LATCH)) {
+                    // A register whose output net is inverted stores the inverse
+                    NetInfo *q = cell.second->getPort(id_DOUT);
+                    if (q && uarch->inverted_nets.count(q->name)) {
+                        bool inverted = uarch->invert_register(params);
+                        NPNR_ASSERT(inverted);
+                    }
                     update_cpe_inv(cell.second.get(), id_CLK, id_C_CPE_CLK, params);
                     update_cpe_inv(cell.second.get(), id_EN, id_C_CPE_EN, params);
                     bool set = int_or_default(params, id_C_EN_SR, 0) == 1;
@@ -394,10 +401,21 @@ struct BitstreamBackend
                     update_cpe_inv(cell.second.get(), id_EN, id_C_CPE_EN, params);
                     update_cpe_inv(cell.second.get(), id_PINY2, id_C_CPE_EN, params);
                     update_cpe_inv(cell.second.get(), id_SR, id_C_CPE_RES, params);
+                    // (all inverted, where the output is)
+                    NetInfo *out = cell.second->getPort(id_MUXOUT);
+                    bool out_inverted = out && uarch->inverted_nets.count(out->name);
                     for (int i = 1; i <= 8; i++)
-                        if (need_inversion(cell.second.get(), ctx->idf("IN%d", i)))
+                        if (need_inversion(cell.second.get(), ctx->idf("IN%d", i)) != out_inverted)
                             log_error("Input IN%d of multiplexer '%s' is routed inverted.\n", i,
                                       cell.second->name.c_str(ctx));
+                } else if (cell.second->type.in(id_CPE_L2T4, id_CPE_LT_L)) {
+                    // A LUT tree whose output net is inverted: its last LUT puts out the inverse
+                    for (auto &port : cell.second->ports)
+                        if (port.second.type == PORT_OUT && port.second.net &&
+                            uarch->inverted_nets.count(port.second.net->name)) {
+                            IdString init = l.z == CPE_LT_U_Z ? id_INIT_L10 : id_INIT_L20;
+                            params[init] = Property(~int_or_default(params, init, 0) & 0b1111, 4);
+                        }
                 }
 
                 if (uarch->multiplier_a_passthru_lowers.count(cell.first) ||
