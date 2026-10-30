@@ -210,6 +210,7 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
     vbox2->addWidget(propertyEditor);
 
     QSplitter *splitter = new QSplitter(Qt::Vertical);
+    splitter->setObjectName("splitter_design");
     splitter->addWidget(topWidget);
     splitter->addWidget(btmWidget);
 

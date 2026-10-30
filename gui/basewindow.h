@@ -55,6 +55,7 @@ class BaseMainWindow : public QMainWindow
     void notifyChangeContext();
 
   protected:
+    void closeEvent(QCloseEvent *event) override;
     void createMenusAndBars();
     void disableActions();
     void enableDisableDecals();
