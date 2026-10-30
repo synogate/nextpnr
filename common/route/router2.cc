@@ -404,6 +404,14 @@ struct Router2
         }
     }
 
+    // Wires bound with STRENGTH_PLACER before routing stay bound to their net, with their driving pip. They keep
+    // their entry in the net's wires even when no arc uses them, so that no other pip is chosen to drive them.
+    bool is_held(const PerNetData &net, WireId wire)
+    {
+        NetInfo *bound = ctx->getBoundWireNet(wire);
+        return bound != nullptr && &nets.at(bound->udata) == &net && bound->wires.at(wire).strength == STRENGTH_PLACER;
+    }
+
     void unbind_pip_internal(PerNetData &net, store_index<PortRef> user, WireId wire)
     {
         auto &wd = wire_data(wire);
@@ -411,7 +419,7 @@ struct Router2
         auto pip = wire_found.first;
 
         --wire_found.second;
-        if (wire_found.second == 0) {
+        if (wire_found.second == 0 && !is_held(net, wire)) {
             // No remaining arcs of this net bound to this wire
             --wd.curr_cong;
             net.wires.erase(wd.w);
