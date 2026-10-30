@@ -172,7 +172,7 @@ po::options_description GateMateImpl::getUArchOptions()
             "router-critical-estimate-weight", po::value<float>(),
             "weight of the delay estimate for the most critical connections (default: as for the others)");
     specific.add_options()("router-estimate-weight", po::value<float>(),
-                           "weight of the delay estimate in the router's search (router2 default 1.25)");
+                           "weight of the delay estimate in the router's search (default 1.1)");
     return specific;
 }
 
@@ -350,6 +350,8 @@ void GateMateImpl::init(Context *ctx)
     if (options.count("router-estimate-weight"))
         ctx->settings[ctx->id("router2/estimateWeight")] =
                 std::to_string(options["router-estimate-weight"].as<float>());
+    else if (!ctx->settings.count(ctx->id("router2/estimateWeight")))
+        ctx->settings[ctx->id("router2/estimateWeight")] = std::to_string(1.1f);
     for (const auto &pad : ctx->package_info->pads) {
         available_pads.emplace(IdString(pad.package_pin));
         BelId bel = ctx->getBelByName(IdStringList::concat(IdString(pad.tile), IdString(pad.bel)));
