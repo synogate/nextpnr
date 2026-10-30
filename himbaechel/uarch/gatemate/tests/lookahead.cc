@@ -203,3 +203,29 @@ TEST_F(GateMateLookaheadTest, estimates_follow_shortest_paths)
     EXPECT_LT(unknown, samples / 50);
     EXPECT_GT(inside, 8);
 }
+
+TEST_F(GateMateLookaheadTest, cp_lines_reach_the_lut_inputs)
+{
+    // The CP lines enter the LUT through PINY1, CINX and PINX, not through IN1..IN8; their wires once
+    // all looked unreachable (20 ns), so the router hardly took them
+    const int sx = 60, sy = 60;
+    int checked = 0;
+    for (const char *name : {"CPE.D1_00_int", "CPE.D0_01_int", "CPE.D0_03_int"}) {
+        WireId sink = wire(sx, sy, name);
+        ASSERT_NE(sink, WireId());
+        auto dist = to_sink(sink);
+        for (int dy = 0; dy <= 6; dy++)
+            for (int dx = -1; dx <= 0; dx++)
+                for (const char *n :
+                     {"CPE.PINY1", "CPE.POUTY1", "CPE.CINY1", "CPE.COUTY1", "CPE.CINX", "CPE.PINX", "CPE.COUTX",
+                      "CPE.POUTX", "CPE.CY1_OUT", "CPE.PY1_OUT", "CPE.OUT1_IN_int", "CPE.COMBOUT1_int"}) {
+                    WireId w = wire(sx + dx, sy - dy, n);
+                    if (w == WireId() || dist[flat(w)] == INT_MAX)
+                        continue;
+                    checked++;
+                    EXPECT_NEAR(impl->lookahead.estimate(w, sink), dist[flat(w)], std::max(100, dist[flat(w)] / 5))
+                            << ctx->nameOfWire(w) << " to " << ctx->nameOfWire(sink);
+                }
+    }
+    EXPECT_GT(checked, 50);
+}

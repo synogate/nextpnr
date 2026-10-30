@@ -158,6 +158,22 @@ void GateMateLookahead::load_kept(std::istream &in)
     }
 }
 
+void GateMateLookahead::set_anchor_names()
+{
+    anchor_names.clear();
+    for (int i = 1; i <= 8; i++)
+        anchor_names.push_back(ctx->idf("CPE.IN%d", i));
+    // The CP lines enter a CPE's LUT inputs (PINY1, CINX, PINX) and its clock and enable (CINY2,
+    // PINY2) besides the switch boxes; without them as anchors, every wire of the CP lines would
+    // look unreachable and the router would not take them
+    for (const char *name :
+         {"CPE.CLK", "CPE.EN", "CPE.SR", "CPE.PINY1", "CPE.CINX", "CPE.PINX", "CPE.CINY2", "CPE.PINY2"})
+        anchor_names.push_back(ctx->id(name));
+    inputs = anchor_names.size();
+    for (const char *name : {"CPE.OUT1", "CPE.OUT2"})
+        anchor_names.push_back(ctx->id(name));
+}
+
 void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key)
 {
     const bool keep = keep_built && !key.empty();
@@ -165,11 +181,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     if (keep && kept.count({key, radius})) {
         *this = kept.at({key, radius});
         this->ctx = ctx;
-        anchor_names.clear();
-        for (int i = 1; i <= 8; i++)
-            anchor_names.push_back(ctx->idf("CPE.IN%d", i));
-        for (const char *name : {"CPE.CLK", "CPE.EN", "CPE.SR", "CPE.OUT1", "CPE.OUT2"})
-            anchor_names.push_back(ctx->id(name));
+        set_anchor_names();
         return;
     }
     lock.unlock();
@@ -181,13 +193,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     span = 2 * radius + 1;
     const int offsets = span * span;
 
-    for (int i = 1; i <= 8; i++)
-        anchor_names.push_back(ctx->idf("CPE.IN%d", i));
-    for (const char *name : {"CPE.CLK", "CPE.EN", "CPE.SR"})
-        anchor_names.push_back(ctx->id(name));
-    inputs = anchor_names.size();
-    for (const char *name : {"CPE.OUT1", "CPE.OUT2"})
-        anchor_names.push_back(ctx->id(name));
+    set_anchor_names();
     const int anchors = anchor_names.size();
     const int types = chip->tile_types.ssize();
 

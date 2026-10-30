@@ -96,6 +96,8 @@ struct GateMateLookahead
     std::vector<std::vector<std::vector<int>>> remap;
     float slope_x = 0, slope_y = 0; // ps per tile beyond the radius
 
+    // The CPE wires the tables hold delays to (the inputs, first) and from (the outputs)
+    void set_anchor_names();
     int phase(int x, int y) const { return (x & 1) * 4 + ((x + y) & 3); }
     // Delay between anchor k of the CPE in anchor_tile and wire w, or -1 if unknown
     int lookup(int k, int anchor_tile, WireId w) const;
