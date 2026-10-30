@@ -72,6 +72,8 @@ class GateMateTest : public ::testing::Test
     NetInfo *mx2(const std::string &name, NetInfo *d0, NetInfo *d1, NetInfo *s0);
     NetInfo *mx4(const std::string &name, NetInfo *d0, NetInfo *d1, NetInfo *d2, NetInfo *d3, NetInfo *s0,
                  NetInfo *s1);
+    // A CC_MX8 with data d[0..7] and selects s[0..2]
+    NetInfo *mx8(const std::string &name, const std::vector<NetInfo *> &d, const std::vector<NetInfo *> &s);
     CellInfo *dff(const std::string &name, NetInfo *d, NetInfo *clk, NetInfo *en = nullptr, NetInfo *sr = nullptr);
     CellInfo *dlt(const std::string &name, NetInfo *d, NetInfo *g, NetInfo *sr = nullptr);
     // A CC_ADDF; returns {S, CO}.

@@ -126,6 +126,7 @@ struct NetlistEvaluator
     Tri external(const CellInfo *buffer);
     Tri eval_l2t4(const CellInfo *cell);
     Tri eval_cpe(const CellInfo *cell, IdString port);
+    Tri eval_mx8(const CellInfo *cell);
     Tri eval_cplines(const CellInfo *cell, IdString port);
     Tri eval_iosel(const CellInfo *cell, IdString port);
     Tri eval_clocking(const CellInfo *cell, IdString port);

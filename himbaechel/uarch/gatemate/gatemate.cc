@@ -643,7 +643,8 @@ void GateMateImpl::postPlace()
     for (auto &cell : ctx->cells) {
         // We need to skip CPE_MULT since using CP outputs is mandatory
         // even if output is actually not connected
-        bool marked_used = cell.second.get()->type == id_CPE_MULT;
+        // An 8:1 multiplexer drives MUXOUT itself
+        bool marked_used = cell.second.get()->type.in(id_CPE_MULT, id_CPE_MX8);
         // Can not use FF or latch for OUT2 if CPE is used in bridge mode (C_BR drives DIN2 from MUXOUT)
         if (cell.second.get()->type.in(id_CPE_FF, id_CPE_LATCH) &&
             ctx->getBelLocation(cell.second.get()->bel).z == CPE_FF_U_Z)
@@ -995,6 +996,7 @@ void GateMateImpl::postRoute()
     }
     if (lut_swap_rounds > 0)
         improve_lut_inputs(lut_swap_rounds);
+    fix_mx8_inputs();
     if (report_crit_routing)
         report_critical_routing();
     if (ctx->args.options.count("place-crit-out")) {
@@ -1359,6 +1361,24 @@ void GateMateImpl::postRoute()
             cell.second->renamePort(id_CLK_INT, port_mapping[id_CLK_INT]);
             cell.second->renamePort(id_EN_INT, port_mapping[id_EN_INT]);
         }
+        if (cell.second->type.in(id_CPE_MX8)) {
+            // The selects S0 and S1 pass the same muxes as a register's clock and enable: from CLK and EN,
+            // or with C_CLKSEL and C_ENSEL from CINY2 and PINY2 (XORed with the LUT1, which then is a constant)
+            cfg.clear();
+            port_mapping.clear();
+            check_input(cell.second.get(), id_CLK, false);
+            check_input(cell.second.get(), id_EN, false);
+            for (auto [port, sel, param] : {std::make_tuple(id_CLK, id_C_CLKSEL, id_C_CPE_CLK),
+                                            std::make_tuple(id_EN, id_C_ENSEL, id_C_CPE_EN)}) {
+                if (cfg.count(sel) && cfg.at(sel) == 1) {
+                    uint8_t val = int_or_default(cell.second->params, param, 0) & 1;
+                    cell.second->params[param] = Property(val ? 3 : 0, 2);
+                    cell.second->params[sel] = Property(1, 1);
+                }
+                if (port_mapping.count(port) && port_mapping.at(port) != port)
+                    cell.second->renamePort(port, port_mapping.at(port));
+            }
+        }
     }
     ctx->assignArchInfo();
 
@@ -1456,6 +1476,7 @@ void GateMateImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
         comb.cell_area[id_CPE_LT] = StaticRect(1.0f, 0.5f);
         comb.cell_area[id_CPE_L2T4] = StaticRect(1.0f, 0.5f);
         comb.cell_area[id_CPE_DUMMY] = StaticRect(1.0f, 0.5f);
+        comb.cell_area[id_CPE_MX8] = StaticRect(1.0f, 0.5f);
 
         comb.cell_area[id_CPE_CPLINES] = StaticRect(1.0f, 0.5f);
         comb.cell_area[id_CPE_COMP] = StaticRect(1.0f, 0.5f);
@@ -1484,6 +1505,7 @@ void GateMateImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
         ff.cell_area[id_CPE_FF_L] = StaticRect(1.0f, 0.5f);
         ff.cell_area[id_CPE_FF] = StaticRect(1.0f, 0.5f);
         ff.cell_area[id_CPE_LATCH] = StaticRect(1.0f, 0.5f);
+        ff.cell_area[id_CPE_FF_DUMMY] = StaticRect(1.0f, 0.5f);
 
         ff.spacer_rect = StaticRect(1.0f, 0.5f);
     }
@@ -1559,7 +1581,7 @@ IdString GateMateImpl::getBelBucketForCellType(IdString cell_type) const
     if (cell_type.in(id_CPE_IBUF, id_CPE_OBUF, id_CPE_TOBUF, id_CPE_IOBUF, id_CPE_LVDS_IBUF, id_CPE_LVDS_TOBUF,
                      id_CPE_LVDS_OBUF, id_CPE_LVDS_IOBUF))
         return id_GPIO;
-    else if (cell_type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT, id_CPE_L2T4))
+    else if (cell_type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT, id_CPE_L2T4, id_CPE_MX8))
         return id_CPE_LT;
     else if (cell_type.in(id_CPE_FF_U, id_CPE_FF_L, id_CPE_FF, id_CPE_LATCH))
         return id_CPE_FF;
@@ -1594,11 +1616,11 @@ bool GateMateImpl::isValidBelForCellType(IdString cell_type, BelId bel) const
     else if (bel_type == id_CPE_LT_U)
         return cell_type.in(id_CPE_LT_U, id_CPE_LT, id_CPE_L2T4, id_CPE_DUMMY);
     else if (bel_type == id_CPE_LT_L)
-        return cell_type.in(id_CPE_LT_L, id_CPE_LT, id_CPE_L2T4, id_CPE_DUMMY);
+        return cell_type.in(id_CPE_LT_L, id_CPE_LT, id_CPE_L2T4, id_CPE_DUMMY, id_CPE_MX8);
     else if (bel_type == id_CPE_FF_U)
-        return cell_type.in(id_CPE_FF_U, id_CPE_FF, id_CPE_LATCH);
+        return cell_type.in(id_CPE_FF_U, id_CPE_FF, id_CPE_LATCH, id_CPE_FF_DUMMY);
     else if (bel_type == id_CPE_FF_L)
-        return cell_type.in(id_CPE_FF_L, id_CPE_FF, id_CPE_LATCH);
+        return cell_type.in(id_CPE_FF_L, id_CPE_FF, id_CPE_LATCH, id_CPE_FF_DUMMY);
     else if (bel_type.in(id_CPE_RAMIO_U, id_CPE_RAMIO_L))
         return cell_type.in(id_CPE_RAMIO, id_CPE_RAMI, id_CPE_RAMO);
     else if (bel_type == id_RAM)

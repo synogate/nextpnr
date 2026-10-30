@@ -140,6 +140,18 @@ void GateMateImpl::route_clock()
             clk_nets.push_back(net);
     }
 
+    // The inputs of an 8:1 multiplexer (and their input muxes, which the clocks could pass to reach the next
+    // CPE) have no alternative: its selects come in on CLK, EN and SR, its data on IN1..IN8
+    for (auto &cell : ctx->cells) {
+        if (cell.second->type != id_CPE_MX8)
+            continue;
+        for (auto &port : cell.second->ports)
+            if (port.second.type == PORT_IN && port.second.net)
+                for (auto sink_wire :
+                     ctx->getNetinfoSinkWires(port.second.net, port.second.net->users.at(port.second.user_idx)))
+                    reserve(sink_wire, port.second.net);
+    }
+
     for (auto clk_net : clk_nets) {
         log_info("    routing net '%s' to %d users\n", clk_net->name.c_str(ctx), clk_net->users.entries());
         auto src_wire = ctx->getNetinfoSourceWire(clk_net);

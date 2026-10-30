@@ -316,7 +316,12 @@ def main():
                 extra.add_constraints(ch.strs.id(constr.name),constr.rel_x,constr.rel_y,4 if constr.pin_num==2 else 5)
             bel.extra_data = extra
             for pin in sorted(die.get_primitive_pins(prim.type)):
-                tt.add_bel_pin(bel, pin.name, die.get_pin_connection_name(prim,pin), pin.dir)
+                wire = die.get_pin_connection_name(prim,pin)
+                # The MX8 selects S0 and S1 come from the same muxes as the register clock and enable
+                # (C_CLKSEL, C_ENSEL), so they can also be brought in over CINY2 and PINY2
+                if prim.type == "CPE_LT_FULL" and pin.name in ["CLK", "EN"]:
+                    wire = f"CPE.{pin.name}_int"
+                tt.add_bel_pin(bel, pin.name, wire, pin.dir)
         for mux in sorted(die.get_mux_connections_for_type(type_name)):
             if len(mux.delay)>0:
                 pip_tmg_names.add(mux.delay)

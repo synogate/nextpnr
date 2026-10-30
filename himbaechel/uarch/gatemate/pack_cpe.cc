@@ -396,6 +396,51 @@ void GateMatePacker::pack_cpe()
     }
     mux_list.clear();
 
+    // An 8:1 multiplexer takes a whole CPE: the data come in on IN1..IN8, the selects S0, S1 and S2 on
+    // the register clock, enable and set/reset inputs, through their LUT1s (C_CPE_CLK, C_CPE_EN,
+    // C_CPE_RES), so neither register can be used. With C_BR, C_SN and C_2D_IN (the carry in) all 0 the
+    // select is just {SR, EN, CLK}.
+    for (auto &cell : ctx->cells) {
+        CellInfo &ci = *cell.second;
+        if (ci.type.in(id_CC_MX8))
+            mux_list.push_back(&ci);
+    }
+    for (auto &cell : mux_list) {
+        CellInfo &ci = *cell;
+        ci.type = id_CPE_MX8;
+        ci.cluster = ci.name;
+        for (int i = 0; i < 8; i++)
+            ci.renamePort(ctx->idf("D%d", i), ctx->idf("IN%d", i + 1));
+        ci.renamePort(id_Y, id_MUXOUT);
+        for (auto [sel, port, param] :
+             {std::make_tuple(id_S0, id_CLK, id_C_CPE_CLK), std::make_tuple(id_S1, id_EN, id_C_CPE_EN),
+              std::make_tuple(id_S2, id_SR, id_C_CPE_RES)}) {
+            // The LUT1 passes the select, or gives a constant one without routing it
+            NetInfo *net = ci.getPort(sel);
+            int lut = 0b10;
+            if (!net || net == net_PACKER_GND || net == net_PACKER_VCC) {
+                lut = (net == net_PACKER_VCC) ? 0b11 : 0b00;
+                ci.disconnectPort(sel);
+            }
+            ci.renamePort(sel, port);
+            ci.params[param] = Property(lut, 2);
+        }
+
+        // The rest of the CPE, kept free
+        auto reserve = [&](IdString type, const char *suffix, int z) {
+            CellInfo *dummy = create_cell_ptr(type, ctx->idf("%s$%s", ci.name.c_str(ctx), suffix));
+            dummy->cluster = ci.name;
+            dummy->region = ci.region;
+            dummy->constr_abs_z = true;
+            dummy->constr_z = z;
+            ci.constr_children.push_back(dummy);
+        };
+        reserve(id_CPE_DUMMY, "upper", CPE_LT_U_Z);
+        reserve(id_CPE_FF_DUMMY, "ff_upper", CPE_FF_U_Z);
+        reserve(id_CPE_FF_DUMMY, "ff_lower", CPE_FF_L_Z);
+    }
+    mux_list.clear();
+
     std::vector<CellInfo *> dff_list;
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
