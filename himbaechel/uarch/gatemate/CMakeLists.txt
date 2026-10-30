@@ -51,6 +51,7 @@ set(TEST_SOURCES
     tests/lut_swap.cc
     tests/lut_semantics.cc
     tests/mult.cc
+    tests/mx8.cc
     tests/netlist_eval.cc
     tests/netlist_eval.h
     tests/pll.cc

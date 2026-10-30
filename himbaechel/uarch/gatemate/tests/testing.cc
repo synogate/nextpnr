@@ -219,6 +219,18 @@ NetInfo *GateMateTest::mx2(const std::string &name, NetInfo *d0, NetInfo *d1, Ne
     return y;
 }
 
+NetInfo *GateMateTest::mx8(const std::string &name, const std::vector<NetInfo *> &d, const std::vector<NetInfo *> &s)
+{
+    CellInfo *mux = create_cell_ptr(id_CC_MX8, name);
+    for (int i = 0; i < 8; i++)
+        mux->connectPort(ctx->idf("D%d", i), d.at(i));
+    for (int i = 0; i < 3; i++)
+        mux->connectPort(ctx->idf("S%d", i), s.at(i));
+    NetInfo *y = create_net(name + "$y");
+    mux->connectPort(id_Y, y);
+    return y;
+}
+
 NetInfo *GateMateTest::mx4(const std::string &name, NetInfo *d0, NetInfo *d1, NetInfo *d2, NetInfo *d3, NetInfo *s0,
                            NetInfo *s1)
 {
@@ -395,7 +407,7 @@ std::vector<GateMateTest::MissingArc> GateMateTest::missing_timing_arcs(uint64_t
     };
     for (auto &c : ctx->cells) {
         const CellInfo *cell = c.second.get();
-        if (!cell->type.in(id_CPE_L2T4, id_CPE_ADDF, id_CPE_ADDF2, id_CPE_MX4, id_CPE_CPLINES, id_CPE_RAMI,
+        if (!cell->type.in(id_CPE_L2T4, id_CPE_ADDF, id_CPE_ADDF2, id_CPE_MX4, id_CPE_MX8, id_CPE_CPLINES, id_CPE_RAMI,
                            id_CPE_RAMO, id_CPE_RAMIO, id_IOSEL))
             continue;
         // The input nets, with the ports they are connected to
@@ -525,7 +537,7 @@ int GateMateTest::cpe_half_bound(std::map<std::string, int> *by_type)
         }
         if (t.in(id_CC_DLT, id_CC_OBUF, id_CC_LVDS_OBUF, id_CC_BUFG))
             return 1;
-        if (t.in(id_CC_L2T5, id_CC_MX4, id_CC_TOBUF, id_CC_IOBUF, id_CC_LVDS_TOBUF, id_CC_LVDS_IOBUF))
+        if (t.in(id_CC_L2T5, id_CC_MX4, id_CC_MX8, id_CC_TOBUF, id_CC_IOBUF, id_CC_LVDS_TOBUF, id_CC_LVDS_IOBUF))
             return 2;
         if (t == id_CC_ODDR) {
             // Both data inputs and a fabric clock; the select (shared by the DDR outputs of a
@@ -801,6 +813,14 @@ CellInfo *GateMateTest::create_cell_ptr(IdString type, std::string name)
         add_port(id_D0, PORT_IN);
         add_port(id_D1, PORT_IN);
         add_port(id_S0, PORT_IN);
+        add_port(id_Y, PORT_OUT);
+        break;
+    case id_CC_MX8.index:
+        for (int i = 0; i < 8; i++)
+            add_port(ctx->idf("D%d", i), PORT_IN);
+        add_port(id_S0, PORT_IN);
+        add_port(id_S1, PORT_IN);
+        add_port(id_S2, PORT_IN);
         add_port(id_Y, PORT_OUT);
         break;
     case id_CC_MX4.index:

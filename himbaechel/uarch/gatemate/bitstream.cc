@@ -310,6 +310,7 @@ struct BitstreamBackend
             case id_CPE_ADDF2.index:
             case id_CPE_MULT.index:
             case id_CPE_MX4.index:
+            case id_CPE_MX8.index:
             case id_CPE_CONCAT.index:
             case id_CPE_FF.index:
             case id_CPE_LATCH.index:
@@ -341,7 +342,7 @@ struct BitstreamBackend
                     }
                 }
                 if (l.z == CPE_LT_FULL_Z) {
-                    if (!cell.second->type.in(id_CPE_MULT)) {
+                    if (!cell.second->type.in(id_CPE_MULT, id_CPE_MX8)) {
                         if (cell.second->type.in(id_CPE_MX4)) {
                             if (int_or_default(params, id_INIT_L20, 0) == LUT_D0) {
                                 update_cpe_lt(cell.second.get(), id_IN1, id_INIT_L00, params, true);
@@ -383,6 +384,20 @@ struct BitstreamBackend
                         update_cpe_inv(cell.second.get(), id_SR, id_C_CPE_SET, params);
                     else
                         update_cpe_inv(cell.second.get(), id_SR, id_C_CPE_RES, params);
+                }
+
+                if (cell.second->type.in(id_CPE_MX8)) {
+                    // The selects have their LUT1s (from CINY2 and PINY2 constant ones, XORed with them), the data
+                    // inputs nothing to undo an inversion on the way
+                    update_cpe_inv(cell.second.get(), id_CLK, id_C_CPE_CLK, params);
+                    update_cpe_inv(cell.second.get(), id_CINY2, id_C_CPE_CLK, params);
+                    update_cpe_inv(cell.second.get(), id_EN, id_C_CPE_EN, params);
+                    update_cpe_inv(cell.second.get(), id_PINY2, id_C_CPE_EN, params);
+                    update_cpe_inv(cell.second.get(), id_SR, id_C_CPE_RES, params);
+                    for (int i = 1; i <= 8; i++)
+                        if (need_inversion(cell.second.get(), ctx->idf("IN%d", i)))
+                            log_error("Input IN%d of multiplexer '%s' is routed inverted.\n", i,
+                                      cell.second->name.c_str(ctx));
                 }
 
                 if (uarch->multiplier_a_passthru_lowers.count(cell.first) ||

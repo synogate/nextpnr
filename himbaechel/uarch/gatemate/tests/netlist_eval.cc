@@ -629,6 +629,27 @@ Tri NetlistEvaluator::eval_l2t4(const CellInfo *cell)
     return l10();
 }
 
+// The 8:1 multiplexer of a CPE: the selects come from CLK, EN and SR through their LUT1s (C_CPE_CLK,
+// C_CPE_EN, C_CPE_RES) and the adder that adds C_SN and the carry in C_2D_IN to them, which the packer
+// leaves at 0 (C_BR selects C_SN alone, for bridges).
+Tri NetlistEvaluator::eval_mx8(const CellInfo *cell)
+{
+    auto cfg = [&](IdString name) { return int_or_default(cell->params, name, 0); };
+    for (auto param : {id_C_BR, id_C_SN, id_C_2D_IN, id_C_CLKSEL, id_C_ENSEL})
+        if (cfg(param) != 0)
+            throw EvalUnsupported(
+                    stringf("multiplexer '%s' sets %s, which has no model", cell->name.c_str(ctx), param.c_str(ctx)));
+    // A select with a constant LUT1 has no input
+    auto sel = [&](IdString port, IdString param) {
+        int lut = cfg(param);
+        return (lut == 0b00 || lut == 0b11) ? tri(lut & 1) : lut1(lut, input(cell, port));
+    };
+    Tri s0 = sel(id_CLK, id_C_CPE_CLK), s1 = sel(id_EN, id_C_CPE_EN), s2 = sel(id_SR, id_C_CPE_RES);
+    auto d = [&](int i) { return input(cell, ctx->idf("IN%d", i)); };
+    return tri_mux(s2, tri_mux(s1, tri_mux(s0, d(1), d(2)), tri_mux(s0, d(3), d(4))),
+                   tri_mux(s1, tri_mux(s0, d(5), d(6)), tri_mux(s0, d(7), d(8))));
+}
+
 // A full CPE after placement (both halves merged): CPE_ADDF, CPE_ADDF2, CPE_MX4.
 Tri NetlistEvaluator::eval_cpe(const CellInfo *cell, IdString port)
 {
@@ -822,6 +843,12 @@ Tri NetlistEvaluator::eval_reference(const CellInfo *cell, IdString port)
         return tri_mux(s1, tri_mux(s0, input(cell, id_D0), input(cell, id_D1)),
                        tri_mux(s0, input(cell, id_D2), input(cell, id_D3)));
     }
+    if (cell->type == id_CC_MX8) {
+        Tri s0 = input(cell, id_S0), s1 = input(cell, id_S1), s2 = input(cell, id_S2);
+        auto d = [&](int i) { return input(cell, ctx->idf("D%d", i)); };
+        return tri_mux(s2, tri_mux(s1, tri_mux(s0, d(0), d(1)), tri_mux(s0, d(2), d(3))),
+                       tri_mux(s1, tri_mux(s0, d(4), d(5)), tri_mux(s0, d(6), d(7))));
+    }
     if (cell->type == id_CC_ADDF) {
         Tri a = input(cell, id_A), b = input(cell, id_B), ci = input(cell, id_CI);
         if (port == id_S)
@@ -879,6 +906,8 @@ Tri NetlistEvaluator::eval_port(const CellInfo *cell, IdString port)
         return eval_l2t4(cell);
     if (cell->type.in(id_CPE_ADDF, id_CPE_ADDF2, id_CPE_MX4))
         return eval_cpe(cell, port);
+    if (cell->type == id_CPE_MX8 && port == id_MUXOUT)
+        return eval_mx8(cell);
     if (cell->type == id_CPE_CPLINES)
         return eval_cplines(cell, port);
     if (cell->type.in(id_CLKIN, id_GLBOUT))

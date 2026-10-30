@@ -291,6 +291,11 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
         if (map_both.count(tp))
             tp = map_both[tp];
         return get_delay_from_tmg_db(ctx->idf("timing__MX4A_%s_%s", fp.c_str(ctx), tp.c_str(ctx)), delay);
+    } else if (cell->type.in(id_CPE_MX8)) {
+        // To OUT1 (the route from MUXOUT to OUT1 or OUT2 has no delay of its own). The database has no arcs
+        // from CINY2 and PINY2, which take the place of CLK and EN.
+        IdString fp = fromPort == id_CINY2 ? id_CLK : fromPort == id_PINY2 ? id_EN : fromPort;
+        return get_delay_from_tmg_db(ctx->idf("timing__MX8_%s_OUT1", fp.c_str(ctx)), delay);
     } else if (cell->type.in(id_CPE_MULT)) {
         if (toPort == id_CPOUT1)
             return get_delay_from_tmg_db(ctx->id("timing_cpout_OUT1"), delay);
@@ -411,6 +416,13 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
                     id_D1_01, id_D0_10, id_D1_10, id_D0_02, id_D1_02, id_D0_03, id_D1_03, id_D0_11, id_D1_11))
             return TMG_COMB_INPUT;
         if (port.in(id_OUT1))
+            return TMG_COMB_OUTPUT;
+        return TMG_IGNORE;
+    } else if (cell->type.in(id_CPE_MX8)) {
+        if (port.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8, id_CLK, id_EN, id_SR, id_CINY2,
+                    id_PINY2))
+            return TMG_COMB_INPUT;
+        if (port == id_MUXOUT)
             return TMG_COMB_OUTPUT;
         return TMG_IGNORE;
     } else if (cell->type.in(id_CPE_MULT)) {

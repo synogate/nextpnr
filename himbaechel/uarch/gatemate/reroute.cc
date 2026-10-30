@@ -18,6 +18,7 @@
  */
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <queue>
@@ -179,6 +180,10 @@ std::vector<PipId> GateMateImpl::ideal_path(NetInfo *net, WireId src, WireId sin
             NetInfo *held = ctx->getBoundWireNet(next);
             if (held && held != net && (free_only || held->wires.at(next).strength > STRENGTH_WEAK))
                 continue;
+            // (only while the multiplexer inputs are routed: no way into the inputs held for other nets)
+            auto select = held_ways.find(next);
+            if (select != held_ways.end() && select->second != net)
+                continue;
             if (margin >= 0) {
                 int x, y;
                 tile_xy(ctx->chip_info, next.tile, x, y);
@@ -329,7 +334,7 @@ void rip_up_from(Context *ctx, NetInfo *net, WireId wire)
         int left = 0;
         for (WireId child : children[up])
             left += net->wires.count(child);
-        if (left > 0 || net->wires.at(up).strength > STRENGTH_WEAK)
+        if (left > 0 || net->wires.at(up).strength > STRENGTH_PLACER)
             break;
         uphill = net->wires.at(up).pip;
         if (uphill != PipId())
@@ -497,15 +502,44 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
                 if (sink != WireId() && !net->wires.count(sink))
                     arcs.emplace_back(lookahead.estimate(src, sink), net, sink);
     }
-    std::stable_sort(arcs.begin(), arcs.end(),
-                     [](const auto &a, const auto &b) { return std::get<0>(a) > std::get<0>(b); });
+    // The data inputs of 8:1 multiplexers (while fix_mx8_inputs() runs) first: they need a path of the right
+    // polarity, which other nets leave fewer of
+    auto mx8_input = [&](WireId sink) { return mx8_input_ways.count(sink) > 0; };
+    std::stable_sort(arcs.begin(), arcs.end(), [&](const auto &a, const auto &b) {
+        if (mx8_input(std::get<2>(a)) != mx8_input(std::get<2>(b)))
+            return mx8_input(std::get<2>(a));
+        return std::get<0>(a) > std::get<0>(b);
+    });
     bool routed = false;
     std::string why;
+    // A multiplexer input with no free path of its polarity displaces other nets, a few times, routed again
+    // after it
+    int displacements = 0;
+    auto displace = [&](NetInfo *net, WireId sink, std::vector<PipId> &path) {
+        if (displacements >= 16)
+            return;
+        path = parity_path(net, sink, mx8_input_ways.at(sink), true);
+        for (PipId pip : path) {
+            WireId w = ctx->getPipDstWire(pip);
+            NetInfo *held = ctx->getBoundWireNet(w);
+            if (!held || held == net || !held->wires.count(w))
+                continue;
+            rip_up_from(ctx, held, w);
+            displacements++;
+            for (auto &user : held->users)
+                for (WireId s : ctx->getNetinfoSinkWires(held, user))
+                    if (s != WireId() && !held->wires.count(s) &&
+                        std::none_of(arcs.begin(), arcs.end(), [&](const auto &arc) {
+                            return std::get<1>(arc) == held && std::get<2>(arc) == s;
+                        }))
+                        arcs.emplace_back(lookahead.estimate(ctx->getNetinfoSourceWire(held), s), held, s);
+        }
+    };
     for (int attempt = 0; attempt < 4 && !routed; attempt++) {
         std::vector<WireId> bound; // by this attempt, to undo
         size_t failed = arcs.size();
         for (size_t i = 0; i < arcs.size() && failed == arcs.size(); i++) {
-            auto &[estimate, net, sink] = arcs[i];
+            auto [estimate, net, sink] = arcs[i]; // (displace() adds to arcs)
             if (net->wires.count(sink))
                 continue;
             WireId src = ctx->getNetinfoSourceWire(net);
@@ -520,9 +554,12 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
             }
             delay_t delay = 0;
             // Near the connection first, as router2 does
-            std::vector<PipId> path = ideal_path(net, src, sink, delay, true, 4);
-            if (path.empty())
+            std::vector<PipId> path = mx8_input(sink) ? parity_path(net, sink, mx8_input_ways.at(sink), false)
+                                                      : ideal_path(net, src, sink, delay, true, 4);
+            if (path.empty() && !mx8_input(sink))
                 path = ideal_path(net, src, sink, delay, true, 16);
+            else if (path.empty())
+                displace(net, sink, path);
             size_t first = 0;
             for (size_t j = 0; j < path.size(); j++)
                 if (net->wires.count(ctx->getPipDstWire(path[j])))
@@ -562,6 +599,326 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
         routed = false;
     }
     return routed;
+}
+
+bool GateMateImpl::routed_inverted(const NetInfo *net, WireId wire) const
+{
+    bool inverted = false;
+    for (auto it = net->wires.find(wire); it != net->wires.end() && it->second.pip != PipId();
+         it = net->wires.find(ctx->getPipSrcWire(it->second.pip)))
+        inverted ^= isPipInverting(it->second.pip);
+    return inverted;
+}
+
+// As ideal_path(), but over a wire and whether the signal on it is inverted, and starting from all the
+// wires the net reaches, each with the delay it takes to reach it
+std::vector<PipId> GateMateImpl::parity_path(NetInfo *net, WireId sink, bool inverted, bool displace) const
+{
+    // Near the connection, as route_ripped() starts (a little wider to make room)
+    const int margin = displace ? 8 : 4;
+    BoundingBox box = ctx->getRouteBoundingBox(ctx->getNetinfoSourceWire(net), sink);
+    box.x0 = std::max(box.x0 - margin, 0);
+    box.y0 = std::max(box.y0 - margin, 0);
+    box.x1 = std::min(box.x1 + margin, ctx->getGridDimX());
+    box.y1 = std::min(box.y1 + margin, ctx->getGridDimY());
+    dict<WireId, delay_t> reached;
+    std::function<delay_t(WireId)> reach = [&](WireId w) -> delay_t {
+        auto found = reached.find(w);
+        if (found != reached.end())
+            return found->second;
+        PipId pip = net->wires.at(w).pip;
+        delay_t d = 0;
+        if (pip != PipId() && net->wires.count(ctx->getPipSrcWire(pip)))
+            d = reach(ctx->getPipSrcWire(pip)) + ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(w).maxDelay();
+        return reached[w] = d;
+    };
+    dict<WireId, std::pair<delay_t, PipId>> best[2]; // by inversion: wire -> delay, pip into it
+    using Item = std::tuple<delay_t, WireId, bool>;  // delay + estimate
+    std::priority_queue<Item, std::vector<Item>, std::greater<Item>> queue;
+    for (auto &w : net->wires) {
+        bool inv = routed_inverted(net, w.first);
+        delay_t d = reach(w.first);
+        best[inv][w.first] = {d, PipId()};
+        queue.push({d + std::max<delay_t>(0, lookahead.estimate(w.first, sink)), w.first, inv});
+    }
+    while (!queue.empty() && best[0].size() + best[1].size() < 200000) {
+        auto [estimate, w, inv] = queue.top();
+        queue.pop();
+        if (w == sink && inv == inverted)
+            break;
+        delay_t d = best[inv].at(w).first;
+        for (PipId pip : ctx->getPipsDownhill(w)) {
+            if (!checkPipAvail(pip) || resource_taken(pip))
+                continue;
+            WireId next = ctx->getPipDstWire(pip);
+            NetInfo *held = ctx->getBoundWireNet(next);
+            // (displacing also the paths laid for other multiplexer inputs, with STRENGTH_PLACER: they are
+            // routed again in the next round)
+            if (held == net || (held && (!displace || held->wires.at(next).strength > STRENGTH_PLACER)) ||
+                (!held && !ctx->checkWireAvail(next)))
+                continue;
+            int x, y;
+            tile_xy(ctx->chip_info, next.tile, x, y);
+            if (x < box.x0 || x > box.x1 || y < box.y0 || y > box.y1)
+                continue;
+            bool next_inv = inv ^ isPipInverting(pip);
+            // (a wire can carry the signal only once: not back onto the path to w with the other polarity)
+            if (best[!next_inv].count(next)) {
+                bool on_path = false;
+                bool at_inv = inv;
+                for (WireId at = w; !on_path;) {
+                    on_path = at == next;
+                    PipId up = best[at_inv].at(at).second;
+                    if (up == PipId())
+                        break;
+                    at_inv ^= isPipInverting(up);
+                    at = ctx->getPipSrcWire(up);
+                }
+                if (on_path)
+                    continue;
+            }
+            auto way = mx8_input_ways.find(next);
+            if (way != mx8_input_ways.end() && way->second != next_inv)
+                continue;
+            auto select = held_ways.find(next);
+            if (select != held_ways.end() && select->second != net)
+                continue;
+            delay_t nd = d + ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(next).maxDelay();
+            auto found = best[next_inv].find(next);
+            if (found != best[next_inv].end() && found->second.first <= nd)
+                continue;
+            best[next_inv][next] = {nd, pip};
+            queue.push({nd + std::max<delay_t>(0, lookahead.estimate(next, sink)), next, next_inv});
+        }
+    }
+    std::vector<PipId> path;
+    if (!best[inverted].count(sink))
+        return path;
+    bool inv = inverted;
+    for (WireId w = sink; best[inv].at(w).second != PipId();) {
+        PipId pip = best[inv].at(w).second;
+        path.push_back(pip);
+        inv ^= isPipInverting(pip);
+        w = ctx->getPipSrcWire(pip);
+    }
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+// The wires that are the only way to the data inputs of the 8:1 multiplexers (mx8_input_ways) and to their
+// selects (held_ways)
+void GateMateImpl::find_mx8_ways()
+{
+    mx8_input_ways.clear();
+    held_ways.clear();
+    // The wires from w back up as long as there is only one way, with whether the pips from them to w invert
+    auto only_way = [&](WireId w, std::function<void(WireId, bool)> add) {
+        bool inverted = false;
+        while (w != WireId()) {
+            add(w, inverted);
+            PipId only;
+            int count = 0;
+            for (PipId pip : ctx->getPipsUphill(w)) {
+                only = pip;
+                count++;
+            }
+            if (count != 1)
+                break;
+            inverted ^= isPipInverting(only);
+            w = ctx->getPipSrcWire(only);
+        }
+    };
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->bel == BelId() || ci->type != id_CPE_MX8)
+            continue;
+        for (auto &port : ci->ports) {
+            NetInfo *net = port.second.net;
+            if (!net || port.second.type != PORT_IN)
+                continue;
+            WireId pin = ctx->getBelPinWire(ci->bel, port.first);
+            if (port.first.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8)) {
+                only_way(pin, [&](WireId w, bool inverted) { mx8_input_ways[w] = inverted; });
+                continue;
+            }
+            // The selects: CLK and EN come through the muxes of the register clock and enable, from the
+            // CPE inputs of those names (or CINY2 and PINY2)
+            held_ways[pin] = net;
+            for (PipId pip : ctx->getPipsUphill(pin))
+                if (ctx->getWireName(ctx->getPipSrcWire(pip))[1].in(ctx->id("CPE.CLK"), ctx->id("CPE.EN")))
+                    pin = ctx->getPipSrcWire(pip);
+            only_way(pin, [&](WireId w, bool) { held_ways.emplace(w, net); });
+        }
+    }
+}
+
+// The data inputs of an 8:1 multiplexer have no LUT to undo an inversion on the way, as all other CPE inputs
+// do, so each needs a route through an even number of inverting muxes. router2 does not know about that.
+// Route those that arrive inverted again, from where their nets reach (displacing other nets where needed,
+// to be routed again with all other routing held), a few rounds as routing a displaced net again can invert
+// another multiplexer input.
+void GateMateImpl::fix_mx8_inputs()
+{
+    auto inverted_inputs = [&] {
+        std::vector<std::pair<NetInfo *, PortRef>> found;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_CPE_MX8 || ci->bel == BelId())
+                continue;
+            for (int i = 1; i <= 8; i++) {
+                IdString port = ctx->idf("IN%d", i);
+                NetInfo *net = ci->getPort(port);
+                if (!net)
+                    continue;
+                PortRef user = net->users.at(ci->ports.at(port).user_idx);
+                WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
+                if (sink != WireId() && net->wires.count(sink) && routed_inverted(net, sink))
+                    found.emplace_back(net, user);
+            }
+        }
+        return found;
+    };
+    auto todo = inverted_inputs();
+    if (todo.empty())
+        return;
+    log_info("Routing %d inverted inputs of 8:1 multiplexers again..\n", int(todo.size()));
+    find_mx8_ways();
+    // The new paths, kept (with STRENGTH_PLACER) from being displaced by later ones
+    std::vector<std::pair<NetInfo *, WireId>> laid;
+    auto lay = [&](NetInfo *net, const std::vector<PipId> &path) {
+        for (PipId pip : path) {
+            WireId w = ctx->getPipDstWire(pip);
+            NetInfo *held = ctx->getBoundWireNet(w);
+            if (held && held != net && held->wires.count(w))
+                rip_up_from(ctx, held, w);
+        }
+        for (PipId pip : path) {
+            WireId w = ctx->getPipDstWire(pip);
+            if (!ctx->checkPipAvailForNet(pip, net) || resource_taken(pip) || !ctx->checkWireAvail(w))
+                return false;
+            ctx->bindPip(pip, net, STRENGTH_PLACER);
+            laid.emplace_back(net, w);
+        }
+        return true;
+    };
+    // The whole net again, its multiplexer data inputs first: the wires before a CPE input can be its only way
+    // in and also lead on to other sinks of the net, with the wrong polarity for it
+    auto reroute_net = [&](NetInfo *net) {
+        WireId src = ctx->getNetinfoSourceWire(net);
+        std::vector<WireId> wires;
+        for (auto &w : net->wires) {
+            if (w.second.strength > STRENGTH_PLACER)
+                return false;
+            if (w.first != src)
+                wires.push_back(w.first);
+        }
+        for (WireId w : wires)
+            ctx->unbindWire(w);
+        std::vector<std::pair<delay_t, WireId>> sinks; // the farthest first
+        for (auto &user : net->users)
+            if (user.cell->type == id_CPE_MX8 &&
+                user.port.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8)) {
+                WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
+                sinks.emplace_back(lookahead.estimate(src, sink), sink);
+            }
+        std::sort(sinks.begin(), sinks.end(), std::greater<std::pair<delay_t, WireId>>());
+        for (auto &sink : sinks) {
+            bool wanted = mx8_input_ways.at(sink.second);
+            std::vector<PipId> path = parity_path(net, sink.second, wanted, false);
+            if (path.empty())
+                path = parity_path(net, sink.second, wanted, true);
+            if (path.empty() || !lay(net, path))
+                return false;
+        }
+        return route_ripped({});
+    };
+    // Or all routing near the multiplexer again (with route_ripped() routing the multiplexer inputs first)
+    auto reroute_region = [&](const CellInfo *mux) {
+        const int radius = 2;
+        Loc at = ctx->getBelLocation(mux->bel);
+        std::vector<std::pair<NetInfo *, WireId>> near;
+        for (auto &n : ctx->nets)
+            for (auto &w : n.second->wires) {
+                int x, y;
+                tile_xy(ctx->chip_info, w.first.tile, x, y);
+                if (std::abs(x - at.x) <= radius && std::abs(y - at.y) <= radius && w.second.pip != PipId() &&
+                    w.second.strength <= STRENGTH_PLACER)
+                    near.emplace_back(n.second.get(), w.first);
+            }
+        for (auto &[net, w] : near)
+            if (net->wires.count(w))
+                rip_up_from(ctx, net, w);
+        return route_ripped({});
+    };
+    int free_paths = 0, displacing = 0, whole_nets = 0, regions = 0;
+    for (int round = 0; round < 8 && !todo.empty(); round++) {
+        for (auto &[net, user] : todo) {
+            WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
+            // (another input of the same net may have been routed through it)
+            bool wanted = mx8_input_ways.at(sink);
+            if (!net->wires.count(sink) || routed_inverted(net, sink) == wanted)
+                continue;
+            auto before = net->wires;
+            // From the first of the wires that are its only way: router2 can have routed other sinks of the
+            // net on through them, holding them with the wrong polarity (those sinks are routed again)
+            WireId from = sink;
+            for (WireId w = sink; mx8_input_ways.count(w) && net->wires.count(w);) {
+                PipId up = net->wires.at(w).pip;
+                if (up == PipId())
+                    break;
+                from = w;
+                w = ctx->getPipSrcWire(up);
+            }
+            rip_up_from(ctx, net, from);
+            bool others = false;
+            for (auto &other : net->users)
+                for (WireId w : ctx->getNetinfoSinkWires(net, other))
+                    others |= w != sink && !net->wires.count(w);
+            auto snapshot = snapshot_routing(ctx);
+            // Through free wires: nothing else changes
+            std::vector<PipId> path = parity_path(net, sink, wanted, false);
+            if (!path.empty() && lay(net, path) && (!others || route_ripped({}))) {
+                free_paths++;
+                continue;
+            }
+            // Displacing other nets, to be routed again with all other routing held; or else as it was
+            restore_changed_routing(ctx, snapshot);
+            path = parity_path(net, sink, wanted, true);
+            if (!path.empty() && lay(net, path) && route_ripped({})) {
+                displacing++;
+                continue;
+            }
+            restore_changed_routing(ctx, snapshot);
+            if (reroute_net(net)) {
+                whole_nets++;
+                continue;
+            }
+            restore_changed_routing(ctx, snapshot);
+            if (reroute_region(user.cell)) {
+                regions++;
+                continue;
+            }
+            restore_changed_routing(ctx, snapshot);
+            for (auto &w : before)
+                if (!net->wires.count(w.first) && w.second.pip != PipId())
+                    ctx->bindPip(w.second.pip, net, w.second.strength);
+        }
+        todo = inverted_inputs();
+    }
+    for (auto &[net, wire] : laid) {
+        auto found = net->wires.find(wire);
+        if (found != net->wires.end() && found->second.strength == STRENGTH_PLACER)
+            found->second.strength = STRENGTH_WEAK;
+    }
+    mx8_input_ways.clear();
+    held_ways.clear();
+    log_info("    %d through free wires, %d displacing other nets, %d with their whole net, %d with all routing near "
+             "them\n",
+             free_paths, displacing, whole_nets, regions);
+    check_repaired_routing(ctx, "Routing the inputs of 8:1 multiplexers");
+    if (!todo.empty())
+        log_error("%d inputs of 8:1 multiplexers can only be routed inverted, e.g. %s of '%s'.\n", int(todo.size()),
+                  todo.front().second.port.c_str(ctx), todo.front().second.cell->name.c_str(ctx));
 }
 
 // Repairing the routing of the critical path (--vopt route-repair). Its connections are often slower
@@ -935,7 +1292,8 @@ void GateMateImpl::relocate_register(CellInfo *lut, CellInfo *ff, BelId lt)
     update_used_cpe(lt.tile);
 }
 
-// Bridges through a CPE drive DIN2 (C_BR), so a register or latch in its upper half blocks them (as postPlace() marks it)
+// Bridges through a CPE drive DIN2 (C_BR), so a register or latch in its upper half blocks them, as does an 8:1
+// multiplexer driving MUXOUT itself (as postPlace() marks it)
 void GateMateImpl::update_used_cpe(int tile)
 {
     if (used_cpes.empty())
@@ -943,8 +1301,10 @@ void GateMateImpl::update_used_cpe(int tile)
     int x, y;
     tile_xy(ctx->chip_info, tile, x, y);
     BelId ff = ctx->getBelByLocation(Loc(x, y, CPE_FF_U_Z));
+    BelId full = ctx->getBelByLocation(Loc(x, y, CPE_LT_FULL_Z));
     used_cpes[tile] =
-            ff != BelId() && ctx->getBoundBelCell(ff) && ctx->getBoundBelCell(ff)->type.in(id_CPE_FF, id_CPE_LATCH);
+            (ff != BelId() && ctx->getBoundBelCell(ff) && ctx->getBoundBelCell(ff)->type.in(id_CPE_FF, id_CPE_LATCH)) ||
+            (full != BelId() && ctx->getBoundBelCell(full) && ctx->getBoundBelCell(full)->type == id_CPE_MX8);
 }
 
 // After a register moved: route its clock to its new CLK_INT from the clock net's routing as it
@@ -1111,7 +1471,7 @@ int GateMateImpl::move_critical_cells(int rounds)
             return nullptr;
         for (auto &port : ci->ports)
             if (port.second.net && (port.second.type == PORT_IN ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01,
-                                                                                   id_D0_10, id_D1_10, id_COMBIN)
+                                                                                 id_D0_10, id_D1_10, id_COMBIN)
                                                                 : port.first != id_OUT))
                 return nullptr;
         for (IdString param : {id_C_I1, id_C_I2, id_C_I3, id_C_I4})
@@ -1481,9 +1841,9 @@ int GateMateImpl::fuse_critical_luts(int rounds)
     if (!lookahead.built())
         log_error("place-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
     assign_cell_info();
-    const float window = 250;           // ps: connections within this of the worst slack are critical
-    const float min_gain = 50;          // ps of slack
-    const float stage = 300;            // ps: a CPE pass and its input less the first-level LUT, roughly
+    const float window = 250;  // ps: connections within this of the worst slack are critical
+    const float min_gain = 50; // ps of slack
+    const float stage = 300;   // ps: a CPE pass and its input less the first-level LUT, roughly
     const IdString first[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
     const IdString first_init[2] = {id_INIT_L00, id_INIT_L01};
     auto is_ram_io = [](const CellInfo *x) { return x && x->type.in(id_CPE_RAMIO, id_CPE_RAMI, id_CPE_RAMO); };
@@ -1502,8 +1862,8 @@ int GateMateImpl::fuse_critical_luts(int rounds)
                               ? port.first.in(id_D0_10, id_D1_10) ||
                                         (tree_ok && port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_COMBIN))
                               : port.first == id_OUT;
-            if (!ok || is_ram_io(net->driver.cell) || (port.first != id_COMBIN && (prerouted_nets.count(net->name) ||
-                                                                                  !weakly_routed(net))))
+            if (!ok || is_ram_io(net->driver.cell) ||
+                (port.first != id_COMBIN && (prerouted_nets.count(net->name) || !weakly_routed(net))))
                 return false;
             for (auto &user : net->users)
                 if (is_ram_io(user.cell))
@@ -1623,10 +1983,8 @@ int GateMateImpl::fuse_critical_luts(int rounds)
         // The CPE wires the new inputs need (C's other input may pass them now)
         rip_up_near(ctx, pins, true);
         if (NetInfo *x = c->getPort(best_port == id_D0_10 ? id_D1_10 : id_D0_10)) {
-            WireId sink = ctx->getNetinfoSinkWire(x, x->users.at(c->ports.at(best_port == id_D0_10 ? id_D1_10
-                                                                                                  : id_D0_10)
-                                                                   .user_idx),
-                                                 0);
+            WireId sink = ctx->getNetinfoSinkWire(
+                    x, x->users.at(c->ports.at(best_port == id_D0_10 ? id_D1_10 : id_D0_10).user_idx), 0);
             if (sink != WireId() && x->wires.count(sink) && x->wires.at(sink).strength <= STRENGTH_WEAK)
                 rip_up_from(ctx, x, sink);
         }
@@ -1646,8 +2004,8 @@ int GateMateImpl::fuse_critical_luts(int rounds)
             now = slowest_fmax(*after);
             now_near = near_critical(ctx, *after);
         }
-        std::string what = stringf("%s into L0%d of %s%s", a->name.c_str(ctx), j, c->name.c_str(ctx),
-                                   a_shared ? " (a copy)" : "");
+        std::string what =
+                stringf("%s into L0%d of %s%s", a->name.c_str(ctx), j, c->name.c_str(ctx), a_shared ? " (a copy)" : "");
         bool faster = now > best * 1.0001f, as_fast = now >= best * 0.9999f;
         if (routed && (faster || (as_fast && now_near < best_near * 0.999))) {
             log_info("    round %d: %s, %.2f ns more slack by the tables: %.2f -> %.2f MHz, near-critical %.1f -> "

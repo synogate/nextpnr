@@ -331,7 +331,7 @@ void GateMatePacker::optimize_mx()
 {
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
-        if (!ci.type.in(id_CC_MX2, id_CC_MX4))
+        if (!ci.type.in(id_CC_MX2, id_CC_MX4, id_CC_MX8))
             continue;
         if (ci.attrs.count(ctx->id("keep")))
             continue;
@@ -340,6 +340,8 @@ void GateMatePacker::optimize_mx()
             count_cell(ci);
             continue;
         }
+        if (ci.type == id_CC_MX8)
+            continue;
         if (ci.type == id_CC_MX2) {
             if (ci.getPort(id_S0) == net_PACKER_GND) {
                 move_connections(y_net, ci.getPort(id_D0));
@@ -515,6 +517,13 @@ void GateMatePacker::repack_cpe()
                     cell.second->params[id_INIT_L20] = Property(LUT_D1, 4);
             }
             cell.second->params[id_L2T4_UPPER] = Property((l.z == CPE_LT_U_Z) ? 1 : 0, 1);
+        } else if (cell.second->type.in(id_CPE_MX8)) {
+            // Its pins are those of the whole CPE
+            PlaceStrength strength = cell.second->belStrength;
+            Loc loc = ctx->getBelLocation(cell.second->bel);
+            loc.z = CPE_LT_FULL_Z;
+            ctx->unbindBel(cell.second->bel);
+            ctx->bindBel(ctx->getBelByLocation(loc), cell.second.get(), strength);
         } else if (cell.second->type.in(id_CPE_LT_L)) {
             BelId bel = cell.second->bel;
             PlaceStrength strength = cell.second->belStrength;
@@ -597,7 +606,7 @@ void GateMatePacker::repack_cpe()
 
         }
         // Mark for deletion
-        else if (cell.second->type.in(id_CPE_LT_U, id_CPE_DUMMY)) {
+        else if (cell.second->type.in(id_CPE_LT_U, id_CPE_DUMMY, id_CPE_FF_DUMMY)) {
             packed_cells.insert(cell.second->name);
         }
     }

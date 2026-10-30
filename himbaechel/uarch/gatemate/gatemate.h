@@ -92,6 +92,21 @@ struct GateMateImpl : HimbaechelAPI
     bool route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid);
     // Bind a connection along its ideal path with STRENGTH_PLACER, displacing other nets (reroute.cc)
     void lay_ideal_path(NetInfo *net, const PortRef &user, std::vector<std::pair<NetInfo *, WireId>> &laid);
+    // Whether the routing of net from its source to wire passes an odd number of inverting muxes (reroute.cc)
+    bool routed_inverted(const NetInfo *net, WireId wire) const;
+    // The fastest path to sink branching off the routing of net, arriving inverted or not as `inverted`
+    // says, through free wires or with `displace` also those of other nets that can be ripped up (reroute.cc)
+    std::vector<PipId> parity_path(NetInfo *net, WireId sink, bool inverted, bool displace) const;
+    // After routing, route the data inputs of the 8:1 multiplexers that arrive inverted again, as they have no
+    // way to undo it (reroute.cc)
+    void fix_mx8_inputs();
+    void find_mx8_ways();
+    // The wires that are the only way to a data input of an 8:1 multiplexer, with whether the signal on them
+    // must be inverted for it to arrive uninverted (set by fix_mx8_inputs(), kept to by
+    // parity_path())
+    dict<WireId, bool> mx8_input_ways;
+    // And those to its selects, with their nets
+    dict<WireId, const NetInfo *> held_ways;
     // After routing, up to `rounds` repairs of connections on the critical paths, with rounds < 0 until
     // timing is met (reroute.cc)
     void repair_critical_routing(int rounds);
