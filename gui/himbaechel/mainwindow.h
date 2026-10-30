@@ -42,6 +42,9 @@ class MainWindow : public BaseMainWindow
     void onDisableActions() override;
     void onUpdateActions() override;
     bool beforePack() override;
+    std::vector<PnrOption> pnrOptions() override;
+    PnrStep nextStep() override;
+    void optionsChanged() override;
 
   protected Q_SLOTS:
     void new_proj() override;

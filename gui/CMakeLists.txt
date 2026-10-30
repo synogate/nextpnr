@@ -14,6 +14,8 @@ set(GUI_SOURCES
     line_editor.h
     lineshader.cc
     lineshader.h
+    pnroptions.cc
+    pnroptions.h
     pyconsole.cc
     pyconsole.h
     pythontab.cc

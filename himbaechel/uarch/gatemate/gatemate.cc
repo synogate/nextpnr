@@ -245,6 +245,23 @@ void GateMateImpl::init_database(Arch *arch)
                                                : fpga_mode == 3 ? "SPEED"
                                                                 : "");
     arch->set_speed_grade(speed_grade);
+    read_options(args);
+}
+
+void GateMateImpl::read_options(const ArchArgs &args)
+{
+    // Unset options are back at their defaults
+    route_repair = -1;
+    place_repair = -1;
+    repair_margin = 0;
+    net_repair = 0;
+    route_runs = 0;
+    replicate_fanout = 0;
+    route_learn_mode = "max";
+    route_learn_step = 0.25;
+    lut_swap_rounds = 0;
+    swap_pairs = swap_halves = true;
+    sb_y_cost = sb_ydiag_cost = 0;
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
@@ -297,9 +314,10 @@ void GateMateImpl::init_database(Arch *arch)
         sb_ydiag_cost = args.options["sb-ydiag-cost"].as<float>();
 }
 
-void GateMateImpl::init(Context *ctx)
+void GateMateImpl::prepare_options()
 {
-    HimbaechelAPI::init(ctx);
+    learnt_net_crit.clear();
+    learnt_scale = false;
     if (ctx->args.options.count("place-crit-in")) {
         std::string filename = ctx->args.options["place-crit-in"].as<std::string>();
         std::ifstream in(filename);
@@ -319,8 +337,15 @@ void GateMateImpl::init(Context *ctx)
         std::string key =
                 stringf("%s %s %d%d%d", ctx->chip_info->name.get(), IdString(ctx->speed_grade->name).c_str(ctx),
                         use_cp_for_clk, use_cp_for_cpe, use_bridges);
-        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key);
+        // Build again only if the options it depends on changed
+        if (key != lookahead_key || radius != lookahead_radius) {
+            lookahead = GateMateLookahead();
+            lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key);
+            lookahead_key = key;
+            lookahead_radius = radius;
+        }
     }
+    scarce_pip_cost.clear();
     if (sb_y_cost > 0 || sb_ydiag_cost > 0) {
         // Every switch box plane has four Y outputs, each driving a whole node, and a small switch
         // box has only one diagonal mux per plane, through which all plane changes and diagonal hops
@@ -338,6 +363,19 @@ void GateMateImpl::init(Context *ctx)
             }
         }
     }
+}
+
+void GateMateImpl::optionsChanged()
+{
+    read_options(ctx->args);
+    prepare_options();
+}
+
+void GateMateImpl::init(Context *ctx)
+{
+    HimbaechelAPI::init(ctx);
+    prepare_options();
+    auto &options = ctx->args.options;
     if (options.count("place-density-weight"))
         ctx->settings[ctx->id("placer1/densityWeight")] = std::to_string(options["place-density-weight"].as<float>());
     if (options.count("place-density-pins"))
