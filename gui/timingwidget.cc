@@ -98,6 +98,7 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
     vbox2->addWidget(segmentList);
 
     QSplitter *splitter = new QSplitter(Qt::Vertical);
+    splitter->setObjectName("splitter_paths");
     splitter->addWidget(topWidget);
     splitter->addWidget(btmWidget);
 

@@ -26,6 +26,7 @@
 #include <QImageWriter>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QSettings>
 #include <QSplitter>
 #include <fstream>
 #include "designwidget.h"
@@ -52,6 +53,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     setObjectName("BaseMainWindow");
     resize(1024, 768);
+    restoreGeometry(QSettings("YosysHQ", "nextpnr").value("mainwindow/geometry").toByteArray());
 
     task = new TaskManager();
 
@@ -63,6 +65,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     QSplitter *splitter_h = new QSplitter(Qt::Horizontal, centralWidget);
     QSplitter *splitter_v = new QSplitter(Qt::Vertical, splitter_h);
+    splitter_h->setObjectName("splitter_h");
+    splitter_v->setObjectName("splitter_v");
     splitter_h->addWidget(splitter_v);
 
     gridLayout->addWidget(splitter_h, 0, 0, 1, 1);
@@ -130,9 +134,24 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(this, &BaseMainWindow::updateTreeView, timingview, &TimingWidget::designChanged);
 
     createMenusAndBars();
+
+    QSettings settings("YosysHQ", "nextpnr");
+    for (auto splitter : findChildren<QSplitter *>())
+        if (!splitter->objectName().isEmpty())
+            splitter->restoreState(settings.value("mainwindow/" + splitter->objectName()).toByteArray());
 }
 
 BaseMainWindow::~BaseMainWindow() { delete task; }
+
+void BaseMainWindow::closeEvent(QCloseEvent *event)
+{
+    QSettings settings("YosysHQ", "nextpnr");
+    settings.setValue("mainwindow/geometry", saveGeometry());
+    for (auto splitter : findChildren<QSplitter *>())
+        if (!splitter->objectName().isEmpty())
+            settings.setValue("mainwindow/" + splitter->objectName(), splitter->saveState());
+    QMainWindow::closeEvent(event);
+}
 
 void BaseMainWindow::closeTab(int index) { delete centralTabWidget->widget(index); }
 
