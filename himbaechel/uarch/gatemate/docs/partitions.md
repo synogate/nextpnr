@@ -28,7 +28,8 @@ times, at different places.
    ```
 
    or, without a CCF, with `--vopt partition-region=X0,Y0,X1,Y1` in bel coordinates (`X..Y..` of the bel names),
-   which takes all cells the CCF does not floorplan.
+   for example `partition-region=10,10,21,21` (or `X10,Y10,X21,Y21`), which takes all cells the CCF does not
+   floorplan.
 
    The region is the partition's area. Its cells are placed inside, and the routing it keeps stays inside too,
    with a margin of two tiles (the switch boxes around the CPEs at the edge). Without a region, the area is

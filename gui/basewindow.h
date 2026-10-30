@@ -22,6 +22,7 @@
 
 #include "command.h"
 #include "nextpnr.h"
+#include "pnroptions.h"
 #include "worker.h"
 
 #include <QMainWindow>
@@ -64,6 +65,11 @@ class BaseMainWindow : public QMainWindow
     virtual void onUpdateActions() {};
     // Before packing, e.g. to set options; false keeps it from packing
     virtual bool beforePack() { return true; }
+    // The options of the place and route flow the options dialog shows, and the next step to run
+    virtual std::vector<PnrOption> pnrOptions();
+    virtual PnrStep nextStep();
+    // After options changed
+    virtual void optionsChanged() {}
 
   protected Q_SLOTS:
     void writeInfo(std::string text);
@@ -75,6 +81,7 @@ class BaseMainWindow : public QMainWindow
     virtual void save_json();
     void pack();
     void place();
+    void options();
 
     void execute_python();
 
@@ -101,7 +108,8 @@ class BaseMainWindow : public QMainWindow
     CommandHandler *handler;
     std::unique_ptr<Context> ctx;
     TaskManager *task;
-    bool timing_driven;
+    // The seed the options dialog set last, 0 for none
+    int seed;
     std::string currentProj;
 
     // main widgets
@@ -127,6 +135,7 @@ class BaseMainWindow : public QMainWindow
     QAction *actionPack;
     QAction *actionPlace;
     QAction *actionRoute;
+    QAction *actionOptions;
 
     QAction *actionExecutePy;
 

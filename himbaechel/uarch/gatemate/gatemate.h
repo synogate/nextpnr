@@ -51,6 +51,10 @@ struct GateMateImpl : HimbaechelAPI
     void init_database(Arch *arch) override;
 
     void init(Context *ctx) override;
+    void optionsChanged() override;
+    // The options from args.options (read_options), and what they need prepared (prepare_options)
+    void read_options(const ArchArgs &args);
+    void prepare_options();
 
     void pack() override;
 
@@ -151,6 +155,9 @@ struct GateMateImpl : HimbaechelAPI
     float sb_y_cost = 0, sb_ydiag_cost = 0;
     // Delay tables for the router (estimateDelay) and the placer (predictDelay), see lookahead.h
     GateMateLookahead lookahead;
+    // The radius and pip options the tables were built with
+    std::string lookahead_key;
+    int lookahead_radius = 0;
     bool table_route = false, table_place = false;
     bool getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const override;
     TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const override;

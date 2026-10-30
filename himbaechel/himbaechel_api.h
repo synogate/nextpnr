@@ -66,6 +66,8 @@ struct HimbaechelAPI
     virtual void init(Context *ctx);
     // Called after context is initialized, but before any commands are executed
     virtual void setupArchContext() {}
+    // The GUI changed the options in ctx->args.options; they take effect from the next step on
+    virtual void optionsChanged() {}
     // If constids are being used, this is used to set them up early
     // then it is responsible for loading the db blob with arch->load_chipdb()
     virtual void init_database(Arch *arch) = 0;

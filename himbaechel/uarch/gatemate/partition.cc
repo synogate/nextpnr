@@ -759,9 +759,12 @@ pool<IdString> GateMateImpl::partition_detached_cells() const
 
 void GateMateImpl::add_partition_region(const std::string &spec)
 {
-    int x0, y0, x1, y1;
-    if (sscanf(spec.c_str(), "%d,%d,%d,%d", &x0, &y0, &x1, &y1) != 4)
-        log_error("Invalid partition-region '%s', expected X0,Y0,X1,Y1.\n", spec.c_str());
+    // 10,10,21,21 or, as the bel names write them, X10,Y10,X21,Y21
+    static const std::regex format(R"(\s*[Xx]?(\d+)\s*,\s*[Yy]?(\d+)\s*,\s*[Xx]?(\d+)\s*,\s*[Yy]?(\d+)\s*)");
+    std::smatch m;
+    if (!std::regex_match(spec, m, format))
+        log_error("Invalid partition-region '%s', expected X0,Y0,X1,Y1 (for example 10,10,21,21).\n", spec.c_str());
+    int x0 = std::stoi(m[1]), y0 = std::stoi(m[2]), x1 = std::stoi(m[3]), y1 = std::stoi(m[4]);
     if (x0 > x1)
         std::swap(x0, x1);
     if (y0 > y1)
