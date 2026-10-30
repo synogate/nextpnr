@@ -821,6 +821,28 @@ static float lut_output_y(int k)
     return outputs[std::min(std::max(k, 0), 3)];
 }
 
+// The LUT2 (0..5: L00..L03, L10, L11) and its input (0: A, 1: B) whose input the tile wire n is
+// (CPE.D{input}_{lut}_int)
+static bool lut_input_of(const std::string &n, int &lut, int &input)
+{
+    if (n.size() != 13 || !starts_with(n, "CPE.D") || n[6] != '_' || !ends_with(n, "_int"))
+        return false;
+    static const char *luts[] = {"00", "01", "02", "03", "10", "11"};
+    for (int i = 0; i < 6; i++)
+        if (n.compare(7, 2, luts[i]) == 0) {
+            lut = i, input = n[5] - '0';
+            return true;
+        }
+    return false;
+}
+
+// Whether a LUT2 with the function f (as gui_labels gives it, empty if unknown) reads its input A (0)
+// or B (1)
+static bool lut2_reads(const std::string &f, int input)
+{
+    return !(f == "0" || f == "1" || f == (input ? "A" : "B") || f == (input ? "~A" : "~B"));
+}
+
 // A connection inside the CPE, following its schematic: a pip of a mux runs from the input it
 // selects through the mux symbol to the output; connections between the parts run in their own
 // lanes, horizontally and vertically.
@@ -1617,10 +1639,13 @@ std::vector<PipId> GateMateImpl::getDetailPips(DecalId decal, float x, float y) 
 // whole CPE (IN1..IN8 as its pins), or the carry logic (CPE_CPLINES) sends the outputs on along the
 // carry and propagate lines. These muxes are set by the cells' parameters (C_I1, C_SELY1, C_CY1_I,
 // ...; a first-level LUT2's inputs are not swapped): their selected pips that are not routed and
-// lie on a way from a used wire to another or to a pin of a used bel are drawn, as used.
-void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile, float x, float y) const
+// lie on a way from a used wire to another or to a pin of a used bel are drawn, as used. Only the
+// ways from the used wire start: they are drawn with the pip that routes into it (or with the wire,
+// where its net starts there), so that they are selected with its net or a path through it.
+void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile, int start, float x, float y) const
 {
-    // The parameters of the cells in the CPE, and the wires of their bels' pins
+    // The parameters of the cells in the CPE, and the wires of their bels' pins (of a LUT2's inputs only
+    // those its function reads)
     dict<IdString, int> params;
     pool<int> live;
     const auto &tdata = chip_tile_info(ctx->chip_info, tile);
@@ -1629,18 +1654,34 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
         const CellInfo *cell = ctx->getBoundBelCell(bel);
         if (cell == nullptr || !starts_with(ctx->getBelType(bel).str(ctx), "CPE_"))
             continue;
-        // (the carry logic's muxes are 0 where its cell does not set them, as in the bitstream)
+        // (the carry logic's muxes and the 2:1 muxes in front of the LUT2s are 0 where the cells do
+        // not set them, as in the bitstream)
         if (cell->type == id_CPE_CPLINES)
             for (IdString p : {id_C_SELX, id_C_SELY1, id_C_SELY2, id_C_SEL_C, id_C_SEL_P, id_C_Y12, id_C_CX_I,
                                id_C_CY1_I, id_C_CY2_I, id_C_PX_I, id_C_PY1_I, id_C_PY2_I})
                 if (!params.count(p))
                     params[p] = 0;
+        IdString bel_type = ctx->getBelType(bel);
+        bool lut_tree = bel_type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL);
+        if (lut_tree)
+            for (IdString p : {id_C_I1, id_C_I2, id_C_I3, id_C_I4})
+                if (!params.count(p))
+                    params[p] = 0;
         for (auto &p : cell->params)
             params[p.first] = int_or_default(cell->params, p.first, 0);
+        // (in MX4 mode the first-level LUT2s' inputs are the mux's data inputs and selects)
+        std::vector<std::string> functions;
+        if (lut_tree && int_or_default(cell->params, id_C_FUNCTION, 0) != C_MX4)
+            functions = gui_labels(bel);
         for (IdString pin : ctx->getBelPins(bel)) {
             WireId w = ctx->getBelPinWire(bel, pin);
-            if (w.tile == tile)
-                live.insert(w.index);
+            if (w.tile != tile)
+                continue;
+            int lut, input;
+            if (!functions.empty() && lut_input_of(tile_wire_name(ctx, tile, w.index), lut, input) &&
+                lut < int(functions.size()) && !lut2_reads(functions[lut], input))
+                continue;
+            live.insert(w.index);
         }
     }
     if (params.empty())
@@ -1670,6 +1711,10 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
                 const std::string &dst = tile_wire_name(ctx, tile, tdata.pips[i].dst_wire);
                 if (!starts_with(src, "CPE.") || !starts_with(dst, "CPE.") || ends_with(src, "_n"))
                     continue;
+                // (a first-level LUT2's input on to the second level: the LUT2 trees draw that)
+                int lut, input;
+                if (lut_input_of(src, lut, input) && lut_input_of(dst, lut, input))
+                    continue;
                 std::string name = IdString(extra.name).str(ctx);
                 if (starts_with(name, "LUT2_0"))
                     found.push_back({i, IdString(), extra.value});
@@ -1680,11 +1725,20 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
         }
         candidates = it->second;
     }
-    // The selected pips, not routed
+    // The selected pips, not routed (nor into a wire the routing drives, as a LUT2 input the router
+    // swapped)
+    auto routed_into = [&](int w) {
+        WireId wire = ctx->normalise_wire(tile, w);
+        const NetInfo *net = ctx->getBoundWireNet(wire);
+        if (net == nullptr)
+            return false;
+        auto it = net->wires.find(wire);
+        return it != net->wires.end() && it->second.pip != PipId();
+    };
     std::map<int, std::vector<int>> from; // source wire -> selected pips
     for (auto &c : candidates) {
         PipId pip(tile, c.pip);
-        if (ctx->getBoundPipNet(pip) != nullptr)
+        if (ctx->getBoundPipNet(pip) != nullptr || routed_into(tdata.pips[c.pip].dst_wire))
             continue;
         if (c.param == IdString() ? c.value != 0 : (!params.count(c.param) || params.at(c.param) != c.value))
             continue;
@@ -1727,9 +1781,8 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
                 walk(d);
         }
     };
-    for (auto &f : from)
-        if (is_used(f.first))
-            walk(f.first);
+    if (from.count(start) && is_used(start))
+        walk(start);
     for (int p : drawn) {
         int s = tdata.pips[p].src_wire, d = tdata.pips[p].dst_wire;
         connect(g, GraphicElement::STYLE_ACTIVE, placed_routed(tile, s), placed_routed(tile, d));
@@ -1742,7 +1795,8 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
 // The outputs of a CPE used as a multiplier cell are the carry and propagate lines, driven by its
 // MULT mode, which the routing graph does not describe: the used ones are only named, by what the
 // multiplier sends on them (see pack_mult.cc), the Y lines at the top of their columns (with a faint
-// line from the column), the X lines at the right edge, just above their band.
+// line from the column), the X lines at the right edge, just above their band. So are the inputs
+// that only the multiplier takes.
 void GateMateImpl::mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicElement::style_t style, BelId bel,
                                     float x, float y) const
 {
@@ -1772,6 +1826,7 @@ void GateMateImpl::mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicEleme
         if (!used(l.name))
             continue;
         line(g, GraphicElement::STYLE_FRAME, x + l.column, y + ty, x + TEXT_X1, y + ty);
+        lod(g, g.size() - 1, LOD_DETAIL);
         label(g, style, x + TEXT_X0, y + ty - TEXT_H / 2, x + TEXT_X1, y + ty + TEXT_H / 2, l.text, LOD_PORTS);
         ty -= TEXT_H + 0.002f;
     }
@@ -1781,6 +1836,25 @@ void GateMateImpl::mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicEleme
         if (used(l.first))
             label(g, style, x + COUTX_X1 + 0.002f, y + l.second + 0.001f, x + 0.974f, y + l.second + 0.001f + TEXT_H,
                   "sum", LOD_PORTS);
+    // Its inputs that only the multiplier takes (see the CPE schematic of Project Peppercorn): the Y
+    // lines up their column a little, and named there, as the outputs (above the carry inputs'
+    // track); IN8 named below its row
+    const std::pair<const char *, float> y_inputs[] = {{"CINY1", CY1}, {"CINY2", CY2}, {"PINY2", PY2}};
+    const char *y_texts[] = {"CINY1 carry C0", "CINY2 carry C1", "PINY2 B1"};
+    float iy = CIN_TRACK_Y + 0.008f;
+    for (int i = 0; i < 3; i++) {
+        if (!used(y_inputs[i].first))
+            continue;
+        float c = y_inputs[i].second;
+        line(g, style, x + c, y + CARRY_IN_Y, x + c, y + iy);
+        line(g, GraphicElement::STYLE_FRAME, x + c, y + iy, x + TEXT_X1, y + iy);
+        lod(g, g.size() - 2, LOD_DETAIL);
+        label(g, style, x + TEXT_X0, y + iy - TEXT_H / 2, x + TEXT_X1, y + iy + TEXT_H / 2, y_texts[i], LOD_PORTS);
+        iy += TEXT_H + 0.002f;
+    }
+    if (used("IN8_int"))
+        label(g, style, x + CPE_INT + 0.0005f, y + row(8) - 0.0055f, x + TI_X0 - 0.0005f, y + row(8) - 0.0015f,
+              "A-1", LOD_PORTS);
 }
 
 void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style_t style, IdString bel_type, Loc loc)
@@ -1792,12 +1866,82 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
     if (used)
         labels = gui_labels(ctx->getBelByLocation(loc));
     auto text = [&](size_t i) { return i < labels.size() ? labels[i] : std::string(); };
-    // A LUT2 with its function, its inputs A and B and its output at the heights a, b and out. One
-    // that does nothing (a constant, or passing an input through) is grey: a constant shows its
-    // value, one passing an input through a line from that input to the output.
-    auto idle = [&](size_t index) {
+    // The mode of a LUT tree (C_FUNCTION), and the cell of the lower half (or the whole CPE)
+    int function = 0;
+    const CellInfo *lt_cell = nullptr;
+    if (used && bel_type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL)) {
+        if (const CellInfo *cell = ctx->getBoundBelCell(ctx->getBelByLocation(loc))) {
+            function = int_or_default(cell->params, id_C_FUNCTION, 0);
+            if (bel_type != id_CPE_LT_U)
+                lt_cell = cell;
+        }
+    }
+    // A lower half in a carry-in mode takes the carry input (CINY1, or CINX with C_HORIZ), as the
+    // CPE schematic of Project Peppercorn shows: in C_ADDCIN and C_ADDF its output COMB1OUT is L20's
+    // XOR the carry input, in C_ADDF2 COMB2OUT (the first bit's sum) L10's XOR the carry input, and
+    // in C_EN_CIN L11's input B is L03's output OR the carry input. Where it goes in (6: after L20,
+    // 4: after L10, 3: before L11.B, -1: nowhere), and whether the carry input is used.
+    int cin_into = -1;
+    bool cin_x = false, cin_used = false;
+    if (lt_cell) {
+        cin_into = function == C_ADDCIN || function == C_ADDF ? 6
+                   : function == C_EN_CIN                    ? 3
+                   : function == C_ADDF2                     ? 4
+                                                             : -1;
+        cin_x = int_or_default(lt_cell->params, id_C_HORIZ, 0) != 0;
+        int w = tile_wire_index(ctx, lt_cell->bel.tile, cin_x ? "CPE.CINX" : "CPE.CINY1");
+        cin_used = w >= 0 && ctx->getBoundWireNet(ctx->normalise_wire(lt_cell->bel.tile, w)) != nullptr;
+    }
+    auto wire_used = [&](const char *name) {
+        int tile = ctx->getBelByLocation(loc).tile, w = tile_wire_index(ctx, tile, name);
+        return w >= 0 && ctx->getBoundWireNet(ctx->normalise_wire(tile, w)) != nullptr;
+    };
+    // The LUT2 (or -1: the routing, the carry input) that drives input A (0) or B (1) of a LUT2
+    auto source = [&](size_t index, int input) {
+        if (index == 4)
+            return input ? 1 : 0;
+        if (index == 5)
+            return input ? (cin_into == 3 ? -1 : 3) : 2;
+        if (index == 6)
+            return input ? 5 : 4;
+        return -1;
+    };
+    // A LUT2's function, as a constant where it passes on one (from a LUT2 of this bel; in MX4 mode
+    // L10 and L11 are the mux)
+    std::function<std::string(size_t)> function_of = [&](size_t index) {
         std::string f = text(index);
-        return used && (f == "0" || f == "1" || f == "A" || f == "B");
+        bool inverted = f == "~A" || f == "~B";
+        if ((f != "A" && f != "B" && !inverted) || function == C_MX4)
+            return f;
+        int s = source(index, f.back() == 'B');
+        std::string c = s >= 0 ? function_of(s) : "";
+        if (c == "0" || c == "1")
+            return inverted ? std::string(c == "0" ? "1" : "0") : c;
+        return f;
+    };
+    // Whether a LUT2's output goes on: L20's is COMBOUT1, L10's COMBOUT2 (in MULT mode it also feeds
+    // the multiplier). In a plain LUT tree whose carry outputs are not used, one in the first level
+    // and L11 feed only the next LUT2; in the other modes they also feed the carry logic.
+    std::function<bool(size_t)> output_used;
+    auto reads = [&](size_t index, int input) { return output_used(index) && lut2_reads(function_of(index), input); };
+    output_used = [&](size_t index) {
+        if (index == 6)
+            return wire_used("CPE.COMBOUT1_int");
+        if (index == 4 && function != C_MULT && function != C_MX4)
+            return wire_used("CPE.COMBOUT2_int");
+        if (index == 4 || function != 0 || wire_used("CPE.CPOUT1_int") || wire_used("CPE.CPOUT2_int"))
+            return true;
+        size_t to = index < 2 ? 4 : (index < 4 ? 5 : 6);
+        int input = index == 5 ? 1 : int(index % 2);
+        return reads(to, input);
+    };
+    // A LUT2 with its function, its inputs A and B and its output at the heights a, b and out. One
+    // that does nothing (a constant, or passing an input through, or one whose output goes nowhere) is
+    // grey: a constant shows its value, one passing an input through a line from that input to the
+    // output (grey as well where the output goes nowhere).
+    auto idle = [&](size_t index) {
+        std::string f = function_of(index);
+        return used && (f == "0" || f == "1" || f == "A" || f == "B" || !output_used(index));
     };
     // Names of ports in the LUT2 trees, added after them (which get their level of detail as a whole)
     std::vector<GraphicElement> tree_ports;
@@ -1810,7 +1954,7 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
     };
     auto lut = [&](float x0, float x1, float y0, float y1, size_t index, float a, float b, float out,
                    float label_y = -1) {
-        std::string f = text(index);
+        std::string f = function_of(index);
         auto s = idle(index) ? GraphicElement::STYLE_INACTIVE : style;
         box(g, s, x + x0, y + y0, x + x1, y + y1);
         // its name at the top, its inputs A and B, when zoomed in closely
@@ -1820,40 +1964,37 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         tree_port(x0 + 0.001f, b - 0.003f, x0 + 0.006f, b + 0.003f, "B");
         if (used && (f == "A" || f == "B")) {
             float in = f == "A" ? a : b, xm = mid(x0, x1);
-            polyline(g, style, {Pt{x + x0, y + in}, Pt{x + xm, y + in}, Pt{x + xm, y + out}, Pt{x + x1, y + out}});
+            polyline(g, output_used(index) ? style : GraphicElement::STYLE_INACTIVE,
+                     {Pt{x + x0, y + in}, Pt{x + xm, y + in}, Pt{x + xm, y + out}, Pt{x + x1, y + out}});
             return;
         }
         float ly = label_y < 0 ? mid(y0, y1) : label_y;
         label(g, s, x + x0 + 0.003f, y + ly - 0.012f, x + x1 - 0.003f, y + ly + 0.012f, f);
     };
-    // A lower half in a carry-in mode takes the carry input (CINY1, or CINX with C_HORIZ) in place
-    // of a LUT2's output (see pack_mult.cc): C_ADDCIN in place of L11's into L20, C_EN_CIN in place
-    // of L03's into L11. Which one (5: L11, 3: L03, -1: none), and whether the carry input is used.
-    int cin_into = -1;
-    bool cin_x = false, cin_used = false;
-    if (used && (bel_type == id_CPE_LT_L || bel_type == id_CPE_LT_FULL)) {
-        BelId bel = ctx->getBelByLocation(loc);
-        if (const CellInfo *cell = ctx->getBoundBelCell(bel)) {
-            int function = int_or_default(cell->params, id_C_FUNCTION, 0);
-            cin_into = function == C_ADDCIN ? 5 : function == C_EN_CIN ? 3 : -1;
-            cin_x = int_or_default(cell->params, id_C_HORIZ, 0) != 0;
-            int w = tile_wire_index(ctx, bel.tile, cin_x ? "CPE.CINX" : "CPE.CINY1");
-            cin_used = w >= 0 && ctx->getBoundWireNet(ctx->normalise_wire(bel.tile, w)) != nullptr;
-        }
-    }
-    // From the output of a LUT2 to the next one: grey from a constant, or where the carry input
-    // takes its place
+    // From the output of a LUT2 (index) to input A or B of the next one: grey from a constant, or
+    // where the next one does not read it
     auto link = [&](size_t index, float x0, float x1, float h) {
-        std::string f = text(index);
-        bool idle_link = used && (f == "0" || f == "1" || int(index) == cin_into);
+        std::string f = function_of(index);
+        size_t to = index < 2 ? 4 : (index < 4 ? 5 : 6);
+        int input = index == 5 ? 1 : int(index % 2);
+        bool idle_link = used && (f == "0" || f == "1" || !reads(to, input));
         line(g, idle_link ? GraphicElement::STYLE_INACTIVE : style, x + x0, y + h, x + x1, y + h);
     };
-    // The carry input into the LUT2 input it takes: from the start of CINY1 along a track below
-    // the CPE (CINX along its band), and up a lane just left of the LUT2
+    // The carry input to where it goes in: from the start of CINY1 along a track below the CPE (CINX
+    // along its band), and up a lane beside the LUT2's output into the XOR there (a circle with a
+    // cross), or just left of L11 into the OR (a circle) on the way from L03 to L11.B. In the adder
+    // modes the adder also takes it on to its carry output, along the line (COUTY1, COUTX).
     auto carry_in = [&]() {
         if (cin_into < 0)
             return;
-        float to_x = cin_into == 5 ? L20_X0 : L2_X0, to_y = cin_into == 5 ? ml() : m78(), lane = to_x - 0.004f;
+        const float r = 0.0025f;
+        bool xor_out = cin_into != 3;
+        float out_y = cin_into == 4 ? mu() : ml(), lane, to_x, to_y, mark_y;
+        if (xor_out)
+            lane = (cin_into == 4 ? L2_X1 : L20_X1) + r + 0.001f, to_x = lane, to_y = out_y - r, mark_y = out_y;
+        else
+            lane = L2_X0 - 0.004f, to_x = lane, to_y = m78() - r, mark_y = m78();
+        bool read = xor_out ? wire_used(cin_into == 4 ? "CPE.COMBOUT2_int" : "CPE.COMBOUT1_int") : reads(5, 1);
         std::vector<Pt> pts;
         if (cin_x) {
             pts = {Pt{CPE_PIN, CX_BAND}, Pt{lane, CX_BAND}};
@@ -1864,7 +2005,31 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         pts.push_back(Pt{to_x, to_y});
         for (auto &p : pts)
             p = Pt{x + p.x, y + p.y};
-        polyline(g, cin_used ? style : GraphicElement::STYLE_INACTIVE, pts);
+        polyline(g, cin_used && read ? style : GraphicElement::STYLE_INACTIVE, pts);
+        auto s = read ? style : GraphicElement::STYLE_INACTIVE;
+        std::vector<Pt> circle;
+        for (int i = 0; i <= 8; i++) {
+            float a = float(i) * 3.14159265f / 4;
+            circle.push_back(Pt{x + lane + r * std::cos(a), y + mark_y + r * std::sin(a)});
+        }
+        polyline(g, s, circle);
+        if (xor_out) {
+            line(g, s, x + lane, y + mark_y - r, x + lane, y + mark_y + r);
+            line(g, s, x + lane - r, y + mark_y, x + lane + r, y + mark_y);
+        } else {
+            // (the OR's output into L11.B; L03's output comes through it from the left)
+            line(g, cin_used && read ? style : GraphicElement::STYLE_INACTIVE, x + lane + r, y + mark_y, x + L2_X0,
+                 y + mark_y);
+        }
+        tree_port(lane - 0.006f, mark_y + r + 0.0005f, lane + 0.006f, mark_y + r + 0.0045f, xor_out ? "XOR" : "OR");
+        if (function == C_ADDF || function == C_ADDF2) {
+            bool carry_out = wire_used(cin_x ? "CPE.COUTX" : "CPE.COUTY1");
+            auto s = cin_used && carry_out ? style : GraphicElement::STYLE_INACTIVE;
+            if (cin_x)
+                line(g, s, x + CPE_PIN, y + CX_BAND, x + COUTX_X1, y + CX_BAND);
+            else
+                line(g, s, x + CY1, y + CARRY_IN_Y, x + CY1, y + CARRY_OUT_Y - CMUX_OUT_DY);
+        }
     };
     // A CPE in MX4 mode (C_FUNCTION, see pack_cpe.cc): L10 and L11 are a 4:1 mux, the other LUT2 of
     // the pair and its first-level LUT2s are not used as such. In mode A (L20 takes L11, INIT_L20 not
@@ -2010,8 +2175,6 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
             lower_tree();
             mult_cpe_outputs(g, style, ctx->getBelByLocation(loc), x, y);
         }
-        // (for every CPE, used as a whole or not: drawn once per CPE, with the decal of this bel)
-        configured_cpe_paths(g, ctx->getBelByLocation(loc).tile, x, y);
         break;
     }
     case id_CPE_LT_U.index:
@@ -2270,6 +2433,16 @@ void GateMateImpl::drawTileWire(std::vector<GraphicElement> &g, GraphicElement::
             lod(g, near, LOD_TILE);
         }
     }
+    // Where a net starts at this wire (a bel's output), on from it through the CPE's configuration
+    // (from a wire the net is routed into, the pip into it draws that)
+    if (style == GraphicElement::STYLE_ACTIVE) {
+        WireId wire = ctx->normalise_wire(tile, tilewire);
+        if (const NetInfo *net = ctx->getBoundWireNet(wire)) {
+            auto it = net->wires.find(wire);
+            if (it != net->wires.end() && it->second.pip == PipId())
+                configured_from(g, tile_wire);
+        }
+    }
     // A wire fed by a fixed connection from a wire arriving from another tile is the same physical
     // wire: when it is selected, show the way it came (hidden otherwise)
     const auto &uphill = chip_wire_info(ctx->chip_info, tile_wire).pips_uphill;
@@ -2327,14 +2500,27 @@ void GateMateImpl::drawPip(std::vector<GraphicElement> &g, GraphicElement::style
         return e.type == GraphicElement::TYPE_LINE && std::isinf(e.max_scale) && (e.x1 != e.x2 || e.y1 != e.y2) &&
                (!at_destination || (std::abs(e.x2 - to.x) < 1e-4f && std::abs(e.y2 - to.y) < 1e-4f));
     };
+    bool marked = false;
     for (bool at_destination : {true, false}) {
-        for (size_t i = g.size(); i-- > from;) {
+        for (size_t i = g.size(); i-- > from && !marked;) {
             if (line_at(i, at_destination)) {
                 g[i].type = GraphicElement::TYPE_ARROW;
-                return;
+                marked = true;
             }
         }
     }
+    // On from the destination through the CPE's configuration (see configured_cpe_paths)
+    if (style == GraphicElement::STYLE_ACTIVE)
+        configured_from(g, WireId(pip.tile, chip_pip_info(ctx->chip_info, pip).dst_wire));
+}
+
+void GateMateImpl::configured_from(std::vector<GraphicElement> &g, WireId tile_wire) const
+{
+    if (!starts_with(tile_wire_name(ctx, tile_wire.tile, tile_wire.index), "CPE."))
+        return;
+    int x, y;
+    tile_xy(ctx->chip_info, tile_wire.tile, x, y);
+    configured_cpe_paths(g, tile_wire.tile, tile_wire.index, gui_column(ctx, x), y);
 }
 
 void GateMateImpl::draw_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip,
