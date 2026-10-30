@@ -910,23 +910,47 @@ struct Router2
             int toexplore = 25000 * std::max(1, (ad.bb.x1 - ad.bb.x0) + (ad.bb.y1 - ad.bb.y0));
             int iter = 0;
 
+            // The searches don't stop at the first wire where they meet, as the cheapest path through the other
+            // side may run elsewhere. Instead, the meeting point with the lowest sum of the forward and backward
+            // costs is kept, until neither frontier can improve on it or the extra exploration budget runs out.
+            float best_meet = std::numeric_limits<float>::max();
+            int meet_limit = -1;
+            auto try_meet = [&](int wire) {
+                auto &wd = flat_wires.at(wire);
+                float c = wd.cost_fwd + wd.cost_bwd;
+                if (c < best_meet) {
+                    best_meet = c;
+                    midpoint_wire = wire;
+                    if (meet_limit < 0)
+                        meet_limit = iter + std::max(200, iter);
+                }
+            };
+
             // Mode 0 required both queues to be live
             while (((mode == 0) ? (!t.fwd_queue.empty() && !t.bwd_queue.empty())
                                 : (!t.fwd_queue.empty() || !t.bwd_queue.empty())) &&
                    ((!is_bb && midpoint_wire == -1) || iter < toexplore)) {
                 ++iter;
+                if (meet_limit >= 0 && iter > meet_limit)
+                    break;
                 if (!t.fwd_queue.empty() && !const_mode) {
                     // Explore forwards
                     auto curr = t.fwd_queue.top();
                     t.fwd_queue.pop();
                     ++explored;
-                    if (was_visited_bwd(curr.wire, std::numeric_limits<float>::max())) {
-                        // Meet in the middle; done
-                        midpoint_wire = curr.wire;
-                        break;
-                    }
                     auto &curr_data = flat_wires.at(curr.wire);
+                    bool expand = true;
+                    if (curr.score.cost > curr_data.cost_fwd)
+                        expand = false; // stale entry, the wire was reached cheaper since
+                    else if (midpoint_wire != -1 && curr.score.total() >= best_meet)
+                        break; // the forward frontier can't improve on the best meeting point
+                    else if (was_visited_bwd(curr.wire, std::numeric_limits<float>::max())) {
+                        try_meet(curr.wire);
+                        expand = false;
+                    }
                     for (PipId dh : ctx->getPipsDownhill(curr_data.w)) {
+                        if (!expand)
+                            break;
                         // Skip pips outside of box in bounding-box mode
                         if (is_bb && !hit_test_pip(nd.bb, ctx->getPipLocation(dh)))
                             continue;
@@ -939,7 +963,7 @@ struct Router2
                         next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, dh, crit_weight);
                         next_score.togo_cost =
                                 estimate_weight * get_togo_cost(net, i, next_idx, dst_wire, false, crit_weight);
-                        if (was_visited_fwd(next_idx, next_score.delay)) {
+                        if (was_visited_fwd(next_idx, next_score.cost)) {
                             // Don't expand the same node twice.
                             continue;
                         }
@@ -963,7 +987,7 @@ struct Router2
                         }
                         if (!thread_test_wire(t, nwd))
                             continue; // thread safety issue
-                        set_visited_fwd(t, next_idx, dh, next_score.delay);
+                        set_visited_fwd(t, next_idx, dh, next_score.cost);
                         t.fwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
                     }
                 }
@@ -988,10 +1012,13 @@ struct Router2
                             best_midpoint_cost = curr.score.cost;
                         }
                     } else {
+                        if (curr.score.cost > curr_data.cost_bwd)
+                            continue; // stale entry, the wire was reached cheaper since
+                        if (midpoint_wire != -1 && curr.score.total() >= best_meet)
+                            break; // the backward frontier can't improve on the best meeting point
                         if (was_visited_fwd(curr.wire, std::numeric_limits<float>::max())) {
-                            // Meet in the middle; done
-                            midpoint_wire = curr.wire;
-                            break;
+                            try_meet(curr.wire);
+                            continue;
                         }
                     }
                     // Don't allow the same wire to be bound to the same net with a different driving pip
@@ -1015,7 +1042,7 @@ struct Router2
                         next_score.togo_cost = const_mode ? 0
                                                           : estimate_weight * get_togo_cost(net, i, next_idx, src_wire,
                                                                                             true, crit_weight);
-                        if (was_visited_bwd(next_idx, next_score.delay)) {
+                        if (was_visited_bwd(next_idx, next_score.cost)) {
                             // Don't expand the same node twice.
                             continue;
                         }
@@ -1035,7 +1062,7 @@ struct Router2
                         }
                         if (!thread_test_wire(t, nwd))
                             continue; // thread safety issue
-                        set_visited_bwd(t, next_idx, uh, next_score.delay);
+                        set_visited_bwd(t, next_idx, uh, next_score.cost);
                         t.bwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
                     }
                 }
