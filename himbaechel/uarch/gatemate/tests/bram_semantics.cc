@@ -49,6 +49,7 @@ struct BramDesign
     bool global_clock = true;
     bool shared_clock = true; // both ports on the same clock
     bool controls_from_pads = false; // enables and write enables never constant
+    bool addresses_from_pads = false; // the address bits used straight from pads, never constant
     // Two cascaded 40K blocks (TDP, 1 bit) sharing all inputs, the outputs from the upper block
     bool cascade = false;
     // Choice of the logic driving the RAM inputs, and of the initial memory contents
@@ -218,7 +219,9 @@ class GateMateBramSemanticsTest : public GateMateTest
             for (int i = 0; i < 16; i++) {
                 bool used = width > 0 && address_bit_used(d, d.sdp ? d.width[0] : width, i);
                 int kind = rng() % 4;
-                if (used || kind == 0)
+                if (used && d.addresses_from_pads)
+                    connect(ctx->idf("%c_ADDR[%d]", port, i), pads[i % pads.size()]);
+                else if (used || kind == 0)
                     connect(ctx->idf("%c_ADDR[%d]", port, i), signal());
                 else
                     connect(ctx->idf("%c_ADDR[%d]", port, i), gnd());
@@ -440,6 +443,7 @@ class GateMateBramMutationTest : public GateMateBramSemanticsTest
     ::testing::AssertionResult matches_after(BramDesign d, const std::function<void(CellInfo *)> &mutate)
     {
         d.controls_from_pads = true;
+        d.addresses_from_pads = true;
         return implementation_matches_reference([&] { build_bram("ram", d); }, 400, 1,
                                                 [&] { mutate(ctx->cells.at(ctx->id("ram")).get()); });
     }
