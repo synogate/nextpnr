@@ -61,6 +61,7 @@ struct PnrOption
     QStringList choices; // Choice: the values
     std::function<QVariant()> get;
     std::function<void(const QVariant &)> set;
+    QString key; // the setting or --vopt it sets, for the MCP server's options tool
 };
 
 class PnrOptionsDialog : public QDialog

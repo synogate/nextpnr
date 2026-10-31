@@ -106,6 +106,20 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(task, &TaskManager::taskCanceled, this, &BaseMainWindow::taskCanceled);
     connect(task, &TaskManager::taskStarted, this, &BaseMainWindow::taskStarted);
     connect(task, &TaskManager::taskPaused, this, &BaseMainWindow::taskPaused);
+    // Whether a task runs (for the MCP server): after the handlers above, which log how it went
+    connect(task, &TaskManager::taskStarted, this, [this]() {
+        taskRunning = true;
+        tasksStarted++;
+    });
+    for (auto finished : {&TaskManager::pack_finished, &TaskManager::place_finished, &TaskManager::route_finished,
+                          &TaskManager::run_finished})
+        connect(
+                task, finished, this,
+                [this](bool status) { mcpTaskEnded(status ? "The step succeeded." : "The step failed.", status); },
+                Qt::QueuedConnection);
+    connect(
+            task, &TaskManager::taskCanceled, this, [this]() { mcpTaskEnded("The step was canceled.", false); },
+            Qt::QueuedConnection);
 
     // Events for context change
     connect(this, &BaseMainWindow::contextChanged, task, &TaskManager::contextChanged);
@@ -156,7 +170,12 @@ void BaseMainWindow::closeEvent(QCloseEvent *event)
 
 void BaseMainWindow::closeTab(int index) { delete centralTabWidget->widget(index); }
 
-void BaseMainWindow::writeInfo(std::string text) { console->info(text); }
+void BaseMainWindow::writeInfo(std::string text)
+{
+    if (mcpTaskReply && mcpTaskLog.size() < (1 << 20))
+        mcpTaskLog += text;
+    console->info(text);
+}
 
 void BaseMainWindow::about()
 {
@@ -228,6 +247,16 @@ void BaseMainWindow::createMenusAndBars()
     actionExecutePy->setStatusTip("Execute Python script");
     actionExecutePy->setEnabled(true);
     connect(actionExecutePy, &QAction::triggered, this, &BaseMainWindow::execute_python);
+
+    actionMcp = new QAction("MCP Server", this);
+    // Grey plug when stopped, green when running
+    QIcon mcpIcon(":/icons/resources/mcp.png");
+    mcpIcon.addFile(":/icons/resources/mcp_on.png", QSize(), QIcon::Normal, QIcon::On);
+    actionMcp->setIcon(mcpIcon);
+    actionMcp->setStatusTip("Let an assistant such as Claude Code work in the GUI (on 127.0.0.1)");
+    actionMcp->setToolTip("Start the MCP server (for an assistant such as Claude Code)");
+    actionMcp->setCheckable(true);
+    connect(actionMcp, &QAction::toggled, this, &BaseMainWindow::toggleMcpServer);
 
     // Worker control toolbar actions
     actionPlay = new QAction("Play", this);
@@ -340,6 +369,7 @@ void BaseMainWindow::createMenusAndBars()
     menuDesign->addAction(actionRoute);
     menuDesign->addSeparator();
     menuDesign->addAction(actionExecutePy);
+    menuDesign->addAction(actionMcp);
 
     // Add Help menu actions
     menuHelp->addAction(actionAbout);
@@ -356,6 +386,8 @@ void BaseMainWindow::createMenusAndBars()
     mainActionBar->addAction(actionPlace);
     mainActionBar->addAction(actionRoute);
     mainActionBar->addAction(actionExecutePy);
+    mainActionBar->addSeparator();
+    mainActionBar->addAction(actionMcp);
 
     // Add worker control toolbar
     QToolBar *workerControlToolBar = new QToolBar("Worker");
@@ -425,14 +457,24 @@ void BaseMainWindow::open_json()
 void BaseMainWindow::save_json()
 {
     QString fileName = QFileDialog::getSaveFileName(this, QString("Save JSON"), QString(), QString("*.json"));
-    if (!fileName.isEmpty()) {
-        std::string fn = fileName.toStdString();
-        std::ofstream f(fn);
-        if (write_json_file(f, fn, ctx.get()))
-            log("Saving JSON successful.\n");
-        else
-            log("Saving JSON failed.\n");
-    }
+    if (!fileName.isEmpty())
+        writeJson(fileName.toStdString());
+}
+
+bool BaseMainWindow::writeJson(const std::string &filename)
+{
+    beforeSave();
+    std::string fn = filename;
+    std::ofstream f(fn);
+    bool ok = f && write_json_file(f, fn, ctx.get());
+    log(ok ? "Saving JSON successful.\n" : "Saving JSON failed.\n");
+    return ok;
+}
+
+bool BaseMainWindow::setArchOption(const std::string &, const QJsonValue &, QString &error)
+{
+    error = "This architecture has no --vopt options.";
+    return false;
 }
 
 void BaseMainWindow::screenshot()
@@ -586,6 +628,7 @@ std::vector<PnrOption> BaseMainWindow::pnrOptions()
     auto option = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
                       PnrOption::Kind kind, QVariant def) {
         PnrOption o{step, group, label, help, kind, def};
+        o.key = key;
         o.get = [read, key, def] { return read(key, def); };
         o.set = [c, key, kind](const QVariant &v) {
             if (kind == PnrOption::Int)
@@ -621,6 +664,7 @@ std::vector<PnrOption> BaseMainWindow::pnrOptions()
     // A flag stays out of the settings when off: some passes only ask whether it is there
     auto flag = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key) {
         PnrOption o{step, group, label, help, PnrOption::Flag, false};
+        o.key = key;
         o.get = [c, key] { return QVariant(c->settings.count(c->id(key)) > 0); };
         o.set = [c, key](const QVariant &v) {
             if (v.toBool())
@@ -644,6 +688,7 @@ std::vector<PnrOption> BaseMainWindow::pnrOptions()
     PnrOption freq = number(general, "Timing", "Target frequency", "MHz, for clocks without a constraint",
                             "target_freq", PnrOption::Float, 12, 0.1, 2000);
     freq.get = [read] { return read("target_freq", 12e6).toDouble() / 1e6; };
+    freq.key = "target_freq";
     freq.set = [c](const QVariant &v) { c->settings[c->id("target_freq")] = std::to_string(v.toDouble() * 1e6); };
     options.push_back(freq);
     options.push_back(flag(general, "Timing", "Allow failing timing", "Not meeting a constraint is no error",
@@ -658,12 +703,14 @@ std::vector<PnrOption> BaseMainWindow::pnrOptions()
     options.push_back(choice(place, "Placer", "Placer", "heap: analytic, sa: annealing, static: electrostatic",
                              "placer", Arch::availablePlacers, Arch::defaultPlacer));
     PnrOption tmdriv{place, "Placer", "Timing driven", "Weigh the critical connections", PnrOption::Flag, true};
+    tmdriv.key = "timing_driven";
     tmdriv.get = [read] { return read("timing_driven", true).toBool(); };
     tmdriv.set = [c](const QVariant &v) { c->settings[c->id("timing_driven")] = std::to_string(v.toBool()); };
     options.push_back(tmdriv);
     PnrOption seed_option{place, "Placer", "Seed", "Restarts the random numbers before placing", PnrOption::Int, 0};
     seed_option.max = 1 << 30;
     seed_option.special = "unchanged";
+    seed_option.key = "seed";
     seed_option.get = [this] { return seed; };
     seed_option.set = [this](const QVariant &v) { seed = v.toInt(); };
     options.push_back(seed_option);

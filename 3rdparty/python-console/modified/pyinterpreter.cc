@@ -33,6 +33,7 @@ static PyObject *glb = NULL;
 static PyObject *loc = NULL;
 
 static std::list<std::string> m_suggestions;
+static PyObject *m_runBlock = NULL;
 
 template <typename... Args> std::string string_format(const std::string &format, Args... args)
 {
@@ -70,6 +71,49 @@ std::string pyinterpreter_execute(const std::string &command, int *errorCode)
     }
 
     res = redirector_take_output(m_threadState);
+
+    PyEval_ReleaseThread(m_threadState);
+    return res;
+}
+
+std::string pyinterpreter_execute_block(const std::string &code, int *errorCode, std::string *errorText)
+{
+    PyEval_AcquireThread(m_threadState);
+    *errorCode = 0;
+
+    if (m_runBlock == NULL) {
+        PyObject *runner = PyDict_New();
+        PyDict_SetItemString(runner, "__builtins__", PyEval_GetBuiltins());
+        PyObject *dum = PyRun_String("import ast\n"
+                                     "def run_block(src, g):\n"
+                                     "    tree = ast.parse(src, '<block>', 'exec')\n"
+                                     "    last = None\n"
+                                     "    if tree.body and isinstance(tree.body[-1], ast.Expr):\n"
+                                     "        last = ast.Expression(tree.body.pop().value)\n"
+                                     "    exec(compile(tree, '<block>', 'exec'), g)\n"
+                                     "    if last is not None:\n"
+                                     "        value = eval(compile(last, '<block>', 'eval'), g)\n"
+                                     "        if value is not None:\n"
+                                     "            print(repr(value))\n",
+                                     Py_file_input, runner, runner);
+        Py_XDECREF(dum);
+        m_runBlock = PyDict_GetItemString(runner, "run_block");
+        Py_XINCREF(m_runBlock);
+        Py_DECREF(runner);
+    }
+
+    PyObject *dum = NULL;
+    if (m_runBlock != NULL)
+        dum = PyObject_CallFunction(m_runBlock, "sO", code.c_str(), glb);
+    std::string res = redirector_take_output(m_threadState);
+    errorText->clear();
+    if (dum == NULL) {
+        *errorCode = 1;
+        if (PyErr_Occurred())
+            PyErr_Print();
+        *errorText = redirector_take_output(m_threadState);
+    }
+    Py_XDECREF(dum);
 
     PyEval_ReleaseThread(m_threadState);
     return res;
@@ -147,6 +191,8 @@ void pyinterpreter_initialize()
 void pyinterpreter_finalize()
 {
     m_suggestions.clear();
+    // (it goes with the interpreter)
+    m_runBlock = NULL;
 
     PyEval_RestoreThread(m_threadState);
 }

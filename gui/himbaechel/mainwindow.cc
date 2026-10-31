@@ -124,7 +124,7 @@ void MainWindow::run_finished(bool status)
         log("%s design failed.\n", running.c_str());
 }
 
-void MainWindow::save_json()
+void MainWindow::beforeSave()
 {
     // The JSON holds the finished routing
     if (ctx->route_finish_pending) {
@@ -133,7 +133,26 @@ void MainWindow::save_json()
         disableActions();
         updateActions();
     }
-    BaseMainWindow::save_json();
+}
+
+bool MainWindow::setArchOption(const std::string &key, const QJsonValue &value, QString &error)
+{
+    // As --vopt key[=value]: a string, or a flag (true: given); the numbers the uarch reads with
+    // another type go through the options of the dialog
+    auto &vopts = ctx->args.options;
+    if (value.isNull() || value.isUndefined() || (value.isBool() && !value.toBool())) {
+        vopts.erase(key);
+        return true;
+    }
+    if (!value.isBool() && !value.isString()) {
+        error = QString("%1: give a string, or true for a flag (numbers through the dialog's options)")
+                        .arg(QString::fromStdString(key));
+        return false;
+    }
+    vopts.erase(key);
+    std::string text = value.isBool() ? std::string() : value.toString().toStdString();
+    vopts.insert(std::make_pair(key, po::variable_value(boost::any(text), false)));
+    return true;
 }
 
 void MainWindow::onDisableActions()
@@ -185,6 +204,7 @@ std::vector<PnrOption> MainWindow::pnrOptions()
     auto option = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
                       PnrOption::Kind kind, QVariant def) {
         PnrOption o{step, group, label, help, kind, def};
+        o.key = key;
         o.get = [&vopts, key, kind, def]() -> QVariant {
             if (!vopts.count(key))
                 return def;
@@ -231,6 +251,7 @@ std::vector<PnrOption> MainWindow::pnrOptions()
     auto flag = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
                     bool inverted = false) {
         PnrOption o{step, group, label, help, PnrOption::Flag, inverted};
+        o.key = key;
         o.get = [&vopts, key, inverted] { return QVariant((vopts.count(key) > 0) != inverted); };
         o.set = [&vopts, set_option, key, inverted](const QVariant &v) {
             if (v.toBool() != inverted)

@@ -154,7 +154,13 @@ class IdList : public Item
     static std::vector<QString> alphaNumSplit(const QString &str);
 
     // getById finds a child for the given IdString.
-    virtual boost::optional<Item *> getById(IdStringList id) override { return managed_.at(id).get(); }
+    virtual boost::optional<Item *> getById(IdStringList id) override
+    {
+        auto found = managed_.find(id);
+        if (found == managed_.end())
+            return boost::none;
+        return found->second.get();
+    }
 
     // (Re-)create children from a list of IdStrings.
     virtual void updateElements(Context *ctx, std::vector<IdStringList> elements) override;

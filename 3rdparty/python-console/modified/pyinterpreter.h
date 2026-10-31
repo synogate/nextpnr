@@ -27,6 +27,9 @@ SOFTWARE.
 #include <string>
 
 std::string pyinterpreter_execute(const std::string &command, int *errorCode);
+// Runs a block of statements as a script does, then prints the value of a final expression as the
+// prompt does; the traceback of an error goes to errorText, after the output printed before it
+std::string pyinterpreter_execute_block(const std::string &code, int *errorCode, std::string *errorText);
 const std::list<std::string> &pyinterpreter_suggest(const std::string &hint);
 void pyinterpreter_preinit();
 void pyinterpreter_initialize();

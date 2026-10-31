@@ -128,6 +128,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     };
     void setPicking(bool on);
     bool isPicking() const { return picking_; }
+    // The area shown, in world coordinates, and showing an area
+    QRectF viewArea();
+    void zoomToArea(float x0, float y0, float x1, float y1);
 
   public Q_SLOTS:
     void newContext(Context *ctx);
@@ -338,6 +341,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
         // Flags for rendering.
         bool zoomOutbound;
+        // Zoom to the selection once it is drawn (its bounding box comes from drawing it)
+        bool zoomSelected = false;
         // The area and the finest level of detail to draw the in-view layer for, and whether they
         // changed
         PickQuadTree::BoundingBox viewRect;

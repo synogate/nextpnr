@@ -953,6 +953,11 @@ void DesignWidget::updateHighlightGroup(QList<TreeModel::Item *> items, int grou
         } else
             highlightSelected.insert(item, group);
     }
+    emitHighlights();
+}
+
+void DesignWidget::emitHighlights()
+{
     std::vector<DecalXY> decals[8];
 
     for (auto it : highlightSelected.toStdMap()) {
@@ -1129,4 +1134,120 @@ void DesignWidget::onHoverPropertyChanged(QtBrowserItem *item)
     }
     Q_EMIT hover(DecalXY());
 }
+QString DesignWidget::elementTypeName(ElementType type)
+{
+    switch (type) {
+    case ElementType::BEL:
+        return "bel";
+    case ElementType::WIRE:
+        return "wire";
+    case ElementType::PIP:
+        return "pip";
+    case ElementType::NET:
+        return "net";
+    case ElementType::CELL:
+        return "cell";
+    default:
+        return "";
+    }
+}
+
+ElementType DesignWidget::elementTypeByName(QString type)
+{
+    for (auto t : {ElementType::BEL, ElementType::WIRE, ElementType::PIP, ElementType::NET, ElementType::CELL})
+        if (type.toLower() == elementTypeName(t))
+            return t;
+    return ElementType::NONE;
+}
+
+boost::optional<TreeModel::Item *> DesignWidget::findElement(const Element &element)
+{
+    TreeModel::Model *tree = getTreeByElementType(element.type);
+    if (ctx == nullptr || tree == nullptr)
+        return boost::none;
+    // (a net or cell name is one IdString, even with a slash in it)
+    bool single = element.type == ElementType::NET || element.type == ElementType::CELL;
+    try {
+        return tree->nodeForId(single ? IdStringList(ctx->id(element.name)) : IdStringList::parse(ctx, element.name));
+    } catch (const std::exception &) {
+        // (a name the Arch does not know)
+        return boost::none;
+    }
+}
+
+std::vector<DesignWidget::Element> DesignWidget::selectedElements()
+{
+    std::vector<Element> elements;
+    if (ctx == nullptr)
+        return elements;
+    for (int i = 0; i <= getIndexByElementType(ElementType::NET); i++)
+        for (auto index : selectionModel[i]->selectedIndexes()) {
+            TreeModel::Item *item = treeModel[i]->nodeFromIndex(index);
+            if (item->type() != ElementType::NONE)
+                elements.push_back({item->type(), item->id().str(ctx)});
+        }
+    return elements;
+}
+
+void DesignWidget::selectElements(const std::vector<Element> &elements, std::vector<std::string> &missing)
+{
+    std::vector<std::pair<int, QModelIndex>> found;
+    for (auto &element : elements) {
+        auto item = findElement(element);
+        if (!item) {
+            missing.push_back(element.name);
+            continue;
+        }
+        int num = getIndexByElementType(element.type);
+        found.push_back({num, treeModel[num]->indexFromNode(*item)});
+    }
+    if (found.size() <= 1) {
+        // as a click
+        clearAllSelectionModels();
+        if (found.empty())
+            return;
+        tabWidget->setCurrentIndex(found[0].first);
+        selectionModel[found[0].first]->setCurrentIndex(found[0].second, QItemSelectionModel::ClearAndSelect);
+        return;
+    }
+    // Several, maybe in several trees: selected without the trees knowing (each would clear the
+    // others), then shown all together, as a selection with Control does
+    int trees = getIndexByElementType(ElementType::NET);
+    for (int i = 0; i <= trees; i++)
+        selectionModel[i]->blockSignals(true);
+    clearAllSelectionModels();
+    for (auto &f : found)
+        selectionModel[f.first]->select(f.second, QItemSelectionModel::Select);
+    for (int i = 0; i <= trees; i++) {
+        selectionModel[i]->blockSignals(false);
+        treeView[i]->viewport()->update();
+    }
+    tabWidget->setCurrentIndex(found[0].first);
+    clearProperties();
+    std::vector<DecalXY> decals;
+    for (auto &f : found) {
+        TreeModel::Item *item = treeModel[f.first]->nodeFromIndex(f.second);
+        std::vector<DecalXY> d = getDecals(item->type(), item->id());
+        std::move(d.begin(), d.end(), std::back_inserter(decals));
+    }
+    Q_EMIT selected(decals, false);
+}
+
+void DesignWidget::highlightElements(const std::vector<Element> &elements, int group, bool clear,
+                                     std::vector<std::string> &missing)
+{
+    if (clear)
+        highlightSelected.clear();
+    for (auto &element : elements) {
+        auto item = findElement(element);
+        if (!item)
+            missing.push_back(element.name);
+        else if (group < 0)
+            highlightSelected.remove(*item);
+        else
+            highlightSelected[*item] = group;
+    }
+    emitHighlights();
+}
+
 NEXTPNR_NAMESPACE_END

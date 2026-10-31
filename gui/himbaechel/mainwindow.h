@@ -45,11 +45,12 @@ class MainWindow : public BaseMainWindow
     std::vector<PnrOption> pnrOptions() override;
     PnrStep nextStep() override;
     void optionsChanged() override;
+    bool setArchOption(const std::string &key, const QJsonValue &value, QString &error) override;
+    void beforeSave() override;
 
   protected Q_SLOTS:
     void new_proj() override;
     void newContext(Context *ctx);
-    void save_json() override;
     void repair_route();
     void finish_route();
     void run_finished(bool status);

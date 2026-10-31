@@ -855,6 +855,7 @@ void FPGAViewWidget::renderLines(void)
         }
     }
 
+    bool zoomSelected = false;
     {
         QMutexLocker lock(&rendererArgsLock_);
 
@@ -862,6 +863,16 @@ void FPGAViewWidget::renderLines(void)
             zoomOutbound();
             rendererArgs_->zoomOutbound = false;
         }
+        // Only once no change of the selection is pending: then bbSelected is the selection's
+        if (rendererArgs_->zoomSelected && !rendererArgs_->changed) {
+            rendererArgs_->zoomSelected = false;
+            zoomSelected = true;
+        }
+    }
+    if (zoomSelected) {
+        QMutexLocker lock(&rendererDataLock_);
+        if (rendererData_->bbSelected.x0() != std::numeric_limits<float>::infinity())
+            zoomToBB(rendererData_->bbSelected, 0.5f, true);
     }
 }
 
@@ -1269,14 +1280,29 @@ void FPGAViewWidget::zoomToBB(const PickQuadTree::BoundingBox &bb, float margin,
         clampZoom();
 }
 
+QRectF FPGAViewWidget::viewArea()
+{
+    auto r = visibleRect();
+    return QRectF(QPointF(r.x0(), r.y0()), QPointF(r.x1(), r.y1()));
+}
+
+void FPGAViewWidget::zoomToArea(float x0, float y0, float x1, float y1)
+{
+    PickQuadTree::BoundingBox bb(x0, y0, x1, y1);
+    bb.fixup();
+    zoomToBB(bb, 0, true);
+    update();
+}
+
 void FPGAViewWidget::zoomSelected()
 {
+    // The renderer zooms at the end of its next pass: a selection that has just changed is drawn
+    // only then, and the zoom is to its bounding box
     {
-        QMutexLocker lock(&rendererDataLock_);
-        if (rendererData_->bbSelected.x0() != std::numeric_limits<float>::infinity())
-            zoomToBB(rendererData_->bbSelected, 0.5f, true);
+        QMutexLocker lock(&rendererArgsLock_);
+        rendererArgs_->zoomSelected = true;
     }
-    update();
+    pokeRenderer();
 }
 
 void FPGAViewWidget::zoomOutbound()

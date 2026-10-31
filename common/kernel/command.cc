@@ -318,6 +318,9 @@ po::options_description CommandHandler::getGeneralOptions()
 #ifndef NO_GUI
     general.add_options()("gui", "start gui");
     general.add_options()("gui-no-aa", "disable anti aliasing (use together with --gui option)");
+    general.add_options()("gui-mcp", po::value<int>()->implicit_value(4747),
+                          "start the gui's MCP server (for an assistant such as Claude Code) on 127.0.0.1 at this "
+                          "port (default 4747)");
 #endif
 #ifndef NO_PYTHON
     general.add_options()("run", po::value<std::vector<std::string>>(),
@@ -583,6 +586,8 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
     if (vm.count("gui")) {
         Application a(argc, argv, (vm.count("gui-no-aa") > 0));
         MainWindow w(std::move(ctx), this);
+        if (vm.count("gui-mcp"))
+            w.startMcpServer(vm["gui-mcp"].as<int>());
         try {
             if (vm.count("json")) {
                 std::string filename = vm["json"].as<std::string>();

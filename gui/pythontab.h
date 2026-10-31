@@ -37,6 +37,9 @@ class PythonTab : public QWidget
   public:
     explicit PythonTab(QWidget *parent = 0);
     ~PythonTab();
+    // Runs a block of code in the console's namespace and returns what it printed; the console
+    // shows both, as if typed at the prompt
+    std::string run(const std::string &code, bool &error);
 
   private Q_SLOTS:
     void showContextMenu(const QPoint &pt);

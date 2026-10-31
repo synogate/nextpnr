@@ -29,6 +29,55 @@ fn_wrapper_2a_v<Context, decltype(&Context::constrainCellToRegion), &Context::co
 
 fn_wrapper_2a<Context, decltype(&Context::getNetinfoRouteDelay), &Context::getNetinfoRouteDelay, pass_through<delay_t>,
               addr_and_unwrap<NetInfo>, unwrap_context<PortRef>>::def_wrap(ctx_cls, "getNetinfoRouteDelay");
+fn_wrapper_2a<Context, decltype(&Context::getNetinfoSinkWireCount), &Context::getNetinfoSinkWireCount,
+              pass_through<size_t>, addr_and_unwrap<NetInfo>, unwrap_context<PortRef>>::def_wrap(ctx_cls,
+                                                                                                 "getNetinfoSinkWireCount");
+fn_wrapper_3a<Context, decltype(&Context::getNetinfoSinkWire), &Context::getNetinfoSinkWire, conv_to_str<WireId>,
+              addr_and_unwrap<NetInfo>, unwrap_context<PortRef>, pass_through<size_t>>::def_wrap(ctx_cls,
+                                                                                                 "getNetinfoSinkWire");
+
+// The settings (ctx.settings in C++): what the flow has done, and options such as target_freq
+ctx_cls.def(
+        "getSetting",
+        [](Context &c, const std::string &key) -> py::object {
+            auto found = c.settings.find(c.id(key));
+            if (found == c.settings.end())
+                return py::none();
+            return py::str(found->second.is_string ? found->second.as_string() : std::to_string(found->second.as_int64()));
+        },
+        "The setting as a string (numbers too), or None");
+ctx_cls.def(
+        "setSetting", [](Context &c, const std::string &key, const std::string &value) { c.settings[c.id(key)] = value; },
+        "Sets the setting (a string)");
+ctx_cls.def(
+        "unsetSetting", [](Context &c, const std::string &key) { c.settings.erase(c.id(key)); }, "Removes the setting");
+ctx_cls.def(
+        "getSettings",
+        [](Context &c) {
+            py::dict d;
+            for (auto &s : c.settings)
+                d[py::str(s.first.str(&c))] =
+                        py::str(s.second.is_string ? s.second.as_string() : std::to_string(s.second.as_int64()));
+            return d;
+        },
+        "All settings, as a dict of strings");
+ctx_cls.def(
+        "writeJson",
+        [](Context &c, std::string filename) {
+            std::ofstream f(filename);
+            if (!f || !write_json_file(f, filename, &c))
+                throw std::runtime_error("cannot write " + filename);
+        },
+        "Writes the design (as placed and routed so far) to a JSON file");
+ctx_cls.def(
+        "readSdc",
+        [](Context &c, std::string filename) {
+            std::ifstream f(filename);
+            if (!f)
+                throw std::runtime_error("cannot read " + filename);
+            c.read_sdc(f);
+        },
+        "Reads timing constraints from an SDC file (as --sdc does)");
 
 fn_wrapper_1a<Context, decltype(&Context::createNet), &Context::createNet, deref_and_wrap<NetInfo>,
               conv_from_str<IdString>>::def_wrap(ctx_cls, "createNet");
@@ -104,6 +153,8 @@ fn_wrapper_1a_v<Context, decltype(&Context::unbindPip), &Context::unbindPip, con
         ctx_cls, "unbindPip");
 fn_wrapper_1a<Context, decltype(&Context::checkPipAvail), &Context::checkPipAvail, pass_through<bool>,
               conv_from_str<PipId>>::def_wrap(ctx_cls, "checkPipAvail");
+fn_wrapper_1a<Context, decltype(&Context::isPipInverting), &Context::isPipInverting, pass_through<bool>,
+              conv_from_str<PipId>>::def_wrap(ctx_cls, "isPipInverting");
 fn_wrapper_1a<Context, decltype(&Context::getBoundPipNet), &Context::getBoundPipNet, deref_and_wrap<NetInfo>,
               conv_from_str<PipId>>::def_wrap(ctx_cls, "getBoundPipNet");
 fn_wrapper_1a<Context, decltype(&Context::getConflictingPipNet), &Context::getConflictingPipNet,

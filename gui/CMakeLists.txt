@@ -14,6 +14,9 @@ set(GUI_SOURCES
     line_editor.h
     lineshader.cc
     lineshader.h
+    mcpserver.cc
+    mcpserver.h
+    mcptools.cc
     pnroptions.cc
     pnroptions.h
     pyconsole.cc
@@ -74,6 +77,12 @@ if (Qt6_FOUND)
 else()
     target_link_libraries(nextpnr-${target}-gui PUBLIC Qt5::Widgets)
     target_link_libraries(nextpnr-${target}-gui PRIVATE Qt5::OpenGL)
+endif()
+
+if (WIN32)
+    # Boost.Asio (the MCP server)
+    target_compile_definitions(nextpnr-${target}-gui PRIVATE _WIN32_WINNT=0x0601)
+    target_link_libraries(nextpnr-${target}-gui PUBLIC ws2_32 mswsock)
 endif()
 
 target_link_libraries(nextpnr-${target}-gui PRIVATE
