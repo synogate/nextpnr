@@ -69,6 +69,142 @@ ctx_cls.def(
                 throw std::runtime_error("cannot write " + filename);
         },
         "Writes the design (as placed and routed so far) to a JSON file");
+
+// Editing the netlist; errors are Python exceptions (rather than failed assertions)
+ctx_cls.def(
+        "removeCell",
+        [](Context &c, const std::string &name) {
+            auto found = c.cells.find(c.id(name));
+            if (found == c.cells.end())
+                throw std::runtime_error("no cell " + name);
+            CellInfo *cell = found->second.get();
+            if (cell->cluster != ClusterId())
+                throw std::runtime_error(name + " is in a cluster; take it out first (ctx.removeFromCluster(cell) "
+                                                "where there is one)");
+            if (cell->bel != BelId())
+                c.unbindBel(cell->bel);
+            std::vector<IdString> ports;
+            for (auto &port : cell->ports)
+                ports.push_back(port.first);
+            for (IdString port : ports)
+                cell->disconnectPort(port);
+            c.cells.erase(found);
+            c.assignArchInfo();
+            c.refreshUi();
+        },
+        "Removes the cell: unbinds its bel and disconnects its ports (the nets stay)");
+ctx_cls.def(
+        "removeNet",
+        [](Context &c, const std::string &name) {
+            auto found = c.nets.find(c.id(name));
+            if (found == c.nets.end())
+                throw std::runtime_error("no net " + name);
+            NetInfo *net = found->second.get();
+            c.ripupNet(net->name);
+            std::vector<std::pair<CellInfo *, IdString>> ports;
+            if (net->driver.cell)
+                ports.emplace_back(net->driver.cell, net->driver.port);
+            for (auto &user : net->users)
+                ports.emplace_back(user.cell, user.port);
+            for (auto &port : ports)
+                port.first->disconnectPort(port.second);
+            for (auto it = c.net_aliases.begin(); it != c.net_aliases.end();)
+                it = it->second == net->name ? c.net_aliases.erase(it) : std::next(it);
+            c.nets.erase(found);
+            c.assignArchInfo();
+            c.refreshUi();
+        },
+        "Removes the net: unroutes it and disconnects its driver and users");
+ctx_cls.def(
+        "renameNet",
+        [](Context &c, const std::string &old_name, const std::string &new_name) {
+            IdString from = c.id(old_name), to = c.id(new_name);
+            if (!c.nets.count(from))
+                throw std::runtime_error("no net " + old_name);
+            if (c.nets.count(to))
+                throw std::runtime_error("there is a net " + new_name + " already");
+            c.renameNet(from, to);
+            for (auto &alias : c.net_aliases)
+                if (alias.second == from)
+                    alias.second = to;
+            c.assignArchInfo();
+            c.refreshUi();
+        },
+        "Renames the net");
+ctx_cls.def(
+        "renameCell",
+        [](Context &c, const std::string &old_name, const std::string &new_name) {
+            IdString from = c.id(old_name), to = c.id(new_name);
+            auto found = c.cells.find(from);
+            if (found == c.cells.end())
+                throw std::runtime_error("no cell " + old_name);
+            if (c.cells.count(to))
+                throw std::runtime_error("there is a cell " + new_name + " already");
+            if (found->second->cluster != ClusterId())
+                throw std::runtime_error(old_name + " is in a cluster");
+            std::unique_ptr<CellInfo> cell = std::move(found->second);
+            c.cells.erase(from);
+            cell->name = to;
+            c.cells[to] = std::move(cell);
+            c.assignArchInfo();
+            c.refreshUi();
+        },
+        "Renames the cell (not one in a cluster)");
+auto port_cell = [](Context &c, const std::string &cell, const std::string &port, bool must_exist) {
+    auto found = c.cells.find(c.id(cell));
+    if (found == c.cells.end())
+        throw std::runtime_error("no cell " + cell);
+    if (must_exist && !found->second->ports.count(c.id(port)))
+        throw std::runtime_error("no port " + cell + "." + port);
+    return found->second.get();
+};
+ctx_cls.def(
+        "removePort",
+        [port_cell](Context &c, const std::string &cell, const std::string &port) {
+            CellInfo *ci = port_cell(c, cell, port, true);
+            ci->disconnectPort(c.id(port));
+            ci->ports.erase(c.id(port));
+            c.assignArchInfo();
+        },
+        "Disconnects the port and removes it from the cell");
+ctx_cls.def(
+        "renamePort",
+        [port_cell](Context &c, const std::string &cell, const std::string &old_name, const std::string &new_name) {
+            CellInfo *ci = port_cell(c, cell, old_name, true);
+            if (ci->ports.count(c.id(new_name)))
+                throw std::runtime_error("there is a port " + cell + "." + new_name + " already");
+            ci->renamePort(c.id(old_name), c.id(new_name));
+            c.assignArchInfo();
+        },
+        "Renames a port of the cell, keeping its net");
+ctx_cls.def(
+        "movePort",
+        [port_cell](Context &c, const std::string &cell, const std::string &port, const std::string &other,
+                    const std::string &other_port) {
+            CellInfo *ci = port_cell(c, cell, port, true);
+            ci->movePortTo(c.id(port), port_cell(c, other, other_port, false), c.id(other_port));
+            c.assignArchInfo();
+        },
+        "Moves the port's connection to other.other_port (made if not there); the port stays, unconnected");
+ctx_cls.def(
+        "copyPort",
+        [port_cell](Context &c, const std::string &cell, const std::string &port, const std::string &other,
+                    const std::string &other_port) {
+            CellInfo *ci = port_cell(c, cell, port, true);
+            ci->copyPortTo(c.id(port), port_cell(c, other, other_port, false), c.id(other_port));
+            c.assignArchInfo();
+        },
+        "Connects other.other_port (made if not there) to the port's net too");
+ctx_cls.def(
+        "connectPorts",
+        [port_cell](Context &c, const std::string &cell, const std::string &port, const std::string &other,
+                    const std::string &other_port) {
+            CellInfo *ci = port_cell(c, cell, port, true);
+            ci->connectPorts(c.id(port), port_cell(c, other, other_port, true), c.id(other_port));
+            c.assignArchInfo();
+        },
+        "Connects two ports with a new net (or the port's net, if it has one), the first the driver");
+
 ctx_cls.def(
         "readSdc",
         [](Context &c, std::string filename) {

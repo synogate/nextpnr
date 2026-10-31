@@ -23,6 +23,8 @@
 #include "nextpnr.h"
 #include "pybindings.h"
 
+#include <algorithm>
+
 NEXTPNR_NAMESPACE_BEGIN
 
 void arch_wrap_python(py::module &m)
@@ -86,6 +88,25 @@ void arch_wrap_python(py::module &m)
                 return list;
             },
             "The children of a cluster root: (name, dx, dy, dz, abs_z) each");
+    ctx_cls.def(
+            "removeFromCluster",
+            [find_cell](Context &c, const std::string &name) {
+                CellInfo *cell = find_cell(c, name);
+                if (cell->cluster == ClusterId())
+                    throw std::runtime_error(name + " is in no cluster");
+                CellInfo *root = c.getClusterRootCell(cell->cluster);
+                if (root == cell && !cell->constr_children.empty())
+                    throw std::runtime_error(name + " is the root of its cluster; take its children out first");
+                if (cell->bel != BelId())
+                    throw std::runtime_error(name + " is placed; unbind it first");
+                auto &children = root->constr_children;
+                children.erase(std::remove(children.begin(), children.end(), cell), children.end());
+                cell->cluster = ClusterId();
+                cell->constr_x = cell->constr_y = cell->constr_z = 0;
+                cell->constr_abs_z = false;
+                c.assignArchInfo();
+            },
+            "Takes a cell out of its cluster, e.g. to remove it (a root only once it has no children)");
 
     WRAP_RANGE(m, Bel, conv_to_str<BelId>);
     WRAP_RANGE(m, Wire, conv_to_str<WireId>);

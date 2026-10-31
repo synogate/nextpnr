@@ -61,6 +61,13 @@ void Worker::pack()
         Q_EMIT pack_finished(res);
     } catch (WorkerInterruptionRequested) {
         Q_EMIT taskCanceled();
+    } catch (log_execution_error_exception) {
+        // The pass failed (log_error): the step ends, and the error goes on to the GUI
+        Q_EMIT pack_finished(false);
+        throw;
+    } catch (const std::exception &e) {
+        log_nonfatal_error("Internal error: %s\n", e.what());
+        Q_EMIT pack_finished(false);
     }
 }
 
@@ -72,6 +79,13 @@ void Worker::place(bool timing_driven)
         Q_EMIT place_finished(ctx->place());
     } catch (WorkerInterruptionRequested) {
         Q_EMIT taskCanceled();
+    } catch (log_execution_error_exception) {
+        // The pass failed (log_error): the step ends, and the error goes on to the GUI
+        Q_EMIT place_finished(false);
+        throw;
+    } catch (const std::exception &e) {
+        log_nonfatal_error("Internal error: %s\n", e.what());
+        Q_EMIT place_finished(false);
     }
 }
 
@@ -82,6 +96,13 @@ void Worker::route()
         Q_EMIT route_finished(ctx->route());
     } catch (WorkerInterruptionRequested) {
         Q_EMIT taskCanceled();
+    } catch (log_execution_error_exception) {
+        // The pass failed (log_error): the step ends, and the error goes on to the GUI
+        Q_EMIT route_finished(false);
+        throw;
+    } catch (const std::exception &e) {
+        log_nonfatal_error("Internal error: %s\n", e.what());
+        Q_EMIT route_finished(false);
     }
 }
 
@@ -92,6 +113,13 @@ void Worker::run(std::function<bool()> step)
         Q_EMIT run_finished(step());
     } catch (WorkerInterruptionRequested) {
         Q_EMIT taskCanceled();
+    } catch (log_execution_error_exception) {
+        // The pass failed (log_error): the step ends, and the error goes on to the GUI
+        Q_EMIT run_finished(false);
+        throw;
+    } catch (const std::exception &e) {
+        log_nonfatal_error("Internal error: %s\n", e.what());
+        Q_EMIT run_finished(false);
     }
 }
 

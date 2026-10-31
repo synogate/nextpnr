@@ -63,6 +63,10 @@ the design accordingly.
 - Python code runs on the GUI's thread: the GUI stands still until it ends. Run long searches
   (over the whole chip database, say) in a separate process of this program without the GUI
   (--device ... --run script.py), and bring the result back.
+- The netlist: ctx.createCell/removeCell/renameCell, ctx.createNet/removeNet/renameNet,
+  ctx.connectPort(net, cell, port)/disconnectPort(cell, port), ctx.connectPorts/movePort/copyPort
+  (cell, port, other, other_port), ctx.removePort/renamePort, ctx.copyBelPorts(cell, bel); a cell
+  in a cluster first out of it with ctx.removeFromCluster(cell) (where there is one).
 - More in Python: ctx.getSetting/setSetting/getSettings, ctx.writeJson(file), ctx.readSdc(file),
   ctx.getNetinfoSinkWire(net, user, i), ctx.getNetinfoRouteDelay(net, user); on some
   architectures ctx.getCellCluster(cell) and ctx.getClusterChildren(root).)";
@@ -410,10 +414,16 @@ void BaseMainWindow::mcpTool(const QString &name, const QJsonObject &args, McpSe
             std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
             std::lock_guard<std::mutex> lock(ctx->mutex);
             out = console->run(code.toStdString(), error);
+            // The architecture's data on cells and nets (indices, port caches) after the netlist changed
+            static const QRegularExpression edits("\\b(create|remove|rename)(Cell|Net)\\b|\\b(dis)?connectPorts?\\b|"
+                                                  "\\b(move|copy|remove|rename)Port\\b|\\badd(Input|Output|Inout)\\b");
+            if (ctx->cells.size() != cells || ctx->nets.size() != nets || edits.match(code).hasMatch())
+                ctx->assignArchInfo();
         }
         ctx->refreshUi();
         // The trees only when there are other cells or nets: rebuilding them loses the selection
-        if (ctx->cells.size() != cells || ctx->nets.size() != nets)
+        static const QRegularExpression renamed("\\brename(Cell|Net)\\s*\\(");
+        if (ctx->cells.size() != cells || ctx->nets.size() != nets || renamed.match(code).hasMatch())
             Q_EMIT updateTreeView();
         return reply(McpServer::text(out.empty() ? "(no output)" : shortened(out), error));
     }
