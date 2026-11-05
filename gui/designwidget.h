@@ -81,6 +81,7 @@ class DesignWidget : public QWidget
   private:
     template <typename T> bool clickedNet(T element, bool keep);
     void clearProperties();
+    void emitSelectionInfo();
     QtProperty *addTopLevelProperty(const QString &id);
     QtProperty *addSubGroup(QtProperty *topItem, const QString &name);
     void addProperty(QtProperty *topItem, int propertyType, const QString &name, QVariant value,
@@ -102,6 +103,8 @@ class DesignWidget : public QWidget
     void highlight(std::vector<DecalXY> decal, int group);
     void hover(DecalXY decal);
     void zoomSelected();
+    // A one-line description of the current selection (for the status bar)
+    void selectionInfo(QString text);
 
   private Q_SLOTS:
     void prepareMenuProperty(const QPoint &pos);

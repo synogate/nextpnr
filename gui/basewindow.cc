@@ -25,6 +25,7 @@
 #include <QIcon>
 #include <QImageWriter>
 #include <QInputDialog>
+#include <QLabel>
 #include <QMessageBox>
 #include <QSettings>
 #include <QSplitter>
@@ -462,6 +463,16 @@ void BaseMainWindow::createMenusAndBars()
 
     // Add status bar with progress bar
     statusBar = new QStatusBar();
+    // The current selection, permanently shown (temporary messages appear left of it)
+    selectionLabel = new QLabel("No selection", statusBar);
+    selectionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    selectionLabel->setMinimumWidth(1);
+    selectionLabel->setMaximumWidth(800);
+    statusBar->addPermanentWidget(selectionLabel);
+    connect(designview, &DesignWidget::selectionInfo, this, [this](const QString &text) {
+        selectionLabel->setText(text);
+        selectionLabel->setToolTip(text);
+    });
     progressBar = new QProgressBar(statusBar);
     progressBar->setAlignment(Qt::AlignRight);
     progressBar->setMaximumSize(180, 19);

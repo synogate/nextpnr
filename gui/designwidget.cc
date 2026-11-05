@@ -29,6 +29,7 @@
 #include <QToolBar>
 #include <QTreeWidgetItem>
 #include "editcommands.h"
+#include "elementinfo.h"
 #include "fpgaviewwidget.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -631,8 +632,95 @@ template <typename T> bool DesignWidget::clickedNet(T element, bool keep)
     return true;
 }
 
+void DesignWidget::emitSelectionInfo()
+{
+    if (ctx == nullptr) {
+        Q_EMIT selectionInfo(QString());
+        return;
+    }
+    int num_selected = 0;
+    TreeModel::Item *item = nullptr;
+    for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
+        for (auto index : selectionModel[i]->selectedIndexes()) {
+            num_selected++;
+            item = treeModel[i]->nodeFromIndex(index);
+        }
+    }
+    if (num_selected == 0 || item == nullptr) {
+        Q_EMIT selectionInfo("No selection");
+        return;
+    }
+    if (num_selected > 1) {
+        Q_EMIT selectionInfo(QString("%1 items selected").arg(num_selected));
+        return;
+    }
+    std::string text;
+    IdStringList c = item->id();
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        switch (item->type()) {
+        case ElementType::BEL: {
+            BelId bel = ctx->getBelByName(c);
+            if (bel != BelId())
+                text = ElementInfo::belText(ctx, bel, true, false);
+            break;
+        }
+        case ElementType::WIRE: {
+            WireId wire = ctx->getWireByName(c);
+            if (wire != WireId())
+                text = ElementInfo::wireText(ctx, wire, true, false);
+            break;
+        }
+        case ElementType::PIP: {
+            PipId pip = ctx->getPipByName(c);
+            if (pip != PipId())
+                text = ElementInfo::pipText(ctx, pip, true, false);
+            break;
+        }
+        case ElementType::GROUP: {
+            GroupId group = ctx->getGroupByName(c);
+            if (group != GroupId())
+                text = ElementInfo::groupText(ctx, group, false);
+            break;
+        }
+        case ElementType::CELL: {
+            auto fnd = ctx->cells.find(c[0]);
+            if (fnd == ctx->cells.end())
+                break;
+            CellInfo *cell = fnd->second.get();
+            text = "CELL " + cell->name.str(ctx) + "  |  type: " + cell->type.str(ctx) + "  |  bel: ";
+            if (cell->bel != BelId())
+                text += ctx->getBelName(cell->bel).str(ctx) + " [" + ElementInfo::strengthName(cell->belStrength) +
+                        "]";
+            else
+                text += "(unplaced)";
+            break;
+        }
+        case ElementType::NET: {
+            auto fnd = ctx->nets.find(c[0]);
+            if (fnd == ctx->nets.end())
+                break;
+            NetInfo *net = fnd->second.get();
+            text = "NET " + net->name.str(ctx) + "  |  driver: ";
+            if (net->driver.cell != nullptr)
+                text += net->driver.cell->name.str(ctx) + "." + net->driver.port.str(ctx);
+            else
+                text += "(none)";
+            text += "  |  users: " + std::to_string(net->users.entries()) +
+                    "  |  wires: " + std::to_string(net->wires.size());
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    Q_EMIT selectionInfo(QString::fromStdString(text));
+}
+
 void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QItemSelection &)
 {
+    emitSelectionInfo();
     int num_selected = 0;
     std::vector<DecalXY> decals;
     for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {

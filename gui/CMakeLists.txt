@@ -10,6 +10,8 @@ set(GUI_SOURCES
     designwidget.h
     editcommands.cc
     editcommands.h
+    elementinfo.cc
+    elementinfo.h
     fpgaviewwidget.cc
     fpgaviewwidget.h
     line_editor.cc

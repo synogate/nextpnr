@@ -28,12 +28,14 @@
 #include <QFileInfo>
 #include <QImageWriter>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QWidget>
 
 #include "QtImGui.h"
 #include "imgui.h"
 
+#include "elementinfo.h"
 #include "fpgaviewwidget.h"
 #include "log.h"
 #include "mainwindow.h"
@@ -81,6 +83,9 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     renderRunner_->start();
     renderRunner_->startTimer(1000 / 2); // render lines 2 times per second
     setMouseTracking(true);
+    // Focus on click, so that Tab / Shift+Tab reach the view to cycle the hovered element
+    setFocusPolicy(Qt::ClickFocus);
+    clock_.start();
 
     displayBel_ = false;
     displayWire_ = false;
@@ -196,6 +201,60 @@ float FPGAViewWidget::PickedElement::distance(Context *ctx, float wx, float wy, 
             return true;
         return a < b;
     });
+}
+
+bool FPGAViewWidget::PickedElement::hitMetrics(Context *ctx, float wx, float wy, float scale, float thin, float &dist,
+                                               float &size) const
+{
+    DecalXY dec = decal(ctx);
+    float dx = wx - dec.x;
+    float dy = wy - dec.y;
+    bool any = false;
+    float x0 = std::numeric_limits<float>::infinity(), y0 = x0, x1 = -x0, y1 = -x0;
+    dist = std::numeric_limits<float>::infinity();
+    for (auto &ge : ctx->getDecalGraphics(dec.decal)) {
+        if (!lodVisible(lodRange(ge), scale))
+            continue;
+        float d;
+        float ax = ge.x1, ay = ge.y1, bx = ge.x2, by = ge.y2;
+        switch (ge.type) {
+        case GraphicElement::TYPE_BOX: {
+            float ox = std::max({0.0f, std::min(ax, bx) - dx, dx - std::max(ax, bx)});
+            float oy = std::max({0.0f, std::min(ay, by) - dy, dy - std::max(ay, by)});
+            d = std::sqrt(ox * ox + oy * oy);
+            break;
+        }
+        case GraphicElement::TYPE_LINE:
+        case GraphicElement::TYPE_ARROW:
+            // Not relative to the decal
+            ax -= dec.x;
+            bx -= dec.x;
+            ay -= dec.y;
+            by -= dec.y;
+            /* fall through */
+        case GraphicElement::TYPE_LOCAL_LINE:
+        case GraphicElement::TYPE_LOCAL_ARROW: {
+            float vx = bx - ax, vy = by - ay;
+            float len2 = vx * vx + vy * vy;
+            float t = len2 > 0 ? std::max(0.0f, std::min(1.0f, ((dx - ax) * vx + (dy - ay) * vy) / len2)) : 0.0f;
+            float px = ax + t * vx - dx, py = ay + t * vy - dy;
+            d = std::sqrt(px * px + py * py);
+            break;
+        }
+        default:
+            continue;
+        }
+        any = true;
+        dist = std::min(dist, d);
+        x0 = std::min({x0, ax, bx});
+        x1 = std::max({x1, ax, bx});
+        y0 = std::min({y0, ay, by});
+        y1 = std::max({y1, ay, by});
+    }
+    if (!any)
+        return false;
+    size = std::max(x1 - x0, thin) * std::max(y1 - y0, thin);
+    return true;
 }
 
 // The head of an arrow in a decal's graphics: two short lines back from its end, appended to heads.
@@ -546,7 +605,8 @@ void FPGAViewWidget::paintGL()
     QtImGui::newFrame();
     drawOverlays();
     QMutexLocker lock(&rendererArgsLock_);
-    if (!(rendererArgs_->hoveredDecal == DecalXY()) && rendererArgs_->hintText.size() > 0) {
+    if (!(rendererArgs_->hoveredDecal == DecalXY()) && rendererArgs_->hintText.size() > 0 &&
+        clock_.elapsed() - hoverSince_ >= TOOLTIP_DELAY_MS) {
         ImGui::SetNextWindowPos(ImVec2(rendererArgs_->x, rendererArgs_->y));
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
@@ -928,14 +988,17 @@ void FPGAViewWidget::onHoverItemChanged(DecalXY decal)
 
 void FPGAViewWidget::resizeGL(int width, int height) {}
 
-boost::optional<FPGAViewWidget::PickedElement> FPGAViewWidget::pickElement(float worldx, float worldy)
+std::vector<FPGAViewWidget::PickedElement> FPGAViewWidget::pickCandidates(float worldx, float worldy)
 {
+    std::vector<PickedElement> result;
+    if (ctx_ == nullptr)
+        return result;
     // Get elements from renderer whose BBs correspond to the pick.
     std::vector<PickedElement> elems;
     {
         QMutexLocker locker(&rendererDataLock_);
         if (rendererData_->qt == nullptr) {
-            return {};
+            return result;
         }
         elems = rendererData_->qt->get(worldx, worldy);
         // The pips drawn in the details (which are not in the quadtree), where they are shown
@@ -953,11 +1016,42 @@ boost::optional<FPGAViewWidget::PickedElement> FPGAViewWidget::pickElement(float
     }
 
     if (elems.size() == 0) {
-        return {};
+        return result;
     }
 
-    // Calculate distances to all elements picked, considering only what is drawn at this zoom.
+    // Everything drawn (at this zoom) within a few pixels of the cursor, smallest first: big boxes
+    // (planes, tiles) cover the small things in them.
     float scale = 1.0f / mouseToWorldDimensions(1, 0).x();
+    float reach = mouseToWorldDimensions(4, 0).x();
+    float thin = mouseToWorldDimensions(1, 0).x();
+    struct Hit
+    {
+        size_t index;
+        float dist, size;
+    };
+    std::vector<Hit> hits;
+    for (size_t i = 0; i < elems.size(); i++) {
+        bool dup = false;
+        for (auto &h : hits)
+            if (elems[h.index] == elems[i])
+                dup = true;
+        if (dup)
+            continue;
+        float dist, size;
+        if (elems[i].hitMetrics(ctx_, worldx, worldy, scale, thin, dist, size) && dist <= reach)
+            hits.push_back(Hit{i, dist, size});
+    }
+    std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) {
+        if (a.size != b.size)
+            return a.size < b.size;
+        return a.dist < b.dist;
+    });
+    for (auto &h : hits)
+        result.push_back(elems[h.index]);
+    if (!result.empty())
+        return result;
+
+    // Nothing that close: the closest element, as before
     using ElemDist = std::pair<const PickedElement *, float>;
     std::vector<ElemDist> distances;
     std::transform(elems.begin(), elems.end(), std::back_inserter(distances), [&](const PickedElement &e) -> ElemDist {
@@ -974,11 +1068,129 @@ boost::optional<FPGAViewWidget::PickedElement> FPGAViewWidget::pickElement(float
     });
 
     // All out of reach?
-    if (closest->second < 0) {
-        return {};
-    }
+    if (closest->second >= 0)
+        result.push_back(*(closest->first));
+    return result;
+}
 
-    return *(closest->first);
+std::string FPGAViewWidget::elementText(const PickedElement &e, bool multiline)
+{
+    if (ctx_ == nullptr)
+        return "";
+    // The binding state only when the design is not being changed (a running pass holds the lock)
+    bool locked = ctx_->mutex.try_lock();
+    std::string text;
+    switch (e.type) {
+    case ElementType::BEL:
+        text = ElementInfo::belText(ctx_, e.bel, locked, multiline);
+        break;
+    case ElementType::WIRE:
+        text = ElementInfo::wireText(ctx_, e.wire, locked, multiline);
+        break;
+    case ElementType::PIP:
+        text = ElementInfo::pipText(ctx_, e.pip, locked, multiline);
+        break;
+    case ElementType::GROUP:
+        text = ElementInfo::groupText(ctx_, e.group, multiline);
+        break;
+    default:
+        break;
+    }
+    if (locked)
+        ctx_->mutex.unlock();
+    else if (multiline && e.type != ElementType::GROUP)
+        text += "\n(busy: binding state not shown)";
+    return text;
+}
+
+void FPGAViewWidget::emitClicked(const PickedElement &e, bool add)
+{
+    if (e.type == ElementType::BEL) {
+        clickedBel(e.bel, add);
+    } else if (e.type == ElementType::WIRE) {
+        clickedWire(e.wire, add);
+    } else if (e.type == ElementType::PIP) {
+        clickedPip(e.pip, add);
+    }
+}
+
+void FPGAViewWidget::updateHover(int x, int y)
+{
+    if (picking_)
+        return; // (nothing hovered while picking)
+    auto world = mouseToWorldCoordinates(x, y);
+    std::vector<PickedElement> cands = pickCandidates(world.x(), world.y());
+    if (cands != hoverCandidates_) {
+        hoverCandidates_ = std::move(cands);
+        hoverIndex_ = 0;
+    }
+    {
+        QMutexLocker locked(&rendererArgsLock_);
+        rendererArgs_->x = x;
+        rendererArgs_->y = y;
+    }
+    applyHover();
+}
+
+void FPGAViewWidget::applyHover(bool immediate)
+{
+    if (hoverCandidates_.empty()) {
+        QMutexLocker locked(&rendererArgsLock_);
+        rendererArgs_->hoveredDecal = DecalXY();
+        rendererArgs_->changed = true;
+        rendererArgs_->hintText = "";
+        pokeRenderer();
+        return;
+    }
+    hoverIndex_ = std::max(0, std::min(hoverIndex_, int(hoverCandidates_.size()) - 1));
+    const PickedElement &e = hoverCandidates_.at(hoverIndex_);
+    std::string text = elementText(e, true);
+    if (hoverCandidates_.size() > 1)
+        text += "\n[" + std::to_string(hoverIndex_ + 1) + "/" + std::to_string(hoverCandidates_.size()) +
+                " here: Tab / click again for the next, right-click for a list]";
+    DecalXY decal = e.decal(ctx_);
+    {
+        QMutexLocker locked(&rendererArgsLock_);
+        if (immediate)
+            hoverSince_ = clock_.elapsed() - TOOLTIP_DELAY_MS;
+        else if (!(rendererArgs_->hoveredDecal == decal))
+            hoverSince_ = clock_.elapsed();
+        rendererArgs_->hoveredDecal = decal;
+        rendererArgs_->changed = true;
+        rendererArgs_->hintText = text;
+    }
+    pokeRenderer();
+    update();
+}
+
+void FPGAViewWidget::showSelectMenu(const QPoint &pos)
+{
+    updateHover(pos.x(), pos.y());
+    if (hoverCandidates_.empty())
+        return;
+    std::vector<PickedElement> cands = hoverCandidates_;
+    QMenu menu(this);
+    QAction *title = menu.addAction(QString("%1 element(s) here").arg(cands.size()));
+    title->setEnabled(false);
+    menu.addSeparator();
+    int shown = std::min(int(cands.size()), int(MENU_MAX_CANDIDATES));
+    for (int i = 0; i < shown; i++) {
+        QAction *action = menu.addAction(QString("Select ") + QString::fromStdString(elementText(cands[i], false)));
+        connect(action, &QAction::triggered, this, [this, cands, i] {
+            emitClicked(cands[i], QApplication::keyboardModifiers().testFlag(Qt::ControlModifier));
+        });
+        connect(action, &QAction::hovered, this, [this, cands, i] {
+            if (hoverCandidates_ == cands) {
+                hoverIndex_ = i;
+                applyHover(true);
+            }
+        });
+    }
+    if (int(cands.size()) > shown) {
+        QAction *more = menu.addAction(QString("... %1 more").arg(cands.size() - shown));
+        more->setEnabled(false);
+    }
+    menu.exec(mapToGlobal(pos));
 }
 
 void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
@@ -1001,10 +1213,18 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
         Q_EMIT picked(PICK_PRESS, world.x(), world.y());
         return;
     }
+    if (event->button() == Qt::RightButton) {
+        rightPressPos_ = event->pos();
+        rightDragged_ = false;
+    }
     if (btn_left && !shift) {
+        QPoint pos = event->pos();
         auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
-        auto closestOr = pickElement(world.x(), world.y());
-        if (!closestOr) {
+        std::vector<PickedElement> cands = pickCandidates(world.x(), world.y());
+        if (cands.empty()) {
+            hoverCandidates_.clear();
+            clickCycleArmed_ = false;
+            applyHover();
             // If we clicked on empty space and aren't holding down ctrl,
             // clear the selection.
             if (!ctrl) {
@@ -1016,14 +1236,17 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
             return;
         }
 
-        auto closest = closestOr.get();
-        if (closest.type == ElementType::BEL) {
-            clickedBel(closest.bel, ctrl);
-        } else if (closest.type == ElementType::WIRE) {
-            clickedWire(closest.wire, ctrl);
-        } else if (closest.type == ElementType::PIP) {
-            clickedPip(closest.pip, ctrl);
+        if (cands != hoverCandidates_) {
+            hoverCandidates_ = std::move(cands);
+            hoverIndex_ = 0;
+        } else if (clickCycleArmed_ && (pos - lastClickPos_).manhattanLength() <= 3) {
+            // Clicked again at the same spot: the next element there
+            hoverIndex_ = (hoverIndex_ + 1) % int(hoverCandidates_.size());
         }
+        clickCycleArmed_ = true;
+        lastClickPos_ = pos;
+        applyHover(true);
+        emitClicked(hoverCandidates_.at(hoverIndex_), ctrl);
     }
 }
 
@@ -1046,6 +1269,8 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         auto world = mouseToWorldDimensions(dx, dy);
         viewMove_.translate(world.x(), -world.y());
 
+        if ((event->pos() - rightPressPos_).manhattanLength() > 3)
+            rightDragged_ = true;
         update();
         return;
     }
@@ -1057,16 +1282,28 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    hoverAt(EVENT_POS(event).x(), EVENT_POS(event).y());
-    update();
+    if ((event->pos() - lastClickPos_).manhattanLength() > 3)
+        clickCycleArmed_ = false;
+    updateHover(EVENT_POS(event).x(), EVENT_POS(event).y());
 }
 
 void FPGAViewWidget::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (!picking_ || event->button() != Qt::LeftButton)
+    if (picking_) {
+        if (event->button() == Qt::LeftButton) {
+            auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+            Q_EMIT picked(PICK_RELEASE, world.x(), world.y());
+        }
         return;
-    auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
-    Q_EMIT picked(PICK_RELEASE, world.x(), world.y());
+    }
+    // A right click without dragging (dragging pans the view): choose among the elements here
+    if (event->button() == Qt::RightButton && !rightDragged_ &&
+        (event->pos() - rightPressPos_).manhattanLength() <= 3) {
+        ImGuiIO &io = ImGui::GetIO();
+        if (io.WantCaptureMouse)
+            return;
+        showSelectMenu(event->pos());
+    }
 }
 
 void FPGAViewWidget::keyPressEvent(QKeyEvent *event)
@@ -1133,51 +1370,23 @@ void FPGAViewWidget::drawOverlays()
     }
 }
 
-// The element under the mouse at (x, y), with its hint, as hovered
-void FPGAViewWidget::hoverAt(int x, int y)
+bool FPGAViewWidget::event(QEvent *event)
 {
-    auto world = mouseToWorldCoordinates(x, y);
-    auto closestOr = pickElement(world.x(), world.y());
-    // No elements? No decal.
-    if (!closestOr) {
-        QMutexLocker locked(&rendererArgsLock_);
-        rendererArgs_->hoveredDecal = DecalXY();
-        rendererArgs_->changed = true;
-        rendererArgs_->hintText = "";
-        pokeRenderer();
-        return;
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if ((ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab) &&
+            !(ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+            // Do not move the focus away: cycle the hovered element
+            int n = int(hoverCandidates_.size());
+            if (n > 1) {
+                bool back = ke->key() == Qt::Key_Backtab || (ke->modifiers() & Qt::ShiftModifier);
+                hoverIndex_ = (hoverIndex_ + (back ? n - 1 : 1)) % n;
+                applyHover(true);
+            }
+            return true;
+        }
     }
-
-    auto closest = closestOr.get();
-
-    {
-        QMutexLocker locked(&rendererArgsLock_);
-        rendererArgs_->hoveredDecal = closest.decal(ctx_);
-        rendererArgs_->changed = true;
-        rendererArgs_->x = x;
-        rendererArgs_->y = y;
-        if (closest.type == ElementType::BEL) {
-            rendererArgs_->hintText = std::string("BEL\n") + ctx_->getBelName(closest.bel).str(ctx_);
-            CellInfo *cell = ctx_->getBoundBelCell(closest.bel);
-            if (cell != nullptr)
-                rendererArgs_->hintText += std::string("\nCELL\n") + ctx_->nameOf(cell);
-        } else if (closest.type == ElementType::WIRE) {
-            rendererArgs_->hintText = std::string("WIRE\n") + ctx_->getWireName(closest.wire).str(ctx_);
-            NetInfo *net = ctx_->getBoundWireNet(closest.wire);
-            if (net != nullptr)
-                rendererArgs_->hintText += std::string("\nNET\n") + ctx_->nameOf(net);
-        } else if (closest.type == ElementType::PIP) {
-            rendererArgs_->hintText = std::string("PIP\n") + ctx_->getPipName(closest.pip).str(ctx_);
-            NetInfo *net = ctx_->getBoundPipNet(closest.pip);
-            if (net != nullptr)
-                rendererArgs_->hintText += std::string("\nNET\n") + ctx_->nameOf(net);
-        } else if (closest.type == ElementType::GROUP) {
-            rendererArgs_->hintText = std::string("GROUP\n") + ctx_->getGroupName(closest.group).str(ctx_);
-        } else
-            rendererArgs_->hintText = "";
-
-        pokeRenderer();
-    }
+    return QOpenGLWidget::event(event);
 }
 
 // Invert the projection matrix to calculate screen/mouse to world/grid
@@ -1230,7 +1439,7 @@ void FPGAViewWidget::wheelEvent(QWheelEvent *event)
     if (!degree.isNull()) {
         zoom(degree.y());
         // what is under the mouse now
-        hoverAt(event->position().x(), event->position().y());
+        updateHover(event->position().x(), event->position().y());
     }
 }
 
@@ -1316,6 +1525,8 @@ void FPGAViewWidget::zoomOutbound()
 
 void FPGAViewWidget::leaveEvent(QEvent *event)
 {
+    hoverCandidates_.clear();
+    clickCycleArmed_ = false;
     QMutexLocker locked(&rendererArgsLock_);
     rendererArgs_->hoveredDecal = DecalXY();
     rendererArgs_->changed = true;

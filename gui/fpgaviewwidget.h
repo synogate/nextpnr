@@ -20,6 +20,7 @@
 #ifndef MAPGLWIDGET_H
 #define MAPGLWIDGET_H
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QMutex>
 #include <QOpenGLBuffer>
@@ -104,11 +105,13 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void resizeGL(int width, int height) Q_DECL_OVERRIDE;
     void mousePressEvent(QMouseEvent *event) Q_DECL_OVERRIDE;
     void mouseMoveEvent(QMouseEvent *event) Q_DECL_OVERRIDE;
+    void mouseReleaseEvent(QMouseEvent *event) Q_DECL_OVERRIDE;
+    // Tab / Shift+Tab cycle through the elements under the cursor
+    bool event(QEvent *event) Q_DECL_OVERRIDE;
     void wheelEvent(QWheelEvent *event) Q_DECL_OVERRIDE;
     QSize minimumSizeHint() const override;
     QSize sizeHint() const override;
     void leaveEvent(QEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) Q_DECL_OVERRIDE;
     void keyPressEvent(QKeyEvent *event) Q_DECL_OVERRIDE;
 
   public:
@@ -215,7 +218,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
             return e;
         }
 
-        PickedElement(const PickedElement &other) : type(other.type)
+        PickedElement(const PickedElement &other) : type(other.type), x(other.x), y(other.y)
         {
             switch (type) {
             case ElementType::BEL:
@@ -258,10 +261,60 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
             }
             return decal;
         }
+        bool operator==(const PickedElement &other) const
+        {
+            if (type != other.type)
+                return false;
+            switch (type) {
+            case ElementType::BEL:
+                return bel == other.bel;
+            case ElementType::WIRE:
+                return wire == other.wire;
+            case ElementType::PIP:
+                return pip == other.pip;
+            case ElementType::GROUP:
+                return group == other.group;
+            default:
+                return false;
+            }
+        }
+        bool operator!=(const PickedElement &other) const { return !(*this == other); }
+
         // Distance to the elements visible at `scale` (pixels per coordinate unit), or -1
         float distance(Context *ctx, float wx, float wy, float scale) const;
+        // The distance in coordinate units from the point to the closest graphics visible at
+        // `scale` (0 inside a box), and the size of those graphics (area of their bounding box,
+        // thin dimensions counted as `thin`). False if nothing is visible.
+        bool hitMetrics(Context *ctx, float wx, float wy, float scale, float thin, float &dist,
+                        float &size) const;
     };
     using PickQuadTree = QuadTree<float, PickedElement>;
+
+    // The elements under the cursor, the one hovered (and picked by a click) among them
+    std::vector<PickedElement> hoverCandidates_;
+    int hoverIndex_ = 0;
+    // Repeated clicks at (nearly) the same spot cycle through the candidates
+    QPoint lastClickPos_;
+    bool clickCycleArmed_ = false;
+    // Right button: a click without dragging opens the "Select ..." menu
+    QPoint rightPressPos_;
+    bool rightDragged_ = false;
+    // Since when (in ms of clock_) the hovered element is hovered, for the tooltip delay; under
+    // rendererArgsLock_
+    QElapsedTimer clock_;
+    qint64 hoverSince_ = 0;
+    static constexpr int TOOLTIP_DELAY_MS = 300;
+    static constexpr int MENU_MAX_CANDIDATES = 20;
+
+    std::vector<PickedElement> pickCandidates(float worldx, float worldy);
+    // Update hoverCandidates_ for the cursor at (x, y); keep hoverIndex_ if the candidates are the same
+    void updateHover(int x, int y);
+    // Make hoverCandidates_[hoverIndex_] the hovered element (decal, tooltip); the tooltip at once
+    // if immediate (cycling), else after a delay when the hovered element changed
+    void applyHover(bool immediate = false);
+    std::string elementText(const PickedElement &e, bool multiline);
+    void emitClicked(const PickedElement &e, bool add);
+    void showSelectMenu(const QPoint &pos);
 
     Context *ctx_;
     EditStack *editStack_ = nullptr;
@@ -356,7 +409,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         // Hint text
         std::string hintText;
         // cursor pos
-        int x, y;
+        int x = 0, y = 0;
     };
     std::unique_ptr<RendererArgs> rendererArgs_;
     QMutex rendererArgsLock_;
@@ -413,8 +466,6 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void renderView(ArchLayer &layer, const std::vector<std::pair<PickQuadTree::BoundingBox, DecalXY>> &decals,
                     const PickQuadTree::BoundingBox &rect, int maxLevel);
     void populateQuadTree(RendererData *data, const DecalXY &decal, const PickedElement &element);
-    boost::optional<PickedElement> pickElement(float worldx, float worldy);
-    void hoverAt(int x, int y);
     QVector4D mouseToWorldCoordinates(int x, int y);
     QVector4D mouseToWorldDimensions(float x, float y);
     QMatrix4x4 getProjection(void);

@@ -29,6 +29,7 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
+#include <QLabel>
 #include <QProgressBar>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -161,6 +162,7 @@ class BaseMainWindow : public QMainWindow
     QStatusBar *statusBar;
     QToolBar *mainActionBar;
     QProgressBar *progressBar;
+    QLabel *selectionLabel;
 
     QAction *actionNew;
     QAction *actionLoadJSON;
