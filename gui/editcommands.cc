@@ -398,6 +398,151 @@ std::string SetNetStrengthCmd::describe(Context *ctx) const
 }
 
 // ---------------------------------------------------------------------------
+// Placement helpers
+
+std::vector<CellInfo *> placementGroup(Context *ctx, CellInfo *ci)
+{
+    if (ci->cluster == ClusterId())
+        return {ci};
+    CellInfo *root = ctx->getClusterRootCell(ci->cluster);
+    std::vector<CellInfo *> group{root};
+    for (auto &c : ctx->cells)
+        if (c.second->cluster == ci->cluster && c.second.get() != root)
+            group.push_back(c.second.get());
+    return group;
+}
+
+std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
+{
+    Context *ctx = b.getContext();
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    if (bel == BelId())
+        return "invalid bel";
+    bool clustered = ci->cluster != ClusterId();
+    if (clustered && ctx->getClusterRootCell(ci->cluster) != ci)
+        return "cell " + q(cell.str(ctx)) + " is part of the cluster of " +
+               q(ctx->getClusterRootCell(ci->cluster)->name.str(ctx)) + ": place the cluster root instead";
+
+    // Where each cell goes
+    std::vector<std::pair<CellInfo *, BelId>> targets;
+    if (clustered) {
+        if (!ctx->isValidBelForCellType(ci->type, bel))
+            return "cell type " + q(ci->type.str(ctx)) + " cannot be placed on bel " + q(ctx->nameOfBel(bel)) +
+                   " of type " + q(ctx->getBelType(bel).str(ctx));
+        if (!ctx->getClusterPlacement(ci->cluster, bel, targets) || targets.empty())
+            return "the cluster of " + q(cell.str(ctx)) + " does not fit with its root at " + q(ctx->nameOfBel(bel));
+    } else {
+        targets.emplace_back(ci, bel);
+    }
+    BelId root_bel = bel;
+    for (auto &t : targets)
+        if (t.first == ci)
+            root_bel = t.second;
+    if (ci->bel == root_bel)
+        return q(cell.str(ctx)) + " is already placed at " + q(ctx->nameOfBel(root_bel));
+
+    CellInfo *other = nullptr;
+    for (auto &t : targets) {
+        CellInfo *c = t.first;
+        BelId tb = t.second;
+        if (!ctx->isValidBelForCellType(c->type, tb))
+            return "cell type " + q(c->type.str(ctx)) + " cannot be placed on bel " + q(ctx->nameOfBel(tb)) +
+                   " of type " + q(ctx->getBelType(tb).str(ctx));
+        if (!c->testRegion(tb))
+            return q(c->name.str(ctx)) + " is constrained to region " + q(c->region->name.str(ctx)) + ", " +
+                   q(ctx->nameOfBel(tb)) + " is outside it";
+        CellInfo *bound = ctx->getBoundBelCell(tb);
+        if (bound == nullptr || bound == c || (clustered && bound->cluster == ci->cluster))
+            continue;
+        if (clustered)
+            return "bel " + q(ctx->nameOfBel(tb)) + " (for " + q(c->name.str(ctx)) + ") is occupied by " +
+                   q(bound->name.str(ctx)) + ": a cluster can only be moved to free bels";
+        if (bound->cluster != ClusterId())
+            return "bel " + q(ctx->nameOfBel(tb)) + " is occupied by " + q(bound->name.str(ctx)) +
+                   ", which is part of a cluster: swapping with clusters is not supported";
+        if (isCellLocked(bound))
+            return "bel " + q(ctx->nameOfBel(tb)) + " is occupied by locked cell " + q(bound->name.str(ctx)) + " [" +
+                   strengthName(bound->belStrength) + "]: unlock it first";
+        other = bound;
+    }
+    BelId old_bel = ci->bel;
+    bool swap_back = other != nullptr && old_bel != BelId();
+    if (swap_back) {
+        if (!ctx->isValidBelForCellType(other->type, old_bel))
+            return "cannot swap: " + q(other->name.str(ctx)) + " of type " + q(other->type.str(ctx)) +
+                   " cannot be placed at " + q(ctx->nameOfBel(old_bel));
+        if (!other->testRegion(old_bel))
+            return "cannot swap: " + q(other->name.str(ctx)) + " is constrained to region " +
+                   q(other->region->name.str(ctx)) + ", " + q(ctx->nameOfBel(old_bel)) + " is outside it";
+    }
+
+    std::string err;
+    IdString other_name;
+    PlaceStrength other_strength = STRENGTH_NONE;
+    if (other != nullptr) {
+        other_name = other->name;
+        other_strength = other->belStrength;
+        err = b.add(std::make_unique<UnbindBelCmd>(other->bel));
+        if (!err.empty())
+            return err;
+    }
+    std::vector<PlaceStrength> strengths;
+    for (auto &t : targets) {
+        CellInfo *c = t.first;
+        strengths.push_back(c->bel != BelId() && isCellLocked(c) ? c->belStrength : STRENGTH_MANUAL);
+        if (c->bel != BelId()) {
+            err = b.add(std::make_unique<UnbindBelCmd>(c->bel));
+            if (!err.empty())
+                return err;
+        }
+    }
+    for (size_t i = 0; i < targets.size(); i++) {
+        err = b.add(std::make_unique<BindBelCmd>(targets[i].first->name, targets[i].second, strengths[i], false));
+        if (!err.empty())
+            return err;
+    }
+    if (swap_back) {
+        err = b.add(std::make_unique<BindBelCmd>(other_name, old_bel, other_strength, false));
+        if (!err.empty())
+            return err;
+    }
+    // Location validity once everything is in place
+    for (auto &t : targets)
+        if (!ctx->isBelLocationValid(t.second))
+            return "placing " + q(t.first->name.str(ctx)) + " at " + q(ctx->nameOfBel(t.second)) +
+                   " violates location constraints";
+    if (swap_back && !ctx->isBelLocationValid(old_bel))
+        return "placing " + q(other_name.str(ctx)) + " at " + q(ctx->nameOfBel(old_bel)) +
+               " violates location constraints";
+    return {};
+}
+
+QString describePlaceCell(Context *ctx, IdString cell, BelId bel)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr || bel == BelId())
+        return "Place " + QString::fromStdString(cell.str(ctx));
+    std::string name = cell.str(ctx);
+    if (ci->cluster != ClusterId())
+        name = "cluster " + name;
+    CellInfo *bound = ctx->getBoundBelCell(bel);
+    std::string text;
+    if (ci->cluster == ClusterId() && bound != nullptr && bound != ci) {
+        if (ci->bel != BelId())
+            text = "Swap " + name + " with " + bound->name.str(ctx);
+        else
+            text = "Place " + name + " at " + ctx->nameOfBel(bel) + " (unplacing " + bound->name.str(ctx) + ")";
+    } else if (ci->bel != BelId()) {
+        text = "Move " + name + " to " + ctx->nameOfBel(bel);
+    } else {
+        text = "Place " + name + " at " + ctx->nameOfBel(bel);
+    }
+    return QString::fromStdString(text);
+}
+
+// ---------------------------------------------------------------------------
 // EditBatch
 
 std::string EditBatch::add(std::unique_ptr<EditCommand> cmd)
@@ -602,6 +747,40 @@ std::string EditStack::execute(std::unique_ptr<EditCommand> cmd, const QString &
         t = QString::fromStdString(cmd->describe(ctx));
     // fn is called exactly once by run(), so moving out of the captured reference is fine.
     return run(t, [&](EditBatch &b) { return b.add(std::move(cmd)); });
+}
+
+std::string EditStack::dryRun(const std::function<std::string(EditBatch &)> &fn)
+{
+    if (ctx == nullptr)
+        return "No design loaded";
+    if (task_busy)
+        return "Cannot edit while a pack/place/route task is running";
+    EditBatch batch(ctx);
+    ctx->lock();
+    // Binding marks the bels for a redraw: a trial must not make the view redraw everything
+    bool all_reload = ctx->allUiReload, frame_reload = ctx->frameUiReload;
+    pool<BelId> bel_reload = ctx->belUiReload;
+    pool<WireId> wire_reload = ctx->wireUiReload;
+    pool<PipId> pip_reload = ctx->pipUiReload;
+    std::string err = runGuarded([&]() { return fn(batch); });
+    std::string rerr = runGuarded([&]() -> std::string {
+        for (size_t i = batch.cmds.size(); i-- > 0;)
+            batch.cmds[i]->revert(ctx);
+        return {};
+    });
+    batch.cmds.clear();
+    if (rerr.empty()) {
+        ctx->allUiReload = all_reload;
+        ctx->frameUiReload = frame_reload;
+        ctx->belUiReload = std::move(bel_reload);
+        ctx->wireUiReload = std::move(wire_reload);
+        ctx->pipUiReload = std::move(pip_reload);
+    } else {
+        err += "; rollback failed: " + rerr;
+        ctx->refreshUi();
+    }
+    ctx->unlock();
+    return err;
 }
 
 void EditStack::undoRedo(bool is_undo)

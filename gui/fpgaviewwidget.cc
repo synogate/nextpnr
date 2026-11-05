@@ -35,6 +35,7 @@
 #include "QtImGui.h"
 #include "imgui.h"
 
+#include "editcommands.h"
 #include "elementinfo.h"
 #include "fpgaviewwidget.h"
 #include "log.h"
@@ -71,6 +72,10 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     colors_.highlight[5] = QColor("#fa8072");
     colors_.highlight[6] = QColor("#ff69b4");
     colors_.highlight[7] = QColor("#da70d6");
+    colors_.overlay[OVERLAY_FREE] = QColor("#30d030");
+    colors_.overlay[OVERLAY_SWAP] = QColor("#ff9900");
+    colors_.overlay[OVERLAY_BLOCKED] = QColor("#c03030");
+    colors_.overlay[OVERLAY_HOVER_BAD] = QColor("#ff2020");
 
     rendererArgs_->changed = false;
     rendererArgs_->gridChanged = false;
@@ -95,8 +100,32 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
 
 FPGAViewWidget::~FPGAViewWidget() {}
 
+void FPGAViewWidget::setEditStack(EditStack *stack)
+{
+    editStack_ = stack;
+    if (stack == nullptr)
+        return;
+    connect(stack, &EditStack::designChanged, this, [this] {
+        if (armedCell_ == IdString())
+            return;
+        if (ctx_ == nullptr || !ctx_->cells.count(armedCell_)) {
+            disarmPlacement();
+            return;
+        }
+        updateOverlay();
+    });
+    connect(stack, &EditStack::stateChanged, this, [this] {
+        if (armedCell_ != IdString() && !editStack_->canEdit())
+            disarmPlacement();
+    });
+}
+
 void FPGAViewWidget::newContext(Context *ctx)
 {
+    // The old context may be gone already: disarm without touching it
+    hoverCandidates_.clear();
+    ctx_ = nullptr;
+    disarmPlacement();
     ctx_ = ctx;
     {
         QMutexLocker lock(&rendererArgsLock_);
@@ -119,7 +148,7 @@ QSize FPGAViewWidget::sizeHint() const { return QSize(640, 480); }
 
 void FPGAViewWidget::initializeGL()
 {
-    if (!lineShader_.compile(archLineSlot(ARCH_LAYERS, 0, 0))) {
+    if (!lineShader_.compile(overlaySlot(OVERLAY_SLOTS))) {
         log_error("Could not compile shader.\n");
     }
     if (!textShader_.compile(archTextSlot(ARCH_LAYERS, 0, 0))) {
@@ -572,6 +601,10 @@ void FPGAViewWidget::paintGL()
                     textShader_.draw(archTextSlot(layer, range, style), *archColors[style], matrix);
     gl->glDisable(GL_BLEND);
 
+    // Valid-site overlay of the cell armed for placement
+    for (int i = 0; i < OVERLAY_SLOTS; i++)
+        lineShader_.draw(overlaySlot(i), colors_.overlay[i], i == OVERLAY_HOVER_BAD ? thick2Px : thick11Px, matrix);
+
     // Draw highlighted items.
     for (int i = 0; i < 8; i++) {
         GraphicElement::style_t style = (GraphicElement::style_t)(GraphicElement::STYLE_HIGHLIGHTED0 + i);
@@ -716,6 +749,9 @@ void FPGAViewWidget::renderLines(void)
     std::vector<DecalXY> selectedDecals;
     DecalXY hoveredDecal;
     std::vector<DecalXY> highlightedDecals[8];
+    std::vector<DecalXY> overlayDecals[OVERLAY_SETS];
+    DecalXY overlayHoverBad;
+    bool overlayChanged;
     bool highlightedOrSelectedChanged;
     bool gridChanged;
     PickQuadTree::BoundingBox viewRect;
@@ -730,6 +766,13 @@ void FPGAViewWidget::renderLines(void)
 
         for (int i = 0; i < 8; i++)
             highlightedDecals[i] = rendererArgs_->highlightedDecals[i];
+
+        overlayChanged = rendererArgs_->overlayChanged;
+        rendererArgs_->overlayChanged = false;
+        if (overlayChanged)
+            for (int i = 0; i < OVERLAY_SETS; i++)
+                overlayDecals[i] = rendererArgs_->overlayDecals[i];
+        overlayHoverBad = rendererArgs_->overlayHoverBad;
 
         highlightedOrSelectedChanged = rendererArgs_->changed;
         gridChanged = rendererArgs_->gridChanged;
@@ -838,6 +881,9 @@ void FPGAViewWidget::renderLines(void)
                 for (int i = 0; i < 8; i++)
                     data->gfxHighlighted[i] = rendererData_->gfxHighlighted[i];
             }
+            // The overlay is re-rendered below when it changed
+            for (int i = 0; i < OVERLAY_SLOTS; i++)
+                data->gfxOverlay[i] = rendererData_->gfxOverlay[i];
             data->arch.setGeneration(++archGeneration_);
             rendererData_ = std::move(data);
         }
@@ -912,6 +958,24 @@ void FPGAViewWidget::renderLines(void)
                 renderDecal(rendererData_->gfxHighlighted[i], rendererData_->bbGlobal, decal);
             }
             rendererData_->gfxHighlighted[i].last_render++;
+        }
+
+        rendererData_->gfxOverlay[OVERLAY_HOVER_BAD].clear();
+        renderDecal(rendererData_->gfxOverlay[OVERLAY_HOVER_BAD], rendererData_->bbGlobal, overlayHoverBad);
+        rendererData_->gfxOverlay[OVERLAY_HOVER_BAD].last_render++;
+    }
+    if (overlayChanged) {
+        // Rendered outside the data lock: the overlay of a common cell type covers much of the chip
+        LineShaderData gfx[OVERLAY_SETS];
+        PickQuadTree::BoundingBox bb;
+        for (int i = 0; i < OVERLAY_SETS; i++)
+            for (auto &decal : overlayDecals[i])
+                renderDecal(gfx[i], bb, decal);
+        QMutexLocker locker(&rendererDataLock_);
+        for (int i = 0; i < OVERLAY_SETS; i++) {
+            int last = rendererData_->gfxOverlay[i].last_render;
+            rendererData_->gfxOverlay[i] = std::move(gfx[i]);
+            rendererData_->gfxOverlay[i].last_render = last + 1;
         }
     }
 
@@ -1137,6 +1201,7 @@ void FPGAViewWidget::applyHover(bool immediate)
     if (hoverCandidates_.empty()) {
         QMutexLocker locked(&rendererArgsLock_);
         rendererArgs_->hoveredDecal = DecalXY();
+        rendererArgs_->overlayHoverBad = DecalXY();
         rendererArgs_->changed = true;
         rendererArgs_->hintText = "";
         pokeRenderer();
@@ -1149,8 +1214,23 @@ void FPGAViewWidget::applyHover(bool immediate)
         text += "\n[" + std::to_string(hoverIndex_ + 1) + "/" + std::to_string(hoverCandidates_.size()) +
                 " here: Tab / click again for the next, right-click for a list]";
     DecalXY decal = e.decal(ctx_);
+    // Placing the armed cell: what a click on the bel here would do (the bel the click would use)
+    DecalXY hoverBad;
+    if (armedCell_ != IdString()) {
+        BelId bel = candidateBel(hoverCandidates_);
+        if (bel != BelId()) {
+            if (bel != hoverCheckedBel_) {
+                hoverCheckedBel_ = bel;
+                hoverCheck_ = placementHint(bel, hoverCheckFailed_);
+            }
+            text += "\n" + hoverCheck_;
+            if (hoverCheckFailed_)
+                hoverBad = ctx_->getBelDecal(bel);
+        }
+    }
     {
         QMutexLocker locked(&rendererArgsLock_);
+        rendererArgs_->overlayHoverBad = hoverBad;
         if (immediate)
             hoverSince_ = clock_.elapsed() - TOOLTIP_DELAY_MS;
         else if (!(rendererArgs_->hoveredDecal == decal))
@@ -1190,6 +1270,9 @@ void FPGAViewWidget::showSelectMenu(const QPoint &pos)
         QAction *more = menu.addAction(QString("... %1 more").arg(cands.size() - shown));
         more->setEnabled(false);
     }
+    BelId bel = candidateBel(cands);
+    if (bel != BelId())
+        addBelEditActions(menu, bel);
     menu.exec(mapToGlobal(pos));
 }
 
@@ -1221,6 +1304,18 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
         QPoint pos = event->pos();
         auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
         std::vector<PickedElement> cands = pickCandidates(world.x(), world.y());
+        if (armedCell_ != IdString()) {
+            // Placing: the click goes to the bel here, the selection stays as it is
+            BelId bel = candidateBel(cands);
+            if (bel == BelId()) {
+                if (editStack_)
+                    editStack_->notify(QString("Placing %1: click on a bel (Esc to cancel)")
+                                               .arg(armedCell_.c_str(ctx_)));
+                return;
+            }
+            placeArmedAt(bel);
+            return;
+        }
         if (cands.empty()) {
             hoverCandidates_.clear();
             clickCycleArmed_ = false;
@@ -1534,6 +1629,234 @@ void FPGAViewWidget::leaveEvent(QEvent *event)
     pokeRenderer();
 }
 
+BelId FPGAViewWidget::candidateBel(const std::vector<PickedElement> &cands)
+{
+    if (cands == hoverCandidates_ && hoverIndex_ >= 0 && hoverIndex_ < int(cands.size()) &&
+        cands.at(hoverIndex_).type == ElementType::BEL)
+        return cands.at(hoverIndex_).bel;
+    for (auto &c : cands)
+        if (c.type == ElementType::BEL)
+            return c.bel;
+    return BelId();
+}
+
+void FPGAViewWidget::armCell(IdString cell)
+{
+    if (cell == IdString()) {
+        disarmPlacement();
+        return;
+    }
+    QString why;
+    if (editStack_ == nullptr || ctx_ == nullptr || !editStack_->canEdit(&why)) {
+        if (editStack_)
+            editStack_->notify("Cannot place: " + why);
+        return;
+    }
+    auto fnd = ctx_->cells.find(cell);
+    if (fnd == ctx_->cells.end())
+        return;
+    CellInfo *ci = fnd->second.get();
+    if (ci->cluster != ClusterId())
+        ci = ctx_->getClusterRootCell(ci->cluster);
+    if (ci->name == armedCell_)
+        return;
+    armedCell_ = ci->name;
+    size_t group = 1;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        armedBels_.clear();
+        for (BelId bel : ctx_->getBels())
+            if (ctx_->isValidBelForCellType(ci->type, bel) && ci->testRegion(bel))
+                armedBels_.push_back(bel);
+        if (ci->cluster != ClusterId())
+            group = placementGroup(ctx_, ci).size();
+    }
+    hoverCheckedBel_ = BelId();
+    QString what = QString::fromStdString(ci->name.str(ctx_));
+    if (group > 1)
+        what = QString("cluster %1 (%2 cells)").arg(what).arg(group);
+    Q_EMIT placementStatus(QString("%1 %2 [%3]: click a bel (green: free, orange: swap, red: blocked) - Esc "
+                                   "cancels")
+                                   .arg(ci->bel != BelId() ? "Moving" : "Placing")
+                                   .arg(what)
+                                   .arg(ci->type.c_str(ctx_)));
+    updateOverlay();
+    applyHover();
+}
+
+void FPGAViewWidget::disarmPlacement()
+{
+    if (armedCell_ == IdString())
+        return;
+    armedCell_ = IdString();
+    armedBels_.clear();
+    hoverCheckedBel_ = BelId();
+    Q_EMIT placementStatus(QString());
+    updateOverlay();
+    applyHover();
+}
+
+void FPGAViewWidget::updateOverlay()
+{
+    std::vector<DecalXY> sets[OVERLAY_SETS];
+    hoverCheckedBel_ = BelId();
+    if (armedCell_ != IdString() && ctx_ != nullptr) {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        auto fnd = ctx_->cells.find(armedCell_);
+        if (fnd != ctx_->cells.end()) {
+            CellInfo *ci = fnd->second.get();
+            bool clustered = ci->cluster != ClusterId();
+            for (BelId bel : armedBels_) {
+                if (bel == ci->bel)
+                    continue; // shown by the selection, if selected
+                CellInfo *bound = ctx_->getBoundBelCell(bel);
+                int set;
+                if (bound != nullptr) {
+                    if (clustered && bound->cluster == ci->cluster)
+                        continue;
+                    set = (clustered || bound->cluster != ClusterId() || isCellLocked(bound)) ? OVERLAY_BLOCKED
+                                                                                              : OVERLAY_SWAP;
+                } else {
+                    set = ctx_->checkBelAvail(bel) ? OVERLAY_FREE : OVERLAY_BLOCKED;
+                }
+                sets[set].push_back(ctx_->getBelDecal(bel));
+            }
+        }
+    }
+    {
+        QMutexLocker locker(&rendererArgsLock_);
+        for (int i = 0; i < OVERLAY_SETS; i++)
+            rendererArgs_->overlayDecals[i] = std::move(sets[i]);
+        rendererArgs_->overlayChanged = true;
+        rendererArgs_->overlayHoverBad = DecalXY();
+        rendererArgs_->changed = true;
+    }
+    pokeRenderer();
+}
+
+std::string FPGAViewWidget::placementHint(BelId bel, bool &failed)
+{
+    failed = false;
+    if (editStack_ == nullptr || ctx_ == nullptr || armedCell_ == IdString())
+        return "";
+    auto fnd = ctx_->cells.find(armedCell_);
+    if (fnd == ctx_->cells.end())
+        return "";
+    CellInfo *ci = fnd->second.get();
+    if (!ctx_->isValidBelForCellType(ci->type, bel))
+        return "(not a site for " + ci->type.str(ctx_) + ")";
+    if (ci->bel == bel)
+        return "(" + ci->name.str(ctx_) + " is here)";
+    IdString cell = armedCell_;
+    std::string err = editStack_->dryRun([&](EditBatch &b) { return addPlaceCell(b, cell, bel); });
+    if (!err.empty()) {
+        failed = true;
+        return "Cannot place here: " + err;
+    }
+    return "Click: " + describePlaceCell(ctx_, cell, bel).toStdString();
+}
+
+void FPGAViewWidget::placeArmedAt(BelId bel)
+{
+    if (editStack_ == nullptr || ctx_ == nullptr || armedCell_ == IdString())
+        return;
+    IdString cell = armedCell_;
+    auto fnd = ctx_->cells.find(cell);
+    if (fnd == ctx_->cells.end()) {
+        disarmPlacement();
+        return;
+    }
+    if (fnd->second->bel == bel) {
+        editStack_->notify(QString("%1 is already at %2").arg(cell.c_str(ctx_)).arg(ctx_->nameOfBel(bel)));
+        disarmPlacement();
+        return;
+    }
+    QString text = describePlaceCell(ctx_, cell, bel);
+    std::string err = editStack_->run(text, [&](EditBatch &b) { return addPlaceCell(b, cell, bel); });
+    if (!err.empty())
+        return; // reason shown in the status bar; stay armed
+    disarmPlacement();
+    // Select the cell where it is now
+    fnd = ctx_->cells.find(cell);
+    if (fnd != ctx_->cells.end() && fnd->second->bel != BelId())
+        emitClicked(PickedElement::fromBel(fnd->second->bel, 0, 0), false);
+}
+
+void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)
+{
+    if (editStack_ == nullptr || ctx_ == nullptr || editStack_->busy())
+        return;
+    QString why;
+    bool can_edit = editStack_->canEdit(&why);
+    menu.setToolTipsVisible(true);
+    auto editAction = [&](const QString &text) {
+        QAction *action = menu.addAction(text);
+        action->setEnabled(can_edit);
+        if (!can_edit)
+            action->setToolTip(why);
+        return action;
+    };
+    menu.addSeparator();
+    QAction *title = menu.addAction(QString("Bel %1").arg(ctx_->nameOfBel(bel)));
+    title->setEnabled(false);
+    if (armedCell_ != IdString()) {
+        QAction *place = editAction(describePlaceCell(ctx_, armedCell_, bel) + "\tclick");
+        connect(place, &QAction::triggered, this, [this, bel] { placeArmedAt(bel); });
+    }
+    CellInfo *bound = ctx_->getBoundBelCell(bel);
+    if (bound == nullptr)
+        return;
+    IdString name = bound->name;
+    std::vector<IdString> group;
+    for (CellInfo *c : placementGroup(ctx_, bound))
+        group.push_back(c->name);
+    QString what = QString::fromStdString(name.str(ctx_));
+    if (group.size() > 1)
+        what = QString("cluster %1 (%2 cells)").arg(group.front().c_str(ctx_)).arg(group.size());
+
+    QAction *move = editAction(QString("Move %1...\tP").arg(what));
+    connect(move, &QAction::triggered, this, [this, name] { armCell(name); });
+
+    QAction *unplace = editAction(QString("Unplace %1").arg(what));
+    connect(unplace, &QAction::triggered, this, [this, group, what] {
+        editStack_->run("Unplace " + what, [&](EditBatch &b) -> std::string {
+            for (IdString c : group) {
+                auto fnd = ctx_->cells.find(c);
+                if (fnd == ctx_->cells.end() || fnd->second->bel == BelId())
+                    continue;
+                std::string err = b.add(std::make_unique<UnbindBelCmd>(fnd->second->bel));
+                if (!err.empty())
+                    return err;
+            }
+            return {};
+        });
+    });
+
+    bool locked = isCellLocked(bound);
+    QAction *lock = editAction(QString("%1 %2 [%3]")
+                                       .arg(locked ? "Unlock" : "Lock")
+                                       .arg(what)
+                                       .arg(ElementInfo::strengthName(bound->belStrength)));
+    lock->setStatusTip(locked ? "Set the placement strength to STRONG: placers and swaps may move it"
+                              : "Set the placement strength to USER: kept by the placers, never swapped away");
+    connect(lock, &QAction::triggered, this, [this, group, what, locked] {
+        PlaceStrength strength = locked ? STRENGTH_MANUAL : STRENGTH_MANUAL_LOCKED;
+        editStack_->run((locked ? "Unlock " : "Lock ") + what, [&](EditBatch &b) -> std::string {
+            for (IdString c : group) {
+                std::string err = b.add(std::make_unique<SetCellStrengthCmd>(c, strength));
+                if (!err.empty())
+                    return err;
+            }
+            return {};
+        });
+    });
+
+    QAction *show = menu.addAction(QString("Show %1 in tree").arg(name.c_str(ctx_)));
+    connect(show, &QAction::triggered, this, [this, name] { Q_EMIT showCellRequested(name); });
+}
+
 void FPGAViewWidget::update_vbos()
 {
     lineShader_.update_vbos(GraphicElement::STYLE_GRID, rendererData_->gfxGrid);
@@ -1552,6 +1875,9 @@ void FPGAViewWidget::update_vbos()
         GraphicElement::style_t style = (GraphicElement::style_t)(GraphicElement::STYLE_HIGHLIGHTED0 + i);
         lineShader_.update_vbos(style, rendererData_->gfxHighlighted[i]);
     }
+
+    for (int i = 0; i < OVERLAY_SLOTS; i++)
+        lineShader_.update_vbos(overlaySlot(i), rendererData_->gfxOverlay[i]);
 
     lineShader_.update_vbos(GraphicElement::STYLE_SELECTED, rendererData_->gfxSelected);
     lineShader_.update_vbos(GraphicElement::STYLE_HOVER, rendererData_->gfxHovered);

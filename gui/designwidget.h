@@ -105,6 +105,8 @@ class DesignWidget : public QWidget
     void zoomSelected();
     // A one-line description of the current selection (for the status bar)
     void selectionInfo(QString text);
+    // Arm a cell for placement by click in the view (empty: disarm)
+    void armCellRequested(IdString cell);
 
   private Q_SLOTS:
     void prepareMenuProperty(const QPoint &pos);
@@ -123,6 +125,10 @@ class DesignWidget : public QWidget
     void onClickedBel(BelId bel, bool keep);
     void onClickedWire(WireId wire, bool keep);
     void onClickedPip(PipId pip, bool keep);
+    // Select a cell in the Cells tree (without arming it for placement)
+    void showCell(IdString cell);
+    // Arm the selected cell, or the cell on the selected bel, for placement by click
+    void armSelected();
 
   private:
     // How many of a large net's users and wires the properties list, and how long an attribute's
@@ -151,6 +157,8 @@ class DesignWidget : public QWidget
     std::vector<std::pair<int, QModelIndex>> history;
     int history_index;
     bool history_ignore;
+    // Selection changes that must not arm a cell for placement (refresh, "show in tree")
+    bool arm_ignore = false;
 
     QAction *actionFirst;
     QAction *actionPrev;

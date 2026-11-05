@@ -160,6 +160,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(fpgaView, &FPGAViewWidget::clickedBel, designview, &DesignWidget::onClickedBel);
     connect(fpgaView, &FPGAViewWidget::clickedWire, designview, &DesignWidget::onClickedWire);
     connect(fpgaView, &FPGAViewWidget::clickedPip, designview, &DesignWidget::onClickedPip);
+    connect(fpgaView, &FPGAViewWidget::showCellRequested, designview, &DesignWidget::showCell);
+    connect(designview, &DesignWidget::armCellRequested, fpgaView, &FPGAViewWidget::armCell);
 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
@@ -376,6 +378,17 @@ void BaseMainWindow::createMenusAndBars()
     actionEditMode->setChecked(false);
     connect(actionEditMode, &QAction::toggled, editStack, &EditStack::setEditMode);
 
+    actionPlaceSelected = new QAction("Place/move selected cell", this);
+    actionPlaceSelected->setShortcut(QKeySequence(Qt::Key_P));
+    actionPlaceSelected->setStatusTip("Arm the selected cell (or the cell on the selected bel): the next click on a "
+                                      "bel in the device view places it there");
+    connect(actionPlaceSelected, &QAction::triggered, designview, &DesignWidget::armSelected);
+
+    actionCancelPlacement = new QAction("Cancel placement", this);
+    actionCancelPlacement->setShortcut(QKeySequence(Qt::Key_Escape));
+    actionCancelPlacement->setEnabled(false);
+    connect(actionCancelPlacement, &QAction::triggered, fpgaView, &FPGAViewWidget::disarmPlacement);
+
     // set initial state
     fpgaView->enableDisableDecals(actionDisplayBel->isChecked(), actionDisplayWire->isChecked(),
                                   actionDisplayPip->isChecked(), actionDisplayGroups->isChecked());
@@ -405,6 +418,9 @@ void BaseMainWindow::createMenusAndBars()
     menuEdit->addAction(actionRedo);
     menuEdit->addSeparator();
     menuEdit->addAction(actionEditMode);
+    menuEdit->addSeparator();
+    menuEdit->addAction(actionPlaceSelected);
+    menuEdit->addAction(actionCancelPlacement);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);
@@ -468,6 +484,16 @@ void BaseMainWindow::createMenusAndBars()
     selectionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     selectionLabel->setMinimumWidth(1);
     selectionLabel->setMaximumWidth(800);
+    // While a cell is armed for placement by click
+    placementLabel = new QLabel(statusBar);
+    placementLabel->setStyleSheet("QLabel { color: black; background-color: #ffb040; padding: 0 4px; }");
+    placementLabel->setVisible(false);
+    statusBar->addPermanentWidget(placementLabel);
+    connect(fpgaView, &FPGAViewWidget::placementStatus, this, [this](const QString &text) {
+        placementLabel->setText(text);
+        placementLabel->setVisible(!text.isEmpty());
+        actionCancelPlacement->setEnabled(!text.isEmpty());
+    });
     statusBar->addPermanentWidget(selectionLabel);
     connect(designview, &DesignWidget::selectionInfo, this, [this](const QString &text) {
         selectionLabel->setText(text);

@@ -163,6 +163,8 @@ class BaseMainWindow : public QMainWindow
     QToolBar *mainActionBar;
     QProgressBar *progressBar;
     QLabel *selectionLabel;
+    // Shown while a cell is armed for placement by click
+    QLabel *placementLabel;
 
     QAction *actionNew;
     QAction *actionLoadJSON;
@@ -192,6 +194,8 @@ class BaseMainWindow : public QMainWindow
     QAction *actionEditMode;
     QAction *actionUndo;
     QAction *actionRedo;
+    QAction *actionPlaceSelected;
+    QAction *actionCancelPlacement;
 };
 
 NEXTPNR_NAMESPACE_END

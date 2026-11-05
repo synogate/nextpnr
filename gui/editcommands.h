@@ -237,6 +237,29 @@ class SetNetStrengthCmd : public EditCommand
     std::vector<std::pair<WireId, PlaceStrength>> prev;
 };
 
+// Placement strengths of manual edits. A cell placed or moved by hand gets STRENGTH_MANUAL: the
+// placers may still move it (they keep only cells above STRENGTH_STRONG). "Lock" sets
+// STRENGTH_MANUAL_LOCKED, "Unlock" STRENGTH_MANUAL. A cell counts as locked when its strength is
+// above STRENGTH_STRONG (also FIXED/LOCKED cells from the packer or constraints): a locked cell is
+// never displaced by a swap, but can still be moved explicitly, and then keeps its strength.
+constexpr PlaceStrength STRENGTH_MANUAL = STRENGTH_STRONG;
+constexpr PlaceStrength STRENGTH_MANUAL_LOCKED = STRENGTH_USER;
+inline bool isCellLocked(const CellInfo *ci) { return ci->belStrength > STRENGTH_STRONG; }
+
+// The cells that are placed together with ci: its whole cluster (root first), or ci alone.
+std::vector<CellInfo *> placementGroup(Context *ctx, CellInfo *ci);
+
+class EditBatch;
+
+// Add the commands placing `cell` at `bel` to a batch: place it if unplaced, else move it. If the
+// bel is taken by another unlocked cell outside a cluster, the two are swapped (an unplaced cell
+// displaces the other, which ends up unplaced). A cluster root moves with its whole cluster
+// (getClusterPlacement), to free bels only. Cell type, region and, at the end, location
+// validity of every bel involved are checked. Returns "" or the reason for refusing.
+std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel);
+// Undo text for addPlaceCell: "Place X at B", "Move X to B", "Swap X with Y", ...
+QString describePlaceCell(Context *ctx, IdString cell, BelId bel);
+
 // A set of commands applied as one unit (one undo entry). Only constructed by EditStack::run.
 class EditBatch
 {
@@ -274,6 +297,12 @@ class EditStack : public QObject
     std::string run(const QString &text, const std::function<std::string(EditBatch &)> &fn);
     // Single command as one undoable action, text defaults to cmd->describe().
     std::string execute(std::unique_ptr<EditCommand> cmd, const QString &text = QString());
+    // Like run(), but always reverted afterwards and nothing pushed or signalled (the pending UI
+    // refresh state of the context is restored too): whether fn would succeed now. Does not need
+    // edit mode, only no running task. Returns "" or the reason.
+    std::string dryRun(const std::function<std::string(EditBatch &)> &fn);
+    // Show a status message (same channel as the stack's own messages).
+    void notify(const QString &msg) { Q_EMIT message(msg); }
 
     QUndoStack *undoStack() { return &stack; }
 

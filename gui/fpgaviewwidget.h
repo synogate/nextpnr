@@ -22,6 +22,7 @@
 
 #include <QElapsedTimer>
 #include <QMainWindow>
+#include <QMenu>
 #include <QMutex>
 #include <QOpenGLBuffer>
 #include <QOpenGLFunctions>
@@ -96,7 +97,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     FPGAViewWidget(QWidget *parent = 0);
     ~FPGAViewWidget();
     // Command layer for manual edits (see editcommands.h); owned by BaseMainWindow.
-    void setEditStack(EditStack *stack) { editStack_ = stack; }
+    void setEditStack(EditStack *stack);
+    // The cell armed for placement by click (empty if none)
+    IdString armedCell() const { return armedCell_; }
 
   protected:
     // Qt callbacks.
@@ -152,12 +155,21 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void enableDisableDecals(bool bels, bool wires, bool pips, bool groups);
     void movieStart(QString dir, long frameSkip, bool skipSame);
     void movieStop();
+    // Placement by click (edit mode): arm a cell (a cluster member arms its cluster root); while
+    // armed, the next left click on a bel places / moves / swaps it there (see addPlaceCell) and
+    // the bels it may go to are coloured. An empty name disarms.
+    void armCell(IdString cell);
+    void disarmPlacement();
   Q_SIGNALS:
     void clickedBel(BelId bel, bool add);
     void clickedWire(WireId wire, bool add);
     void clickedPip(PipId pip, bool add);
     void picked(int event, float x, float y);
     void pickCanceled();
+    // Status text while a cell is armed for placement, empty when disarmed
+    void placementStatus(QString text);
+    // "Show cell in tree" from the context menu
+    void showCellRequested(IdString cell);
 
   private:
     std::vector<Overlay> overlays_;
@@ -315,6 +327,30 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     std::string elementText(const PickedElement &e, bool multiline);
     void emitClicked(const PickedElement &e, bool add);
     void showSelectMenu(const QPoint &pos);
+    // Edit actions on a bel and the cell bound to it, for the right-click menu
+    void addBelEditActions(QMenu &menu, BelId bel);
+
+    // Placement by click
+    IdString armedCell_;
+    // The bels the armed cell type may go to (type and region)
+    std::vector<BelId> armedBels_;
+    // The result of a trial placement of the armed cell at the hovered bel (computed once per bel)
+    BelId hoverCheckedBel_;
+    std::string hoverCheck_;
+    bool hoverCheckFailed_ = false;
+    // Recompute the valid-site overlay from the current design state
+    void updateOverlay();
+    // Tooltip line for placing the armed cell at bel (trial run), failed set if it would be refused
+    std::string placementHint(BelId bel, bool &failed);
+    void placeArmedAt(BelId bel);
+    // Bel among the candidates under the cursor: the hovered one if it is a bel, else the first
+    BelId candidateBel(const std::vector<PickedElement> &cands);
+    // Valid-site overlay: free, occupied by a cell that would be swapped, blocked (locked cell,
+    // cluster, bel unavailable); and the hovered bel if the trial placement there fails
+    static constexpr int OVERLAY_FREE = 0, OVERLAY_SWAP = 1, OVERLAY_BLOCKED = 2, OVERLAY_HOVER_BAD = 3;
+    static constexpr int OVERLAY_SETS = 3, OVERLAY_SLOTS = 4;
+    // Line shader slots of the overlay, after those of the Arch graphics
+    static int overlaySlot(int i) { return archLineSlot(ARCH_LAYERS, 0, 0) + i; }
 
     Context *ctx_;
     EditStack *editStack_ = nullptr;
@@ -382,6 +418,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         QColor selected;
         QColor hovered;
         QColor highlight[8];
+        QColor overlay[OVERLAY_SLOTS];
     } colors_;
 
     struct RendererArgs
@@ -406,6 +443,12 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         PickQuadTree::BoundingBox viewRect;
         int viewLevel = LOD_LEVELS - 1;
         bool viewChanged = false;
+        // Valid-site overlay of the armed cell (OVERLAY_FREE ... OVERLAY_BLOCKED), and whether it
+        // changed (rendered on its own: it may be large)
+        std::vector<DecalXY> overlayDecals[OVERLAY_SETS];
+        bool overlayChanged = false;
+        // The hovered bel when placing the armed cell there would fail (rendered with `changed`)
+        DecalXY overlayHoverBad;
         // Hint text
         std::string hintText;
         // cursor pos
@@ -440,6 +483,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         LineShaderData gfxSelected;
         LineShaderData gfxHovered;
         LineShaderData gfxHighlighted[8];
+        LineShaderData gfxOverlay[OVERLAY_SLOTS];
         // Global bounding box of data from Arch.
         PickQuadTree::BoundingBox bbGlobal;
         // Bounding box of selected items.

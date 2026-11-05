@@ -408,6 +408,10 @@ struct GateMateImpl : HimbaechelAPI
         bool used = false;
     };
     std::vector<GateMateCellInfo> fast_cell_info;
+    GateMateCellInfo compute_cell_info(CellInfo *ci) const;
+    // fast_cell_info of a cell, or computed now when it has not been assigned for the cell (e.g. a
+    // design loaded placed, or edited in the GUI, before the placer ran)
+    GateMateCellInfo cell_info(const CellInfo *ci) const;
     std::map<BelId, std::map<IdString, const GateMateBelPinConstraintPOD *>> pin_to_constr;
     // The pins the clock and enable inputs (CLK_INT, EN_INT) of the registers are renamed to after
     // routing, for the timing model

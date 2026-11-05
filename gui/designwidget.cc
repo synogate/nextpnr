@@ -378,7 +378,9 @@ void DesignWidget::refreshAfterEdit()
     for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
         if (selectionModel[i]->selectedIndexes().size() == 1) {
             history_ignore = true;
+            arm_ignore = true;
             onSelectionChanged(i, QItemSelection(), QItemSelection());
+            arm_ignore = false;
             history_ignore = false;
             break;
         }
@@ -632,6 +634,61 @@ template <typename T> bool DesignWidget::clickedNet(T element, bool keep)
     return true;
 }
 
+void DesignWidget::showCell(IdString cell)
+{
+    if (ctx == nullptr)
+        return;
+    boost::optional<TreeModel::Item *> item;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        item = getTreeByElementType(ElementType::CELL)->nodeForId(IdStringList(cell));
+    }
+    if (!item)
+        return;
+    int index = getIndexByElementType(ElementType::CELL);
+    arm_ignore = true;
+    clearAllSelectionModels();
+    if (tabWidget->currentIndex() != index)
+        tabWidget->setCurrentIndex(index);
+    QModelIndex mi = getTreeByElementType(ElementType::CELL)->indexFromNode(*item);
+    selectionModel[index]->setCurrentIndex(mi, QItemSelectionModel::ClearAndSelect);
+    treeView[index]->scrollTo(mi);
+    arm_ignore = false;
+}
+
+void DesignWidget::armSelected()
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot place: " + why);
+        return;
+    }
+    IdString cell;
+    int num_selected = 0;
+    for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
+        for (auto index : selectionModel[i]->selectedIndexes()) {
+            num_selected++;
+            TreeModel::Item *item = treeModel[i]->nodeFromIndex(index);
+            if (item->type() == ElementType::CELL) {
+                cell = item->id()[0];
+            } else if (item->type() == ElementType::BEL) {
+                BelId bel = ctx->getBelByName(item->id());
+                CellInfo *bound = bel != BelId() ? ctx->getBoundBelCell(bel) : nullptr;
+                if (bound != nullptr)
+                    cell = bound->name;
+            }
+        }
+    }
+    if (num_selected != 1 || cell == IdString()) {
+        editStack->notify("To place or move a cell, select one cell or one bel with a cell first");
+        return;
+    }
+    Q_EMIT armCellRequested(cell);
+}
+
 void DesignWidget::emitSelectionInfo()
 {
     if (ctx == nullptr) {
@@ -721,6 +778,22 @@ void DesignWidget::emitSelectionInfo()
 void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QItemSelection &)
 {
     emitSelectionInfo();
+    // In edit mode, selecting exactly one cell in the Cells tree arms it for placement by click;
+    // any other selection disarms
+    if (!arm_ignore && editStack != nullptr) {
+        IdString arm;
+        int cells = getIndexByElementType(ElementType::CELL);
+        int total = 0;
+        for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++)
+            total += selectionModel[i]->selectedIndexes().size();
+        if (total == 1 && num == cells && selectionModel[cells]->selectedIndexes().size() == 1 &&
+            editStack->canEdit()) {
+            TreeModel::Item *item = treeModel[cells]->nodeFromIndex(selectionModel[cells]->selectedIndexes().at(0));
+            if (item->type() == ElementType::CELL)
+                arm = item->id()[0];
+        }
+        Q_EMIT armCellRequested(arm);
+    }
     int num_selected = 0;
     std::vector<DecalXY> decals;
     for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
@@ -1160,26 +1233,68 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
         connect(action, &QAction::triggered, this, [this, i, items] { updateHighlightGroup(items, i); });
     }
 
-    // Edit actions on placed cells
-    if (editStack != nullptr) {
-        std::vector<IdString> placed;
+    // Edit actions on cells (a cell in a cluster stands for its whole cluster)
+    if (editStack != nullptr && !editStack->busy()) {
+        std::vector<IdString> cells, placed;
+        pool<IdString> seen;
+        bool any_locked = false, any_unlocked = false;
         for (auto item : items) {
             if (item->type() != ElementType::CELL)
                 continue;
-            IdString name = item->id()[0];
-            auto fnd = ctx->cells.find(name);
-            if (fnd != ctx->cells.end() && fnd->second->bel != BelId())
-                placed.push_back(name);
+            auto fnd = ctx->cells.find(item->id()[0]);
+            if (fnd == ctx->cells.end())
+                continue;
+            cells.push_back(fnd->first);
+            for (CellInfo *c : placementGroup(ctx, fnd->second.get())) {
+                if (!seen.insert(c->name).second || c->bel == BelId())
+                    continue;
+                placed.push_back(c->name);
+                (isCellLocked(c) ? any_locked : any_unlocked) = true;
+            }
+        }
+        QString why;
+        bool can_edit = editStack->canEdit(&why);
+        menu.setToolTipsVisible(true);
+        auto editAction = [&](const QString &text) {
+            QAction *action = menu.addAction(text);
+            action->setEnabled(can_edit);
+            if (!can_edit)
+                action->setToolTip(why);
+            return action;
+        };
+        if (!cells.empty())
+            menu.addSeparator();
+        if (cells.size() == 1) {
+            IdString cell = cells.front();
+            QAction *place = editAction(ctx->cells.at(cell)->bel != BelId() ? "Move by click...\tP"
+                                                                              : "Place by click...\tP");
+            connect(place, &QAction::triggered, this, [this, cell] { Q_EMIT armCellRequested(cell); });
+        }
+        auto setStrength = [this, placed](const QString &text, PlaceStrength strength) {
+            editStack->run(text, [&](EditBatch &b) -> std::string {
+                for (auto name : placed) {
+                    std::string err = b.add(std::make_unique<SetCellStrengthCmd>(name, strength));
+                    if (!err.empty())
+                        return err;
+                }
+                return {};
+            });
+        };
+        QString cells_text = placed.size() == 1 ? QString::fromStdString(placed[0].str(ctx))
+                                                : QString("%1 cells").arg(placed.size());
+        if (any_unlocked) {
+            QAction *lock = editAction("Lock " + cells_text);
+            connect(lock, &QAction::triggered, this,
+                    [setStrength, cells_text] { setStrength("Lock " + cells_text, STRENGTH_MANUAL_LOCKED); });
+        }
+        if (any_locked) {
+            QAction *unlock = editAction("Unlock " + cells_text);
+            connect(unlock, &QAction::triggered, this,
+                    [setStrength, cells_text] { setStrength("Unlock " + cells_text, STRENGTH_MANUAL); });
         }
         if (!placed.empty()) {
-            menu.addSeparator();
-            QString why;
-            bool can_edit = editStack->canEdit(&why);
             QAction *unplace =
-                    menu.addAction(placed.size() == 1 ? "Unplace" : QString("Unplace %1 cells").arg(placed.size()));
-            unplace->setEnabled(can_edit);
-            if (!can_edit)
-                unplace->setToolTip(why);
+                    editAction(placed.size() == 1 ? "Unplace" : QString("Unplace %1 cells").arg(placed.size()));
             connect(unplace, &QAction::triggered, this, [this, placed] {
                 QString text = placed.size() == 1 ? QString("Unplace ") + placed[0].c_str(ctx)
                                                   : QString("Unplace %1 cells").arg(placed.size());
