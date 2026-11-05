@@ -174,13 +174,15 @@ void GateMateLookahead::set_anchor_names()
         anchor_names.push_back(ctx->id(name));
 }
 
-void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key)
+void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key,
+                              bool near_only)
 {
     const bool keep = keep_built && !key.empty();
     std::unique_lock<std::mutex> lock(kept_mutex);
     if (keep && kept.count({key, radius})) {
         *this = kept.at({key, radius});
         this->ctx = ctx;
+        this->near_only = near_only;
         set_anchor_names();
         return;
     }
@@ -190,6 +192,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     const ChipInfoPOD *chip = ctx->chip_info;
     this->ctx = ctx;
     this->radius = radius;
+    this->near_only = near_only;
     span = 2 * radius + 1;
     const int offsets = span * span;
 
@@ -323,7 +326,8 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     values = std::make_shared<std::vector<uint16_t>>(total, MISSING);
 
     // Shortest paths from each anchor of each phase's sample: backwards from the inputs, forwards
-    // from the outputs. The last job searches the whole chip from an input, for the slopes.
+    // from the outputs. The last job searches the whole chip from an input, for the slopes (not in
+    // hybrid mode, which does not extrapolate).
     const int axis = std::max(chip->width, chip->height);
     std::vector<int> axis_x, axis_y; // least delay from an output at sample[0] + (d, 0) or (0, d)
     auto search = [&](int job, std::vector<int> &dist, std::vector<int> &tile_base) {
@@ -411,7 +415,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
         }
     };
 
-    const int jobs = PHASES * anchors + 1;
+    const int jobs = PHASES * anchors + (near_only ? 0 : 1);
     std::atomic<int> next_job{0};
     auto worker = [&]() {
         std::vector<int> dist, tile_base;
@@ -444,8 +448,10 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
         }
         return count ? sum / count : 0.0f;
     };
-    slope_x = slope(axis_x);
-    slope_y = slope(axis_y);
+    if (!near_only) {
+        slope_x = slope(axis_x);
+        slope_y = slope(axis_y);
+    }
 
     // Remaps from every tile type into those of the slots
     pool<int> slot_types;
@@ -470,9 +476,15 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
         }
     }
 
-    log_info("Built the GateMate delay tables: radius %d, %.0f MB, %.1f/%.1f ps per tile beyond, %.1fs\n", radius,
-             values->size() * sizeof(uint16_t) / 1e6, slope_x, slope_y,
-             std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count());
+    size_t bytes = values->size() * sizeof(uint16_t);
+    float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
+    if (near_only)
+        log_info("Built the GateMate delay tables: radius %d, %.1f MB (%zu bytes), model beyond, %.1fs\n", radius,
+                 bytes / 1e6, bytes, seconds);
+    else
+        log_info("Built the GateMate delay tables: radius %d, %.1f MB (%zu bytes), %.1f/%.1f ps per tile beyond, "
+                 "%.1fs\n",
+                 radius, bytes / 1e6, bytes, slope_x, slope_y, seconds);
     if (keep) {
         lock.lock();
         kept.emplace(std::make_pair(key, radius), *this);
@@ -494,6 +506,8 @@ int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
         return steps;
     };
     int ox = wx - ax, oy = wy - ay;
+    if (near_only && (std::abs(ox) > radius || std::abs(oy) > radius))
+        return -1;
     int ex = clamp(ox), ey = clamp(oy);
     const int offsets = span * span, o = (oy + radius) * span + (ox + radius), p = phase(ax, ay);
     int type = slot_type[p * offsets + o];
@@ -508,7 +522,7 @@ int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
     }
     uint16_t value = (*values)[slot_base[(p * int(anchor_names.size()) + k) * offsets + o] + index];
     if (value == MISSING)
-        return UNREACHABLE;
+        return near_only && missing_to_model ? -1 : UNREACHABLE;
     return value + int(slope_x * ex + slope_y * ey);
 }
 

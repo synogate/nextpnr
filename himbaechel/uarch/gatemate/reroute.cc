@@ -195,7 +195,7 @@ std::vector<PipId> GateMateImpl::ideal_path(NetInfo *net, WireId src, WireId sin
             if (found != best.end() && found->second.first <= nd)
                 continue;
             best[next] = {nd, pip};
-            queue.push({nd + std::max<delay_t>(0, lookahead.estimate(next, sink)), next});
+            queue.push({nd + std::max<delay_t>(0, least_delay(next, sink)), next});
         }
     }
     std::vector<PipId> path;
@@ -226,8 +226,8 @@ bool GateMateImpl::resource_taken(PipId pip) const
 // delay tables), with the muxes each connection passes (--vopt report-crit-routing)
 void GateMateImpl::report_critical_routing()
 {
-    if (!lookahead.built())
-        log_error("report-crit-routing needs the delay tables (e.g. --vopt lookahead=table).\n");
+    if (!has_least_delay())
+        log_error("report-crit-routing needs the delay tables or the distance model.\n");
     for (auto &clock : ctx->timing_result.clock_paths) {
         log_info("Critical path routing for clock '%s' (ns): routed, least on the empty chip, muxes passed\n",
                  clock.first.c_str(ctx));
@@ -253,7 +253,7 @@ void GateMateImpl::report_critical_routing()
             for (auto &m : muxes)
                 list += " " + m.substr(0, m.find('/') == std::string::npos ? m.size() : m.find('/'));
             log_info("  %5.2f %5.2f  %s -> %s:%s\n", ctx->getDelayNS(seg.delay),
-                     ctx->getDelayNS(lookahead.estimate(src, sink)), ctx->nameOfWire(src), ctx->nameOfWire(sink),
+                     ctx->getDelayNS(least_delay(src, sink)), ctx->nameOfWire(src), ctx->nameOfWire(sink),
                      list.c_str());
             // The fastest path ignoring other nets' routing, and who holds its wires now
             delay_t ideal = 0;
@@ -500,7 +500,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
         for (auto &user : net->users)
             for (WireId sink : ctx->getNetinfoSinkWires(net, user))
                 if (sink != WireId() && !net->wires.count(sink))
-                    arcs.emplace_back(lookahead.estimate(src, sink), net, sink);
+                    arcs.emplace_back(least_delay(src, sink), net, sink);
     }
     // The data inputs of 8:1 multiplexers (while fix_mx8_inputs() runs) first: they need a path of the right
     // polarity, which other nets leave fewer of
@@ -532,7 +532,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
                         std::none_of(arcs.begin(), arcs.end(), [&](const auto &arc) {
                             return std::get<1>(arc) == held && std::get<2>(arc) == s;
                         }))
-                        arcs.emplace_back(lookahead.estimate(ctx->getNetinfoSourceWire(held), s), held, s);
+                        arcs.emplace_back(least_delay(ctx->getNetinfoSourceWire(held), s), held, s);
         }
     };
     for (int attempt = 0; attempt < 4 && !routed; attempt++) {
@@ -639,7 +639,7 @@ std::vector<PipId> GateMateImpl::parity_path(NetInfo *net, WireId sink, bool inv
         bool inv = routed_inverted(net, w.first);
         delay_t d = reach(w.first);
         best[inv][w.first] = {d, PipId()};
-        queue.push({d + std::max<delay_t>(0, lookahead.estimate(w.first, sink)), w.first, inv});
+        queue.push({d + std::max<delay_t>(0, least_delay(w.first, sink)), w.first, inv});
     }
     while (!queue.empty() && best[0].size() + best[1].size() < 200000) {
         auto [estimate, w, inv] = queue.top();
@@ -688,7 +688,7 @@ std::vector<PipId> GateMateImpl::parity_path(NetInfo *net, WireId sink, bool inv
             if (found != best[next_inv].end() && found->second.first <= nd)
                 continue;
             best[next_inv][next] = {nd, pip};
-            queue.push({nd + std::max<delay_t>(0, lookahead.estimate(next, sink)), next, next_inv});
+            queue.push({nd + std::max<delay_t>(0, least_delay(next, sink)), next, next_inv});
         }
     }
     std::vector<PipId> path;
@@ -819,7 +819,7 @@ void GateMateImpl::fix_mx8_inputs()
             if (user.cell->type == id_CPE_MX8 &&
                 user.port.in(id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8)) {
                 WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
-                sinks.emplace_back(lookahead.estimate(src, sink), sink);
+                sinks.emplace_back(least_delay(src, sink), sink);
             }
         std::sort(sinks.begin(), sinks.end(), std::greater<std::pair<delay_t, WireId>>());
         for (auto &sink : sinks) {
@@ -929,8 +929,8 @@ void GateMateImpl::fix_mx8_inputs()
 // the result if Fmax improved.
 void GateMateImpl::repair_critical_routing(int rounds)
 {
-    if (!lookahead.built())
-        log_error("route-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
+    if (!has_least_delay())
+        log_error("route-repair needs the delay tables or the distance model.\n");
     pool<std::string> tried;
     float best;
     double best_near;
@@ -1074,8 +1074,8 @@ void GateMateImpl::repair_critical_routing(int rounds)
 // routes the rest with all other routing held, and keeps the result if Fmax improved.
 void GateMateImpl::repair_critical_nets(int rounds)
 {
-    if (!lookahead.built())
-        log_error("net-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
+    if (!has_least_delay())
+        log_error("net-repair needs the delay tables or the distance model.\n");
     const float window = 1000;     // ps: sinks within this of the worst slack count
     const float lay_window = 2000; // ps: sinks within this are laid on their ideal paths
     pool<IdString> tried;
@@ -1112,7 +1112,7 @@ void GateMateImpl::repair_critical_nets(int rounds)
                     if (!user.cell || tmg.get_setup_slack(CellPortKey(user)) > worst + window)
                         continue;
                     WireId sink = ctx->getNetinfoSinkWire(ni, user, 0);
-                    delay_t least = sink == WireId() ? -1 : lookahead.estimate(src, sink);
+                    delay_t least = sink == WireId() ? -1 : least_delay(src, sink);
                     if (least < 0)
                         continue;
                     near++;
@@ -1404,8 +1404,8 @@ bool GateMateImpl::reroute_clock_sink(NetInfo *clk, const PortRef &user, WireId 
 // improved.
 int GateMateImpl::move_critical_cells(int rounds)
 {
-    if (!lookahead.built())
-        log_error("place-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
+    if (!has_least_delay())
+        log_error("place-repair needs the delay tables or the distance model.\n");
     // The cells were numbered again since placement (repack() and assignArchInfo() in postPlace()),
     // free_register_half() compares the registers of a CPE by their numbers
     assign_cell_info();
@@ -1538,7 +1538,7 @@ int GateMateImpl::move_critical_cells(int rounds)
                     WireId src = ctx->getNetinfoSourceWire(net);
                     conns.push_back(Connection{ci, port.first, net->users.at(port.second.user_idx), src, true,
                                                tmg.get_setup_slack(CellPortKey(ci->name, port.first)),
-                                               lookahead.estimate(src, ctx->getBelPinWire(ci->bel, port.first))});
+                                               least_delay(src, ctx->getBelPinWire(ci->bel, port.first))});
                     continue;
                 }
                 for (auto &user : net->users) {
@@ -1549,7 +1549,7 @@ int GateMateImpl::move_critical_cells(int rounds)
                     WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
                     conns.push_back(Connection{ci, port.first, user, sink, false,
                                                tmg.get_setup_slack(CellPortKey(user)),
-                                               lookahead.estimate(ctx->getBelPinWire(ci->bel, port.first), sink)});
+                                               least_delay(ctx->getBelPinWire(ci->bel, port.first), sink)});
                 }
             }
         }
@@ -1574,7 +1574,7 @@ int GateMateImpl::move_critical_cells(int rounds)
         float out = std::numeric_limits<float>::infinity(), in = -std::numeric_limits<float>::infinity();
         for (auto &c : conns) {
             WireId pin = ctx->getBelPinWire(c.cell == unit.ff ? ff : c.cell == unit.upper ? up : lt, c.port);
-            delay_t delay = c.input ? lookahead.estimate(c.wire, pin) : lookahead.estimate(pin, c.wire);
+            delay_t delay = c.input ? least_delay(c.wire, pin) : least_delay(pin, c.wire);
             if (delay < 0)
                 return -std::numeric_limits<float>::infinity();
             float change = delay - c.now;
@@ -1838,8 +1838,8 @@ void GateMateImpl::repair_critical_placement(int rounds)
 // all other routing held, and keeps the result if Fmax rose (or tied with less near-critical slack).
 int GateMateImpl::fuse_critical_luts(int rounds)
 {
-    if (!lookahead.built())
-        log_error("place-repair needs the delay tables (e.g. --vopt lookahead=table).\n");
+    if (!has_least_delay())
+        log_error("place-repair needs the delay tables or the distance model.\n");
     assign_cell_info();
     const float window = 250;  // ps: connections within this of the worst slack are critical
     const float min_gain = 50; // ps of slack
@@ -1921,14 +1921,14 @@ int GateMateImpl::fuse_critical_luts(int rounds)
                 // The worst slack through A's inputs afterwards: each saves A's routing, A's pass and the
                 // hop to C, and gains the route to C's first-level LUT
                 WireId a_out = ctx->getNetinfoSourceWire(net), c_in = ctx->getBelPinWire(c->bel, port);
-                delay_t hop = lookahead.estimate(a_out, c_in);
+                delay_t hop = least_delay(a_out, c_in);
                 float after = std::numeric_limits<float>::infinity();
                 bool ok = hop >= 0;
                 for (int i = 0; i < 2 && ok; i++) {
                     NetInfo *n = i == 0 ? n1 : n2;
                     WireId src = ctx->getNetinfoSourceWire(n);
-                    delay_t old_in = lookahead.estimate(src, ctx->getBelPinWire(a->bel, i == 0 ? id_D0_10 : id_D1_10));
-                    delay_t new_in = lookahead.estimate(src, ctx->getBelPinWire(c->bel, first[j][i]));
+                    delay_t old_in = least_delay(src, ctx->getBelPinWire(a->bel, i == 0 ? id_D0_10 : id_D1_10));
+                    delay_t new_in = least_delay(src, ctx->getBelPinWire(c->bel, first[j][i]));
                     ok = old_in >= 0 && new_in >= 0;
                     float si = tmg.get_setup_slack(CellPortKey(a->name, i == 0 ? id_D0_10 : id_D1_10));
                     after = std::min(after, si + float(old_in + hop - new_in) + stage);

@@ -39,8 +39,11 @@ NEXTPNR_NAMESPACE_BEGIN
 struct GateMateLookahead
 {
     // avail filters out pips that can never be used; `key` names the chip, timing and avail, see
-    // keep_built
-    void build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key = "");
+    // keep_built. near_only: hybrid mode (--vopt lookahead=hybrid, the default), no extrapolation beyond
+    // the radius, estimate() is -1 there and the caller falls back to the closed-form model; the
+    // whole-chip search for the slopes is skipped.
+    void build(Context *ctx, int radius, std::function<bool(PipId)> avail, const std::string &key = "",
+               bool near_only = false);
     // Keep the tables built with a key for the rest of the process, and copy them instead of
     // building again for the same key and radius (the tests create a context for each test)
     static bool keep_built;
@@ -49,6 +52,13 @@ struct GateMateLookahead
     static void save_kept(std::ostream &out);
     static void load_kept(std::istream &in);
     bool built() const { return values && !values->empty(); }
+    bool is_near_only() const { return near_only; }
+    int table_radius() const { return radius; }
+    // Hybrid mode: wires that reach no anchor within the search area (the radius plus a margin of 8 tiles)
+    // go to the model instead of counting as unreachable. About 3% of the wires within radius 4 reach
+    // the pin only through a detour further out (e.g. SB_DRIVE.Pxx.D3/D4.IN, 2-3 ns in the radius-12
+    // tables).
+    void set_missing_to_model(bool value) { missing_to_model = value; }
 
     // Delay from src to dst if dst is a pin behind a CPE input or src a pin before a CPE output,
     // else -1
@@ -95,6 +105,7 @@ struct GateMateLookahead
     // remap[from_type][to_type][wire]: the wire of the same name in another tile type, or -1
     std::vector<std::vector<std::vector<int>>> remap;
     float slope_x = 0, slope_y = 0; // ps per tile beyond the radius
+    bool near_only = false, missing_to_model = false;
 
     // The CPE wires the tables hold delays to (the inputs, first) and from (the outputs)
     void set_anchor_names();

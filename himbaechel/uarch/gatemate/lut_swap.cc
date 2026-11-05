@@ -104,7 +104,7 @@ std::pair<float, float> GateMateImpl::lut_tree_costs(CellInfo *ci, const TimingA
             if (routed && s == 0)
                 delay[s] = ctx->getNetinfoRouteDelay(net, net->users.at(ci->ports.at(pin).user_idx));
             else
-                delay[s] = src == WireId() || dst == WireId() ? -1 : lookahead.estimate(src, dst);
+                delay[s] = src == WireId() || dst == WireId() ? -1 : least_delay(src, dst);
             DelayQuad lut;
             if (delay[s] >= 0 && getCellDelay(ci, pin, id_OUT, lut))
                 delay[s] += lut.maxDelay();
@@ -371,14 +371,14 @@ int GateMateImpl::improve_lut_inputs(int rounds, bool test_undo)
                     !moved.count(net->driver.cell))
                     add(tmg.get_criticality(CellPortKey(ci->name, port.first)),
                         ctx->getNetinfoRouteDelay(net, net->users.at(port.second.user_idx)),
-                        lookahead.estimate(ctx->getNetinfoSourceWire(net), then));
+                        least_delay(ctx->getNetinfoSourceWire(net), then));
                 if (port.second.type != PORT_OUT)
                     continue;
                 for (auto &user : net->users) {
                     if (!user.cell || moved.count(user.cell))
                         continue;
                     add(tmg.get_criticality(CellPortKey(user)), ctx->getNetinfoRouteDelay(net, user),
-                        lookahead.estimate(then, ctx->getNetinfoSinkWire(net, user, 0)));
+                        least_delay(then, ctx->getNetinfoSinkWire(net, user, 0)));
                 }
             }
         }

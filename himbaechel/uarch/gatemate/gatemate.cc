@@ -80,8 +80,23 @@ po::options_description GateMateImpl::getUArchOptions()
     // marked TEMPORARY gave no gain; they and the code behind them are to go once the comparison has
     // been repeated with the timing model fixed.
     specific.add_options()("lookahead", po::value<std::string>(),
-                           "router delay estimate: linear (default) or table (shortest paths on the empty chip)");
-    specific.add_options()("place-delay", po::value<std::string>(), "placer delay estimate: linear (default) or table");
+                           "router delay estimate: hybrid (default: the tables within hybrid-radius tiles, the "
+                           "model beyond), linear, table (shortest paths on the empty chip) or model (closed form, "
+                           "see docs/distance_model.md); the post-route repairs and the LUT input swap use the "
+                           "tables where built, else the model");
+    specific.add_options()("place-delay", po::value<std::string>(),
+                           "placer delay estimate: hybrid (default), linear, table or model");
+    specific.add_options()("hybrid-radius", po::value<int>(),
+                           "radius in tiles of the delay tables in hybrid mode (default 4)");
+    specific.add_options()("hybrid-missing", po::value<std::string>(),
+                           "hybrid mode, wires within the radius that reach no pin in the table's search area: "
+                           "unreachable (default) or model");
+    specific.add_options()("eval-estimate", po::value<int>(),
+                           "compare the delay estimates with the exact delays on about N random pairs of wires, "
+                           "then exit");
+    specific.add_options()("eval-dump", po::value<std::string>(), "write the eval-estimate samples to this TSV file");
+    specific.add_options()("eval-offset-map", po::value<std::string>(),
+                           "with eval-estimate, also compare with this docs/experiments/offset_map.tsv");
     specific.add_options()("lookahead-radius", po::value<int>(), "radius in tiles of the delay tables (default 12)");
     // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
     specific.add_options()("sb-y-cost", po::value<float>(),
@@ -248,16 +263,30 @@ void GateMateImpl::init_database(Arch *arch)
     partition_unrouted = args.options.count("partition-unrouted") > 0;
     as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
     partition_open = args.options.count("partition-open") > 0;
-    auto table = [&](const char *option) {
+    // The delay estimates of the router and the placer, each hybrid unless given
+    auto given = [&](const char *option) -> std::string {
         if (!args.options.count(option))
-            return false;
+            return "";
         std::string value = args.options[option].as<std::string>();
-        if (value != "linear" && value != "table")
-            log_error("Invalid %s='%s', valid values are linear and table.\n", option, value.c_str());
-        return value == "table";
+        if (value != "linear" && value != "table" && value != "model" && value != "hybrid")
+            log_error("Invalid %s='%s', valid values are hybrid, linear, table and model.\n", option, value.c_str());
+        return value;
     };
-    table_route = table("lookahead");
-    table_place = table("place-delay");
+    route_estimate = given("lookahead");
+    place_estimate = given("place-delay");
+    if (route_estimate.empty())
+        route_estimate = "hybrid";
+    if (place_estimate.empty())
+        place_estimate = "hybrid";
+    // hybrid: the tables (radius hybrid-radius, no extrapolation), the model where they have no value; if the
+    // other estimate is table, the full tables (radius lookahead-radius, extrapolated) and the model only
+    // where they have no value
+    hybrid = (route_estimate == "hybrid" || place_estimate == "hybrid") && route_estimate != "table" &&
+             place_estimate != "table";
+    table_route = route_estimate == "table" || route_estimate == "hybrid";
+    table_place = place_estimate == "table" || place_estimate == "hybrid";
+    model_route = route_estimate == "model" || route_estimate == "hybrid";
+    model_place = place_estimate == "model" || place_estimate == "hybrid";
     lut_swap = args.options.count("lut-input-swap") > 0;
     timing_opt_after_place = args.options.count("timing-opt") > 0;
     report_crit_routing = args.options.count("report-crit-routing") > 0;
@@ -314,12 +343,44 @@ void GateMateImpl::init(Context *ctx)
                        ctx->args.options["place-crit-mode"].as<std::string>() == "scale";
     }
     auto &options = ctx->args.options;
-    if (table_route || table_place || lut_swap || lut_swap_rounds > 0 || route_repair != 0 || place_repair != 0) {
+    bool evaluate = options.count("eval-estimate") > 0;
+    // The tables for table and hybrid (the default) only: radius 12 with table (89 MB, some seconds to
+    // build), hybrid-radius with hybrid (radius 4: 11.6 MB, 0.3 s). The repairs, the LUT input swap and
+    // report-crit-routing take their least delays from the tables if built, else from the model
+    // (least_delay()), which is initialised whenever the tables are not built (milliseconds)
+    if (table_route || table_place || evaluate) {
         int radius = options.count("lookahead-radius") ? options["lookahead-radius"].as<int>() : 12;
-        std::string key =
-                stringf("%s %s %d%d%d", ctx->chip_info->name.get(), IdString(ctx->speed_grade->name).c_str(ctx),
-                        use_cp_for_clk, use_cp_for_cpe, use_bridges);
-        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key);
+        if (hybrid && !evaluate)
+            radius = options.count("hybrid-radius") ? options["hybrid-radius"].as<int>() : 4;
+        bool near_only = hybrid && !evaluate;
+        std::string key = stringf("%s %s %d%d%d r%d%s", ctx->chip_info->name.get(),
+                                  IdString(ctx->speed_grade->name).c_str(ctx), use_cp_for_clk, use_cp_for_cpe,
+                                  use_bridges, radius, near_only ? " near" : "");
+        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key, near_only);
+        if (options.count("hybrid-missing")) {
+            std::string value = options["hybrid-missing"].as<std::string>();
+            if (value != "unreachable" && value != "model")
+                log_error("Invalid hybrid-missing='%s', valid values are unreachable and model.\n", value.c_str());
+            lookahead.set_missing_to_model(value == "model");
+        }
+    }
+    if (model_route || model_place || evaluate || !lookahead.built())
+        distance.init(ctx, [this](PipId pip) { return pip_allowed_by_options(pip); });
+    if (!evaluate) {
+        auto describe = [&](const std::string &mode) {
+            if (mode == "table" || (mode == "hybrid" && hybrid))
+                return stringf("%s (radius %d)", mode.c_str(), lookahead.table_radius());
+            return mode == "hybrid" ? stringf("hybrid (full tables, radius %d)", lookahead.table_radius()) : mode;
+        };
+        log_info("Delay estimates: router %s, placer %s.\n", describe(route_estimate).c_str(),
+                 describe(place_estimate).c_str());
+    }
+    if (evaluate) {
+        auto avail = [this](PipId pip) { return pip_allowed_by_options(pip); };
+        std::string dump = options.count("eval-dump") ? options["eval-dump"].as<std::string>() : "";
+        std::string map = options.count("eval-offset-map") ? options["eval-offset-map"].as<std::string>() : "";
+        evaluate_estimates(ctx, lookahead, distance, avail, options["eval-estimate"].as<int>(), dump, map);
+        exit(0);
     }
     if (sb_y_cost > 0 || sb_ydiag_cost > 0) {
         // Every switch box plane has four Y outputs, each driving a whole node, and a small switch

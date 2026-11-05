@@ -1,0 +1,5 @@
+design,variant,seed,ok,place_fmax,fmax,route_s,heap_s,sa_s,table_s,wall_s,iters,wires
+bench_dmg_soc,default,1,True,47.12,27.77,26.87,35.29,46.24,0.8,321.4,65,473934
+bench_dmg_soc,default,2,True,49.03,28.68,31.56,30.89,71.24,1.0,400.3,76,479902
+bench_dmg_soc,table,1,True,49.43,28.54,33.35,38.95,60.29,7.8,452.5,84,492016
+bench_dmg_soc,table,2,True,52.95,29.28,35.05,34.12,68.61,7.8,430.7,92,490803

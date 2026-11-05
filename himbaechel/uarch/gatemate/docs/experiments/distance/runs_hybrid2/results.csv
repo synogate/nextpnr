@@ -1,0 +1,4 @@
+design,variant,seed,ok,place_fmax,fmax,route_s,heap_s,sa_s,table_s,wall_s,iters,wires
+bench_dmg_soc,hyb12,6,True,40.33,29.48,36.13,37.29,55.26,2.9,309.8,118,498682
+bench_dmg_soc,hyb12,7,True,43.97,29.52,20.15,35.36,47.0,2.9,329.0,48,490591
+bench_dmg_soc,hyb12,8,True,46.73,29.85,20.89,31.87,57.11,2.9,454.4,57,485257

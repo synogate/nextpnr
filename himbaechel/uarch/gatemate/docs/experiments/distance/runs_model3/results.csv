@@ -1,0 +1,13 @@
+design,variant,seed,ok,place_fmax,fmax,route_s,heap_s,sa_s,table_s,wall_s,iters,wires
+multi1,model3,1,True,43.1,37.7,21.1,7.31,7.31,None,47.3,46,109907
+multi1,model3,2,True,42.23,32.38,18.9,7.86,8.33,None,50.3,29,109596
+multi1,model3,3,True,43.31,36.38,19.61,6.42,5.99,None,44.4,34,108690
+multi1,model3,4,True,42.21,38.21,19.12,6.55,8.1,None,46.4,39,109104
+multi1,model3,5,True,43.12,39.08,22.77,6.37,9.13,None,51.3,62,109550
+multi1,model3,6,True,42.85,36.68,20.04,6.58,6.13,None,44.8,40,109571
+multi1,model3,7,True,43.21,37.25,27.96,6.16,6.73,None,53.4,149,110499
+multi1,model3,8,True,41.71,38.62,21.01,6.5,7.69,None,48.6,42,110609
+multi1,model3,9,True,41.6,34.64,18.49,7.36,11.08,None,50.3,33,109354
+multi1,model3,10,True,42.57,37.59,21.29,6.96,8.77,None,49.8,58,110452
+multi1,model3,11,True,42.25,36.12,19.96,8.35,8.59,None,49.9,45,110012
+multi1,model3,12,True,42.19,38.75,22.2,7.25,9.31,None,51.5,45,111384
