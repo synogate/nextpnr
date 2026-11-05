@@ -95,7 +95,8 @@ struct DecalId
         TYPE_BEL,
         TYPE_WIRE,
         TYPE_PIP,
-        TYPE_GROUP
+        TYPE_GROUP,
+        TYPE_DETAIL // defined by the uarch, see HimbaechelAPI::getDetailDecals
     } type = TYPE_NONE;
     bool active = false;
 

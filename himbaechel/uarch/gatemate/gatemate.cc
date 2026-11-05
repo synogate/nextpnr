@@ -681,6 +681,7 @@ void GateMateImpl::postPlace()
         pip_mask[cell.second.get()->bel.tile] = mask;
         pip_data[cell.second.get()->bel.tile] = data;
     }
+    update_gui_labels();
     if (partition_unrouted) {
         // The partition is complete once placed: as after routing (postRoute), but with no routing kept
         detach_partition_ports();
@@ -1381,6 +1382,7 @@ void GateMateImpl::postRoute()
         }
     }
     ctx->assignArchInfo();
+    update_gui_labels();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {

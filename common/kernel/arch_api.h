@@ -127,6 +127,19 @@ template <typename R> struct ArchAPI : BaseCtx
     virtual DecalXY getWireDecal(WireId wire) const = 0;
     virtual DecalXY getPipDecal(PipId pip) const = 0;
     virtual DecalXY getGroupDecal(GroupId group) const = 0;
+    // Whether the GUI draws wires and pips that no net uses. If not, it only visits the wires and pips
+    // of nets, which matters for architectures with very large routing graphs.
+    virtual bool guiDrawsUnusedRouting() const = 0;
+    // Decals the GUI draws besides those of the bels, wires, pips and groups: details shown only
+    // when zoomed in (every element has a min_scale of at least 150), each with the tiles it covers
+    // (inclusive). The GUI draws them only for the area in view, and they cannot be selected.
+    virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const = 0;
+    // For selecting in the GUI: the pips drawn in a detail decal near a point (in the decal's
+    // coordinates). The GUI picks the closest of them, by their own decals.
+    virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const = 0;
+    // Where the GUI draws tile column x: the x of its left edge, a column being one unit wide.
+    // Columns may be spread out, to make room for something drawn between them.
+    virtual float getGuiColumnX(int x) const = 0;
     // Cell timing methods
     virtual bool getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const = 0;
     virtual TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const = 0;
