@@ -257,6 +257,12 @@ class EditBatch;
 // (getClusterPlacement), to free bels only. Cell type, region and, at the end, location
 // validity of every bel involved are checked. Returns "" or the reason for refusing.
 std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel);
+// Add the commands moving placed cells by (dx, dy) grid units to a batch, all or nothing: each
+// cell goes to the bel at (x + dx, y + dy, z), which must exist and be of the same bel type;
+// clusters move as a whole (getClusterPlacement at the shifted root). Target bels must be free or
+// taken by cells that move too. Strengths are kept for locked cells, else STRENGTH_MANUAL.
+// Returns "" or the reason for refusing.
+std::string addMoveCells(EditBatch &b, const std::vector<IdString> &cells, int dx, int dy);
 // Undo text for addPlaceCell: "Place X at B", "Move X to B", "Swap X with Y", ...
 QString describePlaceCell(Context *ctx, IdString cell, BelId bel);
 

@@ -20,6 +20,7 @@
 #ifndef DESIGNWIDGET_H
 #define DESIGNWIDGET_H
 
+#include <QCheckBox>
 #include <QMouseEvent>
 #include <QTabWidget>
 #include <QTreeView>
@@ -98,6 +99,11 @@ class DesignWidget : public QWidget
     void emitHighlights();
     boost::optional<TreeModel::Item *> findElement(const Element &element);
     void clearAllSelectionModels();
+    // The selected cells: cells in the Cells tree and cells bound to selected bels (each once);
+    // *on_bels is set if any selected bel had a cell
+    std::vector<IdString> selectedCells(bool *on_bels = nullptr);
+    // Select these bels in the Bels tree (and the view)
+    void selectBels(const std::vector<BelId> &bels);
   Q_SIGNALS:
     void selected(std::vector<DecalXY> decal, bool keep);
     void highlight(std::vector<DecalXY> decal, int group);
@@ -107,6 +113,8 @@ class DesignWidget : public QWidget
     void selectionInfo(QString text);
     // Arm a cell for placement by click in the view (empty: disarm)
     void armCellRequested(IdString cell);
+    // Centre the device view on these bels
+    void centerOnBels(std::vector<BelId> bels);
 
   private Q_SLOTS:
     void prepareMenuProperty(const QPoint &pos);
@@ -129,6 +137,17 @@ class DesignWidget : public QWidget
     void showCell(IdString cell);
     // Arm the selected cell, or the cell on the selected bel, for placement by click
     void armSelected();
+    // Select and arm the next unplaced cell (by name, after the last one chosen this way) and centre
+    // the view on its placed neighbours (via its nets), if any
+    void selectNextUnplaced();
+    // Ask for an offset and move the selected cells by it (see moveSelectionBy)
+    void moveSelectionDialog();
+    // Move the selected cells (Cells tree, or the cells on selected bels; clusters as a whole) by
+    // (dx, dy) grid units, as one undo entry. Returns "" or the reason for refusing.
+    std::string moveSelectionBy(int dx, int dy);
+    // Move the selected cells in the direction (dx, dy) by the smallest step (1, 2, ... MAX_NUDGE
+    // times the direction) that is legal
+    void nudgeSelection(int dx, int dy);
 
   private:
     // How many of a large net's users and wires the properties list, and how long an attribute's
@@ -159,6 +178,11 @@ class DesignWidget : public QWidget
     bool history_ignore;
     // Selection changes that must not arm a cell for placement (refresh, "show in tree")
     bool arm_ignore = false;
+    // Cells tab: show only unplaced cells
+    QCheckBox *unplacedOnly = nullptr;
+    // The cell last chosen by selectNextUnplaced
+    IdString lastUnplaced;
+    static constexpr int MAX_NUDGE = 8;
 
     QAction *actionFirst;
     QAction *actionPrev;

@@ -22,9 +22,16 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QGridLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QSignalBlocker>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QToolBar>
 #include <QTreeWidgetItem>
@@ -70,7 +77,20 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
     tabWidget->addTab(treeView[0], "Bels");
     tabWidget->addTab(treeView[1], "Wires");
     tabWidget->addTab(treeView[2], "Pips");
-    tabWidget->addTab(treeView[3], "Cells");
+    // Cells tab: the tree with a filter for unplaced cells above it
+    QWidget *cellsPage = new QWidget();
+    QVBoxLayout *cellsLayout = new QVBoxLayout(cellsPage);
+    cellsLayout->setSpacing(2);
+    cellsLayout->setContentsMargins(0, 0, 0, 0);
+    unplacedOnly = new QCheckBox("Unplaced only");
+    unplacedOnly->setToolTip("Show only cells that are not placed (N in edit mode: arm the next one)");
+    connect(unplacedOnly, &QCheckBox::toggled, this, [this] {
+        if (ctx != nullptr)
+            refreshAfterEdit();
+    });
+    cellsLayout->addWidget(unplacedOnly);
+    cellsLayout->addWidget(treeView[3]);
+    tabWidget->addTab(cellsPage, "Cells");
     tabWidget->addTab(treeView[4], "Nets");
     tabWidget->addTab(treeView[5], "Groups");
 
@@ -375,6 +395,7 @@ void DesignWidget::refreshAfterEdit()
 {
     updateTree();
     // Rebuild the property view of the current selection (updateTree cleared it)
+    bool single = false;
     for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
         if (selectionModel[i]->selectedIndexes().size() == 1) {
             history_ignore = true;
@@ -382,8 +403,22 @@ void DesignWidget::refreshAfterEdit()
             onSelectionChanged(i, QItemSelection(), QItemSelection());
             arm_ignore = false;
             history_ignore = false;
+            single = true;
             break;
         }
+    }
+    if (!single) {
+        // Several items: their graphics may have moved (cells)
+        std::vector<DecalXY> decals;
+        for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
+            for (auto index : selectionModel[i]->selectedIndexes()) {
+                TreeModel::Item *item = treeModel[i]->nodeFromIndex(index);
+                std::vector<DecalXY> d = getDecals(item->type(), item->id());
+                std::move(d.begin(), d.end(), std::back_inserter(decals));
+            }
+        }
+        Q_EMIT selected(decals, false);
+        emitSelectionInfo();
     }
 }
 
@@ -407,17 +442,47 @@ void DesignWidget::updateTree()
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
 
+        bool only_unplaced = unplacedOnly != nullptr && unplacedOnly->isChecked();
+        int num_unplaced = 0;
         std::vector<IdStringList> cells;
         for (auto &pair : ctx->cells) {
-            cells.push_back(IdStringList(pair.first));
+            bool unplaced = pair.second->bel == BelId();
+            num_unplaced += unplaced;
+            if (unplaced || !only_unplaced)
+                cells.push_back(IdStringList(pair.first));
         }
         std::vector<IdStringList> nets;
         for (auto &pair : ctx->nets) {
             nets.push_back(IdStringList(pair.first));
         }
+        if (unplacedOnly != nullptr)
+            unplacedOnly->setText(QString("Unplaced only (%1 of %2)").arg(num_unplaced).arg(ctx->cells.size()));
 
-        getTreeByElementType(ElementType::CELL)->updateElements(cells);
-        getTreeByElementType(ElementType::NET)->updateElements(nets);
+        // Resetting a model clears its selection (silently): keep the selected cells and nets
+        for (ElementType type : {ElementType::CELL, ElementType::NET}) {
+            int num = getIndexByElementType(type);
+            std::vector<IdStringList> keep;
+            for (auto index : selectionModel[num]->selectedIndexes())
+                keep.push_back(treeModel[num]->nodeFromIndex(index)->id());
+            QModelIndex current = selectionModel[num]->currentIndex();
+            boost::optional<IdStringList> current_id;
+            if (current.isValid())
+                current_id = treeModel[num]->nodeFromIndex(current)->id();
+            getTreeByElementType(type)->updateElements(type == ElementType::CELL ? cells : nets);
+            QSignalBlocker blocker(selectionModel[num]);
+            for (auto &id : keep) {
+                auto item = treeModel[num]->nodeForId(id);
+                if (item)
+                    selectionModel[num]->select(treeModel[num]->indexFromNode(*item), QItemSelectionModel::Select);
+            }
+            if (current_id) {
+                auto item = treeModel[num]->nodeForId(*current_id);
+                if (item)
+                    selectionModel[num]->setCurrentIndex(treeModel[num]->indexFromNode(*item),
+                                                         QItemSelectionModel::NoUpdate);
+            }
+            treeView[num]->viewport()->update();
+        }
     }
 }
 QtProperty *DesignWidget::addTopLevelProperty(const QString &id)
@@ -687,6 +752,208 @@ void DesignWidget::armSelected()
         return;
     }
     Q_EMIT armCellRequested(cell);
+}
+
+std::vector<IdString> DesignWidget::selectedCells(bool *on_bels)
+{
+    std::vector<IdString> cells;
+    pool<IdString> seen;
+    if (on_bels)
+        *on_bels = false;
+    if (ctx == nullptr)
+        return cells;
+    for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
+        for (auto index : selectionModel[i]->selectedIndexes()) {
+            TreeModel::Item *item = treeModel[i]->nodeFromIndex(index);
+            IdString cell;
+            if (item->type() == ElementType::CELL) {
+                cell = item->id()[0];
+            } else if (item->type() == ElementType::BEL) {
+                BelId bel = ctx->getBelByName(item->id());
+                CellInfo *bound = bel != BelId() ? ctx->getBoundBelCell(bel) : nullptr;
+                if (bound == nullptr)
+                    continue;
+                cell = bound->name;
+                if (on_bels)
+                    *on_bels = true;
+            }
+            if (cell != IdString() && ctx->cells.count(cell) && seen.insert(cell).second)
+                cells.push_back(cell);
+        }
+    }
+    return cells;
+}
+
+void DesignWidget::selectBels(const std::vector<BelId> &bels)
+{
+    bool first = true;
+    for (BelId bel : bels) {
+        if (bel == BelId())
+            continue;
+        onClickedBel(bel, !first);
+        first = false;
+    }
+}
+
+std::string DesignWidget::moveSelectionBy(int dx, int dy)
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return "no design";
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot move: " + why);
+        return why.toStdString();
+    }
+    bool on_bels = false;
+    std::vector<IdString> cells = selectedCells(&on_bels);
+    if (cells.empty()) {
+        editStack->notify("To move cells, select placed cells (Cells tree) or bels with cells first");
+        return "nothing selected";
+    }
+    QString text = cells.size() == 1 ? QString("Move %1 by (%2, %3)").arg(cells[0].c_str(ctx)).arg(dx).arg(dy)
+                                     : QString("Move %1 cells by (%2, %3)").arg(cells.size()).arg(dx).arg(dy);
+    std::string err = editStack->run(text, [&](EditBatch &b) { return addMoveCells(b, cells, dx, dy); });
+    if (err.empty() && on_bels) {
+        // The selected bels are empty now: select those the cells went to
+        std::vector<BelId> bels;
+        for (IdString c : cells) {
+            auto fnd = ctx->cells.find(c);
+            if (fnd != ctx->cells.end())
+                bels.push_back(fnd->second->bel);
+        }
+        selectBels(bels);
+    }
+    return err;
+}
+
+void DesignWidget::moveSelectionDialog()
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot move: " + why);
+        return;
+    }
+    std::vector<IdString> cells = selectedCells();
+    if (cells.empty()) {
+        editStack->notify("To move cells, select placed cells (Cells tree) or bels with cells first");
+        return;
+    }
+    QDialog dialog(this);
+    dialog.setWindowTitle("Move selection by");
+    QFormLayout *form = new QFormLayout(&dialog);
+    form->addRow(new QLabel(QString("Move %1 selected cell(s), clusters as a whole, by grid units:").arg(cells.size())));
+    QSpinBox *sx = new QSpinBox(), *sy = new QSpinBox();
+    for (QSpinBox *s : {sx, sy})
+        s->setRange(-10000, 10000);
+    form->addRow("dx", sx);
+    form->addRow("dy", sy);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    moveSelectionBy(sx->value(), sy->value());
+}
+
+void DesignWidget::nudgeSelection(int dx, int dy)
+{
+    if (ctx == nullptr || editStack == nullptr || (dx == 0 && dy == 0))
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot move: " + why);
+        return;
+    }
+    std::vector<IdString> cells = selectedCells();
+    if (cells.empty()) {
+        editStack->notify("To move cells with the arrow keys, select placed cells or bels with cells first");
+        return;
+    }
+    // The smallest legal step in that direction (e.g. GateMate CPEs only move by some offsets)
+    std::string first_err;
+    for (int k = 1; k <= MAX_NUDGE; k++) {
+        std::string err = editStack->dryRun([&](EditBatch &b) { return addMoveCells(b, cells, k * dx, k * dy); });
+        if (err.empty()) {
+            moveSelectionBy(k * dx, k * dy);
+            return;
+        }
+        if (k == 1)
+            first_err = err;
+    }
+    editStack->notify(QString("Cannot move the selection by up to %1 steps of (%2, %3): %4")
+                              .arg(MAX_NUDGE)
+                              .arg(dx)
+                              .arg(dy)
+                              .arg(QString::fromStdString(first_err)));
+}
+
+void DesignWidget::selectNextUnplaced()
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot place: " + why);
+        return;
+    }
+    IdString cell;
+    std::vector<BelId> neighbours;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        // Unplaced cells (cluster roots stand for their clusters), by name
+        std::vector<std::pair<std::string, IdString>> unplaced;
+        for (auto &c : ctx->cells) {
+            CellInfo *ci = c.second.get();
+            if (ci->bel != BelId())
+                continue;
+            if (ci->cluster != ClusterId() && ctx->getClusterRootCell(ci->cluster) != ci)
+                continue;
+            unplaced.emplace_back(ci->name.str(ctx), ci->name);
+        }
+        if (unplaced.empty()) {
+            editStack->notify("All cells are placed");
+            return;
+        }
+        std::sort(unplaced.begin(), unplaced.end());
+        cell = unplaced.front().second;
+        if (lastUnplaced != IdString()) {
+            std::string last = lastUnplaced.str(ctx);
+            for (auto &u : unplaced)
+                if (u.first > last) {
+                    cell = u.second;
+                    break;
+                }
+        }
+        // Its placed neighbours
+        pool<BelId> seen;
+        std::vector<CellInfo *> group = placementGroup(ctx, ctx->cells.at(cell).get());
+        pool<IdString> members;
+        for (CellInfo *m : group)
+            members.insert(m->name);
+        auto add = [&](CellInfo *other) {
+            if (other != nullptr && other->bel != BelId() && !members.count(other->name) && seen.insert(other->bel).second)
+                neighbours.push_back(other->bel);
+        };
+        for (CellInfo *m : group) {
+            for (auto &port : m->ports) {
+                NetInfo *net = port.second.net;
+                if (net == nullptr || net->users.entries() > 64)
+                    continue; // skip clocks, resets and other wide nets
+                add(net->driver.cell);
+                for (auto &usr : net->users)
+                    add(usr.cell);
+            }
+        }
+    }
+    lastUnplaced = cell;
+    showCell(cell);
+    Q_EMIT armCellRequested(cell);
+    if (!neighbours.empty())
+        Q_EMIT centerOnBels(neighbours);
 }
 
 void DesignWidget::emitSelectionInfo()
@@ -1293,6 +1560,8 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
                     [setStrength, cells_text] { setStrength("Unlock " + cells_text, STRENGTH_MANUAL); });
         }
         if (!placed.empty()) {
+            QAction *move = editAction("Move selection by...\tM");
+            connect(move, &QAction::triggered, this, &DesignWidget::moveSelectionDialog);
             QAction *unplace =
                     editAction(placed.size() == 1 ? "Unplace" : QString("Unplace %1 cells").arg(placed.size()));
             connect(unplace, &QAction::triggered, this, [this, placed] {

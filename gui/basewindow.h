@@ -196,6 +196,8 @@ class BaseMainWindow : public QMainWindow
     QAction *actionRedo;
     QAction *actionPlaceSelected;
     QAction *actionCancelPlacement;
+    QAction *actionNextUnplaced;
+    QAction *actionMoveSelection;
 };
 
 NEXTPNR_NAMESPACE_END

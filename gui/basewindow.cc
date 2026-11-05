@@ -162,6 +162,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(fpgaView, &FPGAViewWidget::clickedPip, designview, &DesignWidget::onClickedPip);
     connect(fpgaView, &FPGAViewWidget::showCellRequested, designview, &DesignWidget::showCell);
     connect(designview, &DesignWidget::armCellRequested, fpgaView, &FPGAViewWidget::armCell);
+    connect(designview, &DesignWidget::centerOnBels, fpgaView, &FPGAViewWidget::centerOnBels);
+    connect(fpgaView, &FPGAViewWidget::nudgeRequested, designview, &DesignWidget::nudgeSelection);
 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
@@ -384,6 +386,18 @@ void BaseMainWindow::createMenusAndBars()
                                       "bel in the device view places it there");
     connect(actionPlaceSelected, &QAction::triggered, designview, &DesignWidget::armSelected);
 
+    actionNextUnplaced = new QAction("Next unplaced cell", this);
+    actionNextUnplaced->setShortcut(QKeySequence(Qt::Key_N));
+    actionNextUnplaced->setStatusTip("Select and arm the next unplaced cell, centring the view on its placed "
+                                     "neighbours");
+    connect(actionNextUnplaced, &QAction::triggered, designview, &DesignWidget::selectNextUnplaced);
+
+    actionMoveSelection = new QAction("Move selection by...", this);
+    actionMoveSelection->setShortcut(QKeySequence(Qt::Key_M));
+    actionMoveSelection->setStatusTip("Move the selected cells by an offset (arrow keys in the device view: by the "
+                                      "smallest legal step)");
+    connect(actionMoveSelection, &QAction::triggered, designview, &DesignWidget::moveSelectionDialog);
+
     actionCancelPlacement = new QAction("Cancel placement", this);
     actionCancelPlacement->setShortcut(QKeySequence(Qt::Key_Escape));
     actionCancelPlacement->setEnabled(false);
@@ -420,7 +434,9 @@ void BaseMainWindow::createMenusAndBars()
     menuEdit->addAction(actionEditMode);
     menuEdit->addSeparator();
     menuEdit->addAction(actionPlaceSelected);
+    menuEdit->addAction(actionNextUnplaced);
     menuEdit->addAction(actionCancelPlacement);
+    menuEdit->addAction(actionMoveSelection);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);

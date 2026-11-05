@@ -1221,7 +1221,13 @@ void FPGAViewWidget::applyHover(bool immediate)
         if (bel != BelId()) {
             if (bel != hoverCheckedBel_) {
                 hoverCheckedBel_ = bel;
-                hoverCheck_ = placementHint(bel, hoverCheckFailed_);
+                BelId target = dropTarget(bel);
+                if (target == BelId()) {
+                    hoverCheckFailed_ = true;
+                    hoverCheck_ = "Cannot drop here: no bel for the cluster root at the same offset";
+                } else {
+                    hoverCheck_ = placementHint(target, hoverCheckFailed_);
+                }
             }
             text += "\n" + hoverCheck_;
             if (hoverCheckFailed_)
@@ -1342,6 +1348,18 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
         lastClickPos_ = pos;
         applyHover(true);
         emitClicked(hoverCandidates_.at(hoverIndex_), ctrl);
+        // Edit mode: pressing on a bel with an unlocked cell may start dragging it
+        if (event->button() == Qt::LeftButton && !ctrl && editStack_ != nullptr && editStack_->canEdit() &&
+            ctx_ != nullptr) {
+            BelId bel = candidateBel(hoverCandidates_);
+            CellInfo *bound = bel != BelId() ? ctx_->getBoundBelCell(bel) : nullptr;
+            if (bound != nullptr && !isCellLocked(bound)) {
+                dragPending_ = true;
+                dragStartPos_ = pos;
+                dragCell_ = bound->name;
+                dragFromBel_ = bel;
+            }
+        }
     }
 }
 
@@ -1355,6 +1373,14 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
     bool btn_right = event->buttons() & Qt::RightButton;
     bool btn_mid = event->buttons() & Qt::MiddleButton;
     bool btn_left = event->buttons() & Qt::LeftButton;
+
+    if (dragPending_ && !dragging_ && btn_left && !shift &&
+        (event->pos() - dragStartPos_).manhattanLength() > DRAG_DISTANCE) {
+        dragging_ = true;
+        armCell(dragCell_);
+        if (armedCell_ == IdString())
+            dragging_ = dragPending_ = false;
+    }
 
     if (btn_right || btn_mid || (btn_left && shift)) {
         const int dx = EVENT_POS(event).x() - lastDragPos_.x();
@@ -1389,6 +1415,12 @@ void FPGAViewWidget::mouseReleaseEvent(QMouseEvent *event)
             auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
             Q_EMIT picked(PICK_RELEASE, world.x(), world.y());
         }
+        return;
+    }
+    if (event->button() == Qt::LeftButton && dragPending_) {
+        dragPending_ = false;
+        if (dragging_)
+            finishDrag(event->pos());
         return;
     }
     // A right click without dragging (dragging pans the view): choose among the elements here
@@ -1478,6 +1510,16 @@ bool FPGAViewWidget::event(QEvent *event)
                 hoverIndex_ = (hoverIndex_ + (back ? n - 1 : 1)) % n;
                 applyHover(true);
             }
+            return true;
+        }
+        // Edit mode: arrow keys move the selection
+        if ((ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up ||
+             ke->key() == Qt::Key_Down) &&
+            !(ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier)) &&
+            editStack_ != nullptr && editStack_->editMode()) {
+            int dx = ke->key() == Qt::Key_Left ? -1 : ke->key() == Qt::Key_Right ? 1 : 0;
+            int dy = ke->key() == Qt::Key_Up ? -1 : ke->key() == Qt::Key_Down ? 1 : 0;
+            Q_EMIT nudgeRequested(dx, dy);
             return true;
         }
     }
@@ -1676,17 +1718,19 @@ void FPGAViewWidget::armCell(IdString cell)
     QString what = QString::fromStdString(ci->name.str(ctx_));
     if (group > 1)
         what = QString("cluster %1 (%2 cells)").arg(what).arg(group);
-    Q_EMIT placementStatus(QString("%1 %2 [%3]: click a bel (green: free, orange: swap, red: blocked) - Esc "
+    Q_EMIT placementStatus(QString("%1 %2 [%3]: %4 (green: free, orange: swap, red: blocked) - Esc "
                                    "cancels")
                                    .arg(ci->bel != BelId() ? "Moving" : "Placing")
                                    .arg(what)
-                                   .arg(ci->type.c_str(ctx_)));
+                                   .arg(ci->type.c_str(ctx_))
+                                   .arg(dragging_ ? "release over a bel" : "click a bel"));
     updateOverlay();
     applyHover();
 }
 
 void FPGAViewWidget::disarmPlacement()
 {
+    dragging_ = dragPending_ = false;
     if (armedCell_ == IdString())
         return;
     armedCell_ = IdString();
@@ -1755,33 +1799,99 @@ std::string FPGAViewWidget::placementHint(BelId bel, bool &failed)
         failed = true;
         return "Cannot place here: " + err;
     }
-    return "Click: " + describePlaceCell(ctx_, cell, bel).toStdString();
+    return std::string(dragging_ ? "Drop: " : "Click: ") + describePlaceCell(ctx_, cell, bel).toStdString();
 }
 
-void FPGAViewWidget::placeArmedAt(BelId bel)
+std::string FPGAViewWidget::placeArmedAt(BelId bel)
 {
     if (editStack_ == nullptr || ctx_ == nullptr || armedCell_ == IdString())
-        return;
+        return "nothing armed";
     IdString cell = armedCell_;
     auto fnd = ctx_->cells.find(cell);
     if (fnd == ctx_->cells.end()) {
         disarmPlacement();
-        return;
+        return "cell does not exist";
     }
     if (fnd->second->bel == bel) {
         editStack_->notify(QString("%1 is already at %2").arg(cell.c_str(ctx_)).arg(ctx_->nameOfBel(bel)));
         disarmPlacement();
-        return;
+        return {};
     }
     QString text = describePlaceCell(ctx_, cell, bel);
     std::string err = editStack_->run(text, [&](EditBatch &b) { return addPlaceCell(b, cell, bel); });
     if (!err.empty())
-        return; // reason shown in the status bar; stay armed
+        return err; // reason shown in the status bar; stay armed
     disarmPlacement();
     // Select the cell where it is now
     fnd = ctx_->cells.find(cell);
     if (fnd != ctx_->cells.end() && fnd->second->bel != BelId())
         emitClicked(PickedElement::fromBel(fnd->second->bel, 0, 0), false);
+    return {};
+}
+
+BelId FPGAViewWidget::dropTarget(BelId bel)
+{
+    if (!dragging_ || dragCell_ == armedCell_ || ctx_ == nullptr || bel == BelId())
+        return bel;
+    auto dc = ctx_->cells.find(dragCell_), rc = ctx_->cells.find(armedCell_);
+    if (dc == ctx_->cells.end() || rc == ctx_->cells.end() || dc->second->bel == BelId() ||
+        rc->second->bel == BelId())
+        return bel;
+    Loc d = ctx_->getBelLocation(bel), m = ctx_->getBelLocation(dc->second->bel),
+        r = ctx_->getBelLocation(rc->second->bel);
+    return ctx_->getBelByLocation(Loc(r.x + d.x - m.x, r.y + d.y - m.y, r.z));
+}
+
+void FPGAViewWidget::finishDrag(const QPoint &pos)
+{
+    if (armedCell_ == IdString()) {
+        dragging_ = false;
+        return;
+    }
+    updateHover(pos.x(), pos.y());
+    BelId bel = candidateBel(hoverCandidates_);
+    BelId target = dropTarget(bel);
+    dragging_ = false;
+    if (bel == BelId()) {
+        if (editStack_)
+            editStack_->notify("Drop cancelled: not over a bel");
+        disarmPlacement();
+        return;
+    }
+    if (bel == dragFromBel_) {
+        disarmPlacement();
+        return;
+    }
+    if (target == BelId()) {
+        if (editStack_)
+            editStack_->notify(QString("Cannot move cluster %1 there: no bel for its root at the same offset")
+                                       .arg(armedCell_.c_str(ctx_)));
+        disarmPlacement();
+        return;
+    }
+    // A refusal is shown in the status bar by the edit stack; a drop is a one-shot action
+    if (!placeArmedAt(target).empty())
+        disarmPlacement();
+}
+
+void FPGAViewWidget::centerOnBels(std::vector<BelId> bels)
+{
+    if (ctx_ == nullptr || bels.empty())
+        return;
+    PickQuadTree::BoundingBox bb;
+    LineShaderData scratch;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        for (BelId bel : bels)
+            if (bel != BelId())
+                renderDecal(scratch, bb, ctx_->getBelDecal(bel));
+    }
+    if (bb.x0() == std::numeric_limits<float>::infinity())
+        return;
+    viewMove_.setToIdentity();
+    viewMove_.translate(-(bb.x0() + bb.w() / 2), -(bb.y0() + bb.h() / 2));
+    update();
 }
 
 void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)

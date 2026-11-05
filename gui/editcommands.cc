@@ -519,6 +519,97 @@ std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
     return {};
 }
 
+std::string addMoveCells(EditBatch &b, const std::vector<IdString> &cells, int dx, int dy)
+{
+    Context *ctx = b.getContext();
+    if (dx == 0 && dy == 0)
+        return "nothing to move (offset 0, 0)";
+    if (cells.empty())
+        return "no cells to move";
+    // The cells to move: whole clusters, each once
+    std::vector<CellInfo *> roots;
+    pool<IdString> moving;
+    for (IdString name : cells) {
+        CellInfo *ci = findCell(ctx, name);
+        if (ci == nullptr)
+            return "cell " + q(name.str(ctx)) + " does not exist";
+        std::vector<CellInfo *> group = placementGroup(ctx, ci);
+        if (moving.count(group.front()->name))
+            continue;
+        for (CellInfo *c : group) {
+            if (c->bel == BelId())
+                return q(c->name.str(ctx)) + " is not placed";
+            moving.insert(c->name);
+        }
+        roots.push_back(group.front());
+    }
+    // Where each cell goes
+    std::vector<std::pair<CellInfo *, BelId>> targets;
+    auto shifted = [&](CellInfo *c, BelId &tb) -> std::string {
+        Loc loc = ctx->getBelLocation(c->bel);
+        Loc tloc(loc.x + dx, loc.y + dy, loc.z);
+        tb = ctx->getBelByLocation(tloc);
+        if (tb == BelId())
+            return "no bel at (" + std::to_string(tloc.x) + ", " + std::to_string(tloc.y) + ", " +
+                   std::to_string(tloc.z) + ") for " + q(c->name.str(ctx));
+        if (ctx->getBelType(tb) != ctx->getBelType(c->bel))
+            return "bel " + q(ctx->nameOfBel(tb)) + " (for " + q(c->name.str(ctx)) + ") is of type " +
+                   q(ctx->getBelType(tb).str(ctx)) + ", not " + q(ctx->getBelType(c->bel).str(ctx));
+        return {};
+    };
+    for (CellInfo *root : roots) {
+        BelId tb;
+        std::string err = shifted(root, tb);
+        if (!err.empty())
+            return err;
+        if (root->cluster != ClusterId()) {
+            std::vector<std::pair<CellInfo *, BelId>> placement;
+            if (!ctx->isValidBelForCellType(root->type, tb) ||
+                !ctx->getClusterPlacement(root->cluster, tb, placement) || placement.empty())
+                return "the cluster of " + q(root->name.str(ctx)) + " does not fit with its root at " +
+                       q(ctx->nameOfBel(tb));
+            targets.insert(targets.end(), placement.begin(), placement.end());
+        } else {
+            targets.emplace_back(root, tb);
+        }
+    }
+    for (auto &t : targets) {
+        CellInfo *c = t.first;
+        BelId tb = t.second;
+        if (!moving.count(c->name))
+            return "cluster placement of " + q(c->name.str(ctx)) + " is inconsistent";
+        if (!ctx->isValidBelForCellType(c->type, tb))
+            return "cell type " + q(c->type.str(ctx)) + " cannot be placed on bel " + q(ctx->nameOfBel(tb)) +
+                   " of type " + q(ctx->getBelType(tb).str(ctx));
+        if (!c->testRegion(tb))
+            return q(c->name.str(ctx)) + " is constrained to region " + q(c->region->name.str(ctx)) + ", " +
+                   q(ctx->nameOfBel(tb)) + " is outside it";
+        CellInfo *bound = ctx->getBoundBelCell(tb);
+        if (bound != nullptr && !moving.count(bound->name))
+            return "bel " + q(ctx->nameOfBel(tb)) + " (for " + q(c->name.str(ctx)) + ") is occupied by " +
+                   q(bound->name.str(ctx)) + ", which is not moved";
+    }
+    // Unbind everything, then bind at the targets (keeping locked strengths)
+    std::vector<PlaceStrength> strengths;
+    std::string err;
+    for (auto &t : targets) {
+        strengths.push_back(isCellLocked(t.first) ? t.first->belStrength : STRENGTH_MANUAL);
+        err = b.add(std::make_unique<UnbindBelCmd>(t.first->bel));
+        if (!err.empty())
+            return err;
+    }
+    for (size_t i = 0; i < targets.size(); i++) {
+        err = b.add(std::make_unique<BindBelCmd>(targets[i].first->name, targets[i].second, strengths[i], false));
+        if (!err.empty())
+            return err;
+    }
+    for (auto &t : targets)
+        if (!ctx->isBelLocationValid(t.second))
+            return "placing " + q(t.first->name.str(ctx)) + " at " + q(ctx->nameOfBel(t.second)) +
+                   " violates location constraints";
+    return {};
+}
+
 QString describePlaceCell(Context *ctx, IdString cell, BelId bel)
 {
     CellInfo *ci = findCell(ctx, cell);

@@ -160,6 +160,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     // the bels it may go to are coloured. An empty name disarms.
     void armCell(IdString cell);
     void disarmPlacement();
+    // Centre the view on the bounding box of these bels (keeping the zoom)
+    void centerOnBels(std::vector<BelId> bels);
   Q_SIGNALS:
     void clickedBel(BelId bel, bool add);
     void clickedWire(WireId wire, bool add);
@@ -170,6 +172,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void placementStatus(QString text);
     // "Show cell in tree" from the context menu
     void showCellRequested(IdString cell);
+    // Arrow key in edit mode: move the selection one step in this direction (grid units)
+    void nudgeRequested(int dx, int dy);
 
   private:
     std::vector<Overlay> overlays_;
@@ -342,7 +346,20 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void updateOverlay();
     // Tooltip line for placing the armed cell at bel (trial run), failed set if it would be refused
     std::string placementHint(BelId bel, bool &failed);
-    void placeArmedAt(BelId bel);
+    // Returns "" on success, else the reason (also shown in the status bar)
+    std::string placeArmedAt(BelId bel);
+    // Drag & drop (edit mode): a left press on a bel with an unlocked placed cell, then moving the
+    // mouse more than DRAG_DISTANCE pixels, arms that cell while dragging; releasing over a bel
+    // places it there (as a click would while armed), releasing elsewhere cancels
+    bool dragPending_ = false, dragging_ = false;
+    QPoint dragStartPos_;
+    IdString dragCell_;
+    BelId dragFromBel_;
+    static constexpr int DRAG_DISTANCE = 6;
+    // The bel the armed cluster root goes to when the dragged cell is dropped at bel (the same
+    // offset for the whole cluster when a non-root member is dragged)
+    BelId dropTarget(BelId bel);
+    void finishDrag(const QPoint &pos);
     // Bel among the candidates under the cursor: the hovered one if it is a bel, else the first
     BelId candidateBel(const std::vector<PickedElement> &cands);
     // Valid-site overlay: free, occupied by a cell that would be swapped, blocked (locked cell,
