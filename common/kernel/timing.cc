@@ -1334,7 +1334,7 @@ void timing_analysis(Context *ctx, bool print_slack_histogram, bool print_fmax, 
     TimingAnalyser tmg(ctx);
     tmg.setup_only = false;
     tmg.with_clock_skew = true;
-    tmg.setup(ctx->detailed_timing_report, print_slack_histogram, print_path || print_fmax);
+    tmg.setup(ctx->detailed_timing_report, print_slack_histogram || print_fmax, print_path || print_fmax);
 
     auto &result = tmg.get_timing_result();
     ctx->log_timing_results(result, print_slack_histogram, print_fmax, print_path, warn_on_failure);

@@ -415,6 +415,19 @@ static void log_histogram(Context *ctx, TimingResult &result)
                  (bins[i] * bar_width) % max_freq > 0 ? '+' : ' ');
 }
 
+static void log_tns(const TimingResult &result)
+{
+    // total negative slack: sum over all failing endpoints (per launch/capture edge pair)
+    int64_t tns_ps = 0;
+    int failing = 0;
+    for (const auto &i : result.slack_histogram)
+        if (i.first < 0) {
+            tns_ps += int64_t(i.first) * i.second;
+            failing += i.second;
+        }
+    log_info("Total negative slack: %.3f ns over %d failing endpoint(s)\n", tns_ps / 1000.0, failing);
+}
+
 void Context::log_timing_results(TimingResult &result, bool print_histogram, bool print_fmax, bool print_path,
                                  bool warn_on_failure)
 {
@@ -423,6 +436,9 @@ void Context::log_timing_results(TimingResult &result, bool print_histogram, boo
 
     if (print_fmax)
         log_fmax(this, result, warn_on_failure);
+
+    if (print_fmax && !result.slack_histogram.empty())
+        log_tns(result);
 
     if (print_histogram && !result.slack_histogram.empty())
         log_histogram(this, result);
