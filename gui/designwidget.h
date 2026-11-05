@@ -33,6 +33,8 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+class EditStack;
+
 class TreeView : public QTreeView
 {
     Q_OBJECT
@@ -57,6 +59,8 @@ class DesignWidget : public QWidget
   public:
     explicit DesignWidget(QWidget *parent = 0);
     ~DesignWidget();
+    // Command layer for manual edits (see editcommands.h); owned by BaseMainWindow.
+    void setEditStack(EditStack *stack) { editStack = stack; }
 
     // An element of the trees, named as the Python bindings name it (for the MCP server)
     struct Element
@@ -111,6 +115,8 @@ class DesignWidget : public QWidget
   public Q_SLOTS:
     void newContext(Context *ctx);
     void updateTree();
+    // Refresh trees and the property view of the current selection after an edit.
+    void refreshAfterEdit();
     void onClickedBel(BelId bel, bool keep);
     void onClickedWire(WireId wire, bool keep);
     void onClickedPip(PipId pip, bool keep);
@@ -122,6 +128,7 @@ class DesignWidget : public QWidget
     static constexpr size_t MAX_VALUE_LENGTH = 200;
 
     Context *ctx;
+    EditStack *editStack = nullptr;
 
     QTabWidget *tabWidget;
 

@@ -41,6 +41,7 @@ Q_DECLARE_METATYPE(NEXTPNR_NAMESPACE_PREFIX DecalXY)
 NEXTPNR_NAMESPACE_BEGIN
 
 class PythonTab;
+class EditStack;
 class DesignWidget;
 class TimingWidget;
 class FPGAViewWidget;
@@ -53,6 +54,7 @@ class BaseMainWindow : public QMainWindow
     explicit BaseMainWindow(std::unique_ptr<Context> context, CommandHandler *handler, QWidget *parent = 0);
     virtual ~BaseMainWindow();
     Context *getContext() { return ctx.get(); }
+    EditStack *getEditStack() { return editStack; }
     void updateActions();
 
     void notifyChangeContext();
@@ -111,6 +113,8 @@ class BaseMainWindow : public QMainWindow
     void about();
 
     void toggleMcpServer(bool on);
+    void editStateChanged();
+    void taskIdle();
 
   Q_SIGNALS:
     void contextChanged(Context *ctx);
@@ -138,6 +142,7 @@ class BaseMainWindow : public QMainWindow
     // The run_step tool waits for the task it started, collecting its log
     McpServer::Reply mcpTaskReply;
     std::string mcpTaskLog;
+    EditStack *editStack;
     std::string currentProj;
 
     // main widgets
@@ -152,6 +157,7 @@ class BaseMainWindow : public QMainWindow
     // Menus, bars and actions
     QMenuBar *menuBar;
     QMenu *menuDesign;
+    QMenu *menuEdit;
     QStatusBar *statusBar;
     QToolBar *mainActionBar;
     QProgressBar *progressBar;
@@ -180,6 +186,10 @@ class BaseMainWindow : public QMainWindow
     QAction *actionScreenshot;
     QAction *actionMovie;
     QAction *actionSaveSVG;
+
+    QAction *actionEditMode;
+    QAction *actionUndo;
+    QAction *actionRedo;
 };
 
 NEXTPNR_NAMESPACE_END

@@ -28,6 +28,7 @@
 #include <QSplitter>
 #include <QToolBar>
 #include <QTreeWidgetItem>
+#include "editcommands.h"
 #include "fpgaviewwidget.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -367,6 +368,20 @@ void DesignWidget::newContext(Context *ctx)
                 ->loadData(ctx, std::unique_ptr<TreeModel::IdList>(new TreeModel::IdList(ElementType::NET)));
     }
     updateTree();
+}
+
+void DesignWidget::refreshAfterEdit()
+{
+    updateTree();
+    // Rebuild the property view of the current selection (updateTree cleared it)
+    for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
+        if (selectionModel[i]->selectedIndexes().size() == 1) {
+            history_ignore = true;
+            onSelectionChanged(i, QItemSelection(), QItemSelection());
+            history_ignore = false;
+            break;
+        }
+    }
 }
 
 void DesignWidget::updateTree()
@@ -1055,6 +1070,44 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
         if (selectedIndex == i)
             action->setChecked(true);
         connect(action, &QAction::triggered, this, [this, i, items] { updateHighlightGroup(items, i); });
+    }
+
+    // Edit actions on placed cells
+    if (editStack != nullptr) {
+        std::vector<IdString> placed;
+        for (auto item : items) {
+            if (item->type() != ElementType::CELL)
+                continue;
+            IdString name = item->id()[0];
+            auto fnd = ctx->cells.find(name);
+            if (fnd != ctx->cells.end() && fnd->second->bel != BelId())
+                placed.push_back(name);
+        }
+        if (!placed.empty()) {
+            menu.addSeparator();
+            QString why;
+            bool can_edit = editStack->canEdit(&why);
+            QAction *unplace =
+                    menu.addAction(placed.size() == 1 ? "Unplace" : QString("Unplace %1 cells").arg(placed.size()));
+            unplace->setEnabled(can_edit);
+            if (!can_edit)
+                unplace->setToolTip(why);
+            connect(unplace, &QAction::triggered, this, [this, placed] {
+                QString text = placed.size() == 1 ? QString("Unplace ") + placed[0].c_str(ctx)
+                                                  : QString("Unplace %1 cells").arg(placed.size());
+                editStack->run(text, [&](EditBatch &b) -> std::string {
+                    for (auto name : placed) {
+                        auto fnd = ctx->cells.find(name);
+                        if (fnd == ctx->cells.end() || fnd->second->bel == BelId())
+                            continue;
+                        std::string err = b.add(std::make_unique<UnbindBelCmd>(fnd->second->bel));
+                        if (!err.empty())
+                            return err;
+                    }
+                    return {};
+                });
+            });
+        }
     }
     menu.exec(treeView[num]->mapToGlobal(pos));
 }

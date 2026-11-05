@@ -85,6 +85,8 @@ class PeriodicRunner : public QThread
     void poke(void) { condition_.wakeOne(); }
 };
 
+class EditStack;
+
 class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
     Q_OBJECT
@@ -92,6 +94,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
   public:
     FPGAViewWidget(QWidget *parent = 0);
     ~FPGAViewWidget();
+    // Command layer for manual edits (see editcommands.h); owned by BaseMainWindow.
+    void setEditStack(EditStack *stack) { editStack_ = stack; }
 
   protected:
     // Qt callbacks.
@@ -260,6 +264,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     using PickQuadTree = QuadTree<float, PickedElement>;
 
     Context *ctx_;
+    EditStack *editStack_ = nullptr;
     QTimer paintTimer_;
     std::unique_ptr<PeriodicRunner> renderRunner_;
 

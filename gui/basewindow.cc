@@ -31,6 +31,7 @@
 #include <QStyle>
 #include <fstream>
 #include "designwidget.h"
+#include "editcommands.h"
 #include "fpgaviewwidget.h"
 #include "timingwidget.h"
 #include "json_frontend.h"
@@ -57,6 +58,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     restoreGeometry(QSettings("YosysHQ", "nextpnr").value("mainwindow/geometry").toByteArray());
 
     task = new TaskManager();
+    editStack = new EditStack(this);
 
     // Create and deploy widgets on main screen
     QWidget *centralWidget = new QWidget(this);
@@ -121,12 +123,26 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
             task, &TaskManager::taskCanceled, this, [this]() { mcpTaskEnded("The step was canceled.", false); },
             Qt::QueuedConnection);
 
+    // Edits are only allowed while no task is running
+    connect(task, &TaskManager::taskStarted, editStack, [this] { editStack->setBusy(true); });
+    connect(task, &TaskManager::pack_finished, this, &BaseMainWindow::taskIdle);
+    connect(task, &TaskManager::place_finished, this, &BaseMainWindow::taskIdle);
+    connect(task, &TaskManager::route_finished, this, &BaseMainWindow::taskIdle);
+    connect(task, &TaskManager::taskCanceled, this, &BaseMainWindow::taskIdle);
+
     // Events for context change
     connect(this, &BaseMainWindow::contextChanged, task, &TaskManager::contextChanged);
     connect(this, &BaseMainWindow::contextChanged, console, &PythonTab::newContext);
     connect(this, &BaseMainWindow::contextChanged, fpgaView, &FPGAViewWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, designview, &DesignWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, timingview, &TimingWidget::newContext);
+    connect(this, &BaseMainWindow::contextChanged, editStack, &EditStack::setContext);
+
+    // Edit command layer
+    designview->setEditStack(editStack);
+    fpgaView->setEditStack(editStack);
+    connect(editStack, &EditStack::designChanged, designview, &DesignWidget::refreshAfterEdit);
+    connect(editStack, &EditStack::stateChanged, this, &BaseMainWindow::editStateChanged);
 
     // Catch close tab events
     connect(centralTabWidget, &QTabWidget::tabCloseRequested, this, &BaseMainWindow::closeTab);
@@ -339,6 +355,26 @@ void BaseMainWindow::createMenusAndBars()
     actionSaveSVG->setStatusTip("Saving a SVG");
     connect(actionSaveSVG, &QAction::triggered, this, &BaseMainWindow::saveSVG);
 
+    // Edit menu actions
+    actionUndo = new QAction("Undo", this);
+    actionUndo->setShortcuts(QKeySequence::Undo);
+    actionUndo->setStatusTip("Undo last edit");
+    actionUndo->setEnabled(false);
+    connect(actionUndo, &QAction::triggered, editStack, &EditStack::undo);
+
+    actionRedo = new QAction("Redo", this);
+    actionRedo->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
+    actionRedo->setStatusTip("Redo last undone edit");
+    actionRedo->setEnabled(false);
+    connect(actionRedo, &QAction::triggered, editStack, &EditStack::redo);
+
+    actionEditMode = new QAction("Edit mode", this);
+    actionEditMode->setShortcut(QKeySequence(Qt::Key_E));
+    actionEditMode->setStatusTip("Enable manual editing of placement and routing");
+    actionEditMode->setCheckable(true);
+    actionEditMode->setChecked(false);
+    connect(actionEditMode, &QAction::toggled, editStack, &EditStack::setEditMode);
+
     // set initial state
     fpgaView->enableDisableDecals(actionDisplayBel->isChecked(), actionDisplayWire->isChecked(),
                                   actionDisplayPip->isChecked(), actionDisplayGroups->isChecked());
@@ -350,7 +386,9 @@ void BaseMainWindow::createMenusAndBars()
     QMenu *menuFile = new QMenu("&File", menuBar);
     QMenu *menuHelp = new QMenu("&Help", menuBar);
     menuDesign = new QMenu("&Design", menuBar);
+    menuEdit = new QMenu("&Edit", menuBar);
     menuBar->addAction(menuFile->menuAction());
+    menuBar->addAction(menuEdit->menuAction());
     menuBar->addAction(menuDesign->menuAction());
     menuBar->addAction(menuHelp->menuAction());
 
@@ -360,6 +398,12 @@ void BaseMainWindow::createMenusAndBars()
     menuFile->addAction(actionSaveJSON);
     menuFile->addSeparator();
     menuFile->addAction(actionExit);
+
+    // Add Edit menu actions
+    menuEdit->addAction(actionUndo);
+    menuEdit->addAction(actionRedo);
+    menuEdit->addSeparator();
+    menuEdit->addAction(actionEditMode);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);
@@ -388,6 +432,9 @@ void BaseMainWindow::createMenusAndBars()
     mainActionBar->addAction(actionExecutePy);
     mainActionBar->addSeparator();
     mainActionBar->addAction(actionMcp);
+    mainActionBar->addAction(actionEditMode);
+    mainActionBar->addAction(actionUndo);
+    mainActionBar->addAction(actionRedo);
 
     // Add worker control toolbar
     QToolBar *workerControlToolBar = new QToolBar("Worker");
@@ -422,7 +469,22 @@ void BaseMainWindow::createMenusAndBars()
     progressBar->setValue(0);
     progressBar->setEnabled(false);
     setStatusBar(statusBar);
+
+    connect(editStack, &EditStack::message, this, [this](const QString &msg) { statusBar->showMessage(msg, 5000); });
 }
+
+void BaseMainWindow::editStateChanged()
+{
+    QUndoStack *stack = editStack->undoStack();
+    actionUndo->setEnabled(stack->canUndo());
+    actionRedo->setEnabled(stack->canRedo());
+    actionUndo->setText(stack->canUndo() ? "Undo " + stack->undoText() : QString("Undo"));
+    actionRedo->setText(stack->canRedo() ? "Redo " + stack->redoText() : QString("Redo"));
+    if (actionEditMode->isChecked() != editStack->editMode())
+        actionEditMode->setChecked(editStack->editMode());
+}
+
+void BaseMainWindow::taskIdle() { editStack->setBusy(false); }
 
 void BaseMainWindow::enableDisableDecals()
 {
@@ -447,6 +509,7 @@ void BaseMainWindow::open_json()
             Q_EMIT contextChanged(new_ctx.get());
             ctx = std::move(new_ctx);
         }
+        editStack->clear();
         handler->load_json(ctx.get(), fileName.toStdString());
         Q_EMIT updateTreeView();
         log("Loading design successful.\n");
