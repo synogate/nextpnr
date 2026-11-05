@@ -30,6 +30,7 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QStyle>
+#include <algorithm>
 #include <fstream>
 #include "designwidget.h"
 #include "editcommands.h"
@@ -398,6 +399,20 @@ void BaseMainWindow::createMenusAndBars()
                                       "smallest legal step)");
     connect(actionMoveSelection, &QAction::triggered, designview, &DesignWidget::moveSelectionDialog);
 
+    QAction *actionUnlockSelection = new QAction("Unlock selected cells", this);
+    actionUnlockSelection->setStatusTip("Set the selected locked cells (clusters as a whole) to STRONG, so that "
+                                        "they can be swapped and moved by the placers");
+    connect(actionUnlockSelection, &QAction::triggered, designview, &DesignWidget::unlockSelection);
+
+    QAction *actionUnlockAllCells = new QAction("Unlock all cells", this);
+    actionUnlockAllCells->setStatusTip("Set every locked placed cell (e.g. FIXED from a placed JSON) to STRONG, as "
+                                       "one undoable edit");
+    connect(actionUnlockAllCells, &QAction::triggered, designview, &DesignWidget::unlockAllCells);
+
+    QAction *actionUnlockAllNets = new QAction("Unlock all routing", this);
+    actionUnlockAllNets->setStatusTip("Set the strength of all locked routing to STRONG, as one undoable edit");
+    connect(actionUnlockAllNets, &QAction::triggered, designview, &DesignWidget::unlockAllNets);
+
     actionCancelPlacement = new QAction("Cancel placement", this);
     actionCancelPlacement->setShortcut(QKeySequence(Qt::Key_Escape));
     actionCancelPlacement->setEnabled(false);
@@ -437,6 +452,10 @@ void BaseMainWindow::createMenusAndBars()
     menuEdit->addAction(actionNextUnplaced);
     menuEdit->addAction(actionCancelPlacement);
     menuEdit->addAction(actionMoveSelection);
+    menuEdit->addSeparator();
+    menuEdit->addAction(actionUnlockSelection);
+    menuEdit->addAction(actionUnlockAllCells);
+    menuEdit->addAction(actionUnlockAllNets);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);
@@ -498,22 +517,24 @@ void BaseMainWindow::createMenusAndBars()
     // The current selection, permanently shown (temporary messages appear left of it)
     selectionLabel = new QLabel("No selection", statusBar);
     selectionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Narrow enough to leave room for the temporary messages; the full text is in the tooltip
     selectionLabel->setMinimumWidth(1);
-    selectionLabel->setMaximumWidth(800);
+    selectionLabel->setMaximumWidth(360);
     // While a cell is armed for placement by click
     placementLabel = new QLabel(statusBar);
     placementLabel->setStyleSheet("QLabel { color: black; background-color: #ffb040; padding: 0 4px; }");
     placementLabel->setVisible(false);
+    placementLabel->setMinimumWidth(1);
+    placementLabel->setMaximumWidth(420);
     statusBar->addPermanentWidget(placementLabel);
     connect(fpgaView, &FPGAViewWidget::placementStatus, this, [this](const QString &text) {
-        placementLabel->setText(text);
+        setElidedText(placementLabel, text);
         placementLabel->setVisible(!text.isEmpty());
         actionCancelPlacement->setEnabled(!text.isEmpty());
     });
     statusBar->addPermanentWidget(selectionLabel);
     connect(designview, &DesignWidget::selectionInfo, this, [this](const QString &text) {
-        selectionLabel->setText(text);
-        selectionLabel->setToolTip(text);
+        setElidedText(selectionLabel, text);
     });
     progressBar = new QProgressBar(statusBar);
     progressBar->setAlignment(Qt::AlignRight);
@@ -523,7 +544,19 @@ void BaseMainWindow::createMenusAndBars()
     progressBar->setEnabled(false);
     setStatusBar(statusBar);
 
-    connect(editStack, &EditStack::message, this, [this](const QString &msg) { statusBar->showMessage(msg, 5000); });
+    connect(editStack, &EditStack::message, this, [this](const QString &msg) {
+        statusBar->showMessage(msg, 8000);
+        // Long messages may still be cut off: the latest one is also in the status bar's tooltip
+        statusBar->setToolTip(msg);
+    });
+}
+
+void BaseMainWindow::setElidedText(QLabel *label, const QString &text)
+{
+    // Elide to the label's maximum width, the full text goes to the tooltip
+    int width = label->maximumWidth() - 2 * label->margin() - 8;
+    label->setText(label->fontMetrics().elidedText(text, Qt::ElideRight, std::max(width, 20)));
+    label->setToolTip(text);
 }
 
 void BaseMainWindow::editStateChanged()
@@ -531,8 +564,13 @@ void BaseMainWindow::editStateChanged()
     QUndoStack *stack = editStack->undoStack();
     actionUndo->setEnabled(stack->canUndo());
     actionRedo->setEnabled(stack->canRedo());
+    // The menu shows the full text; the toolbar button keeps a short one (iconText), the tooltip the full one
     actionUndo->setText(stack->canUndo() ? "Undo " + stack->undoText() : QString("Undo"));
     actionRedo->setText(stack->canRedo() ? "Redo " + stack->redoText() : QString("Redo"));
+    actionUndo->setIconText("Undo");
+    actionRedo->setIconText("Redo");
+    actionUndo->setToolTip(actionUndo->text());
+    actionRedo->setToolTip(actionRedo->text());
     if (actionEditMode->isChecked() != editStack->editMode())
         actionEditMode->setChecked(editStack->editMode());
 }

@@ -115,6 +115,7 @@ class BaseMainWindow : public QMainWindow
 
     void toggleMcpServer(bool on);
     void editStateChanged();
+    void setElidedText(QLabel *label, const QString &text);
     void taskIdle();
 
   Q_SIGNALS:

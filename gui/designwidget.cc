@@ -252,6 +252,13 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
         connect(treeView[num], &TreeView::customContextMenuRequested,
                 [this, num](const QPoint &pos) { prepareMenuTree(num, pos); });
         connect(treeView[num], &TreeView::doubleClicked, [this](const QModelIndex &index) { onDoubleClicked(index); });
+        if (num == getIndexByElementType(ElementType::CELL)) {
+            // A click on the already selected cell does not change the selection: arm it anyway
+            connect(treeView[num], &TreeView::clicked, this, [this](const QModelIndex &) {
+                if (!arm_ignore)
+                    armTreeCell();
+            });
+        }
         connect(treeView[num], &TreeView::hoverIndexChanged,
                 [this, num](QModelIndex index) { onHoverIndexChanged(num, index); });
         selectionModel[num] = treeView[num]->selectionModel();
@@ -722,6 +729,49 @@ void DesignWidget::showCell(IdString cell)
     arm_ignore = false;
 }
 
+IdString DesignWidget::singleTreeCell()
+{
+    int cells = getIndexByElementType(ElementType::CELL);
+    QModelIndexList sel = selectionModel[cells]->selectedIndexes();
+    if (sel.size() != 1)
+        return IdString();
+    // With Ctrl held the other trees keep their selection: then the cell must be all that is selected
+    if (QApplication::keyboardModifiers().testFlag(Qt::ControlModifier)) {
+        for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++)
+            if (i != cells && !selectionModel[i]->selectedIndexes().isEmpty())
+                return IdString();
+    }
+    TreeModel::Item *item = treeModel[cells]->nodeFromIndex(sel.at(0));
+    return item->type() == ElementType::CELL ? item->id()[0] : IdString();
+}
+
+void DesignWidget::armTreeCell()
+{
+    if (editStack == nullptr || ctx == nullptr)
+        return;
+    IdString cell = singleTreeCell();
+    if (cell == IdString() || !editStack->editMode()) {
+        Q_EMIT armCellRequested(IdString());
+        return;
+    }
+    // armCellRequested reports why if the cell cannot be armed now (e.g. a task is running)
+    Q_EMIT armCellRequested(cell);
+}
+
+void DesignWidget::setEditStack(EditStack *stack)
+{
+    editStack = stack;
+    if (stack == nullptr)
+        return;
+    // Turning edit mode on with one cell selected in the Cells tree arms it
+    connect(stack, &EditStack::stateChanged, this, [this] {
+        bool on = editStack->editMode();
+        if (on && !lastEditMode && !arm_ignore)
+            armTreeCell();
+        lastEditMode = on;
+    });
+}
+
 void DesignWidget::armSelected()
 {
     if (ctx == nullptr || editStack == nullptr)
@@ -890,6 +940,93 @@ void DesignWidget::nudgeSelection(int dx, int dy)
                               .arg(QString::fromStdString(first_err)));
 }
 
+void DesignWidget::unlockCells(const QString &text, std::vector<IdString> cells)
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot unlock: " + why);
+        return;
+    }
+    // Clusters as a whole; only placed, locked cells change
+    std::vector<IdString> locked;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        pool<IdString> seen;
+        for (IdString name : cells) {
+            auto fnd = ctx->cells.find(name);
+            if (fnd == ctx->cells.end())
+                continue;
+            for (CellInfo *c : placementGroup(ctx, fnd->second.get()))
+                if (seen.insert(c->name).second && c->bel != BelId() && isCellLocked(c))
+                    locked.push_back(c->name);
+        }
+    }
+    if (locked.empty()) {
+        editStack->notify(cells.empty() ? "Nothing to unlock: select cells or bels with cells first"
+                                        : "Nothing to unlock: no placed locked cells");
+        return;
+    }
+    editStack->run(QString("%1 (%2 cells)").arg(text).arg(locked.size()), [&](EditBatch &b) -> std::string {
+        for (IdString name : locked) {
+            std::string err = b.add(std::make_unique<SetCellStrengthCmd>(name, STRENGTH_MANUAL));
+            if (!err.empty())
+                return err;
+        }
+        return {};
+    });
+}
+
+void DesignWidget::unlockSelection() { unlockCells("Unlock selection", selectedCells()); }
+
+void DesignWidget::unlockAllCells()
+{
+    if (ctx == nullptr)
+        return;
+    std::vector<IdString> cells;
+    for (auto &c : ctx->cells)
+        cells.push_back(c.first);
+    unlockCells("Unlock all cells", cells);
+}
+
+void DesignWidget::unlockAllNets()
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot unlock: " + why);
+        return;
+    }
+    std::vector<IdString> nets;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        for (auto &n : ctx->nets) {
+            for (auto &w : n.second->wires) {
+                if (w.second.strength > STRENGTH_STRONG) {
+                    nets.push_back(n.first);
+                    break;
+                }
+            }
+        }
+    }
+    if (nets.empty()) {
+        editStack->notify("Nothing to unlock: no locked routing");
+        return;
+    }
+    editStack->run(QString("Unlock all routing (%1 nets)").arg(nets.size()), [&](EditBatch &b) -> std::string {
+        for (IdString name : nets) {
+            std::string err = b.add(std::make_unique<SetNetStrengthCmd>(name, STRENGTH_STRONG));
+            if (!err.empty())
+                return err;
+        }
+        return {};
+    });
+}
+
 void DesignWidget::selectNextUnplaced()
 {
     if (ctx == nullptr || editStack == nullptr)
@@ -1046,20 +1183,12 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
 {
     emitSelectionInfo();
     // In edit mode, selecting exactly one cell in the Cells tree arms it for placement by click;
-    // any other selection disarms
+    // selecting anything else disarms (clearing another tree's selection does not)
     if (!arm_ignore && editStack != nullptr) {
-        IdString arm;
-        int cells = getIndexByElementType(ElementType::CELL);
-        int total = 0;
-        for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++)
-            total += selectionModel[i]->selectedIndexes().size();
-        if (total == 1 && num == cells && selectionModel[cells]->selectedIndexes().size() == 1 &&
-            editStack->canEdit()) {
-            TreeModel::Item *item = treeModel[cells]->nodeFromIndex(selectionModel[cells]->selectedIndexes().at(0));
-            if (item->type() == ElementType::CELL)
-                arm = item->id()[0];
-        }
-        Q_EMIT armCellRequested(arm);
+        if (num == getIndexByElementType(ElementType::CELL))
+            armTreeCell();
+        else if (!selectionModel[num]->selectedIndexes().isEmpty())
+            Q_EMIT armCellRequested(IdString());
     }
     int num_selected = 0;
     std::vector<DecalXY> decals;

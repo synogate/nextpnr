@@ -61,7 +61,7 @@ class DesignWidget : public QWidget
     explicit DesignWidget(QWidget *parent = 0);
     ~DesignWidget();
     // Command layer for manual edits (see editcommands.h); owned by BaseMainWindow.
-    void setEditStack(EditStack *stack) { editStack = stack; }
+    void setEditStack(EditStack *stack);
 
     // An element of the trees, named as the Python bindings name it (for the MCP server)
     struct Element
@@ -104,6 +104,11 @@ class DesignWidget : public QWidget
     std::vector<IdString> selectedCells(bool *on_bels = nullptr);
     // Select these bels in the Bels tree (and the view)
     void selectBels(const std::vector<BelId> &bels);
+    // The one cell selected in the Cells tree (nothing else selected), else empty
+    IdString singleTreeCell();
+    // Arm singleTreeCell() for placement by click if in edit mode, else disarm
+    void armTreeCell();
+    void unlockCells(const QString &text, std::vector<IdString> cells);
   Q_SIGNALS:
     void selected(std::vector<DecalXY> decal, bool keep);
     void highlight(std::vector<DecalXY> decal, int group);
@@ -148,6 +153,12 @@ class DesignWidget : public QWidget
     // Move the selected cells in the direction (dx, dy) by the smallest step (1, 2, ... MAX_NUDGE
     // times the direction) that is legal
     void nudgeSelection(int dx, int dy);
+    // Set the placed locked (strength above STRONG) selected cells / all cells to STRENGTH_MANUAL,
+    // clusters as a whole, as one undo entry
+    void unlockSelection();
+    void unlockAllCells();
+    // Set the routing strength of all nets with wires above STRONG to STRONG, as one undo entry
+    void unlockAllNets();
 
   private:
     // How many of a large net's users and wires the properties list, and how long an attribute's
@@ -178,6 +189,7 @@ class DesignWidget : public QWidget
     bool history_ignore;
     // Selection changes that must not arm a cell for placement (refresh, "show in tree")
     bool arm_ignore = false;
+    bool lastEditMode = false;
     // Cells tab: show only unplaced cells
     QCheckBox *unplacedOnly = nullptr;
     // The cell last chosen by selectNextUnplaced

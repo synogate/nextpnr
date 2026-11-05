@@ -30,6 +30,7 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QTimer>
 #include <QWidget>
 
 #include "QtImGui.h"
@@ -106,13 +107,15 @@ void FPGAViewWidget::setEditStack(EditStack *stack)
     if (stack == nullptr)
         return;
     connect(stack, &EditStack::designChanged, this, [this] {
-        if (armedCell_ == IdString())
-            return;
-        if (ctx_ == nullptr || !ctx_->cells.count(armedCell_)) {
-            disarmPlacement();
-            return;
+        if (armedCell_ != IdString()) {
+            if (ctx_ == nullptr || !ctx_->cells.count(armedCell_)) {
+                disarmPlacement();
+                return;
+            }
+            updateOverlay();
         }
-        updateOverlay();
+        // The hovered element's binding state may have changed
+        applyHover();
     });
     connect(stack, &EditStack::stateChanged, this, [this] {
         if (armedCell_ != IdString() && !editStack_->canEdit())
@@ -640,9 +643,23 @@ void FPGAViewWidget::paintGL()
     QMutexLocker lock(&rendererArgsLock_);
     if (!(rendererArgs_->hoveredDecal == DecalXY()) && rendererArgs_->hintText.size() > 0 &&
         clock_.elapsed() - hoverSince_ >= TOOLTIP_DELAY_MS) {
-        ImGui::SetNextWindowPos(ImVec2(rendererArgs_->x, rendererArgs_->y));
+        // Keep the tooltip inside the view: estimate its size and move it left of / above the cursor
+        // if it would cross the right / bottom edge
+        const float wrap = ImGui::GetFontSize() * 35.0f;
+        const ImGuiStyle &style = ImGui::GetStyle();
+        ImVec2 size = ImGui::CalcTextSize(rendererArgs_->hintText.c_str(), nullptr, false, wrap);
+        size.x += 2 * style.WindowPadding.x + 2;
+        size.y += 2 * style.WindowPadding.y + 2;
+        ImVec2 disp = ImGui::GetIO().DisplaySize;
+        const float offset = 16.0f; // clear of the cursor
+        float x = rendererArgs_->x + offset, y = rendererArgs_->y + offset;
+        if (x + size.x > disp.x)
+            x = std::max(0.0f, std::min(disp.x - size.x, rendererArgs_->x - offset - size.x));
+        if (y + size.y > disp.y)
+            y = std::max(0.0f, std::min(disp.y - size.y, rendererArgs_->y - offset - size.y));
+        ImGui::SetNextWindowPos(ImVec2(x, y));
         ImGui::BeginTooltip();
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+        ImGui::PushTextWrapPos(wrap);
         ImGui::TextUnformatted(rendererArgs_->hintText.c_str());
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
@@ -1160,10 +1177,19 @@ std::string FPGAViewWidget::elementText(const PickedElement &e, bool multiline)
     default:
         break;
     }
-    if (locked)
+    if (locked) {
         ctx_->mutex.unlock();
-    else if (multiline && e.type != ElementType::GROUP)
+    } else if (multiline && e.type != ElementType::GROUP) {
         text += "\n(busy: binding state not shown)";
+        // Usually the render thread holds the lock only briefly (e.g. right after an edit): try again
+        if (!hoverRetryPending_) {
+            hoverRetryPending_ = true;
+            QTimer::singleShot(200, this, [this] {
+                hoverRetryPending_ = false;
+                applyHover();
+            });
+        }
+    }
     return text;
 }
 
@@ -1571,24 +1597,21 @@ void FPGAViewWidget::wheelEvent(QWheelEvent *event)
     if (io.WantCaptureMouse)
         return;
 
-    QPoint degree = event->angleDelta() / 8;
-
-    if (!degree.isNull()) {
-        zoom(degree.y());
+    // angleDelta is in 1/8 degree; high-resolution wheels and touchpads send fractions of a notch,
+    // which must not be rounded away
+    float degrees = event->angleDelta().y() / 8.0f;
+    if (degrees != 0) {
+        zoom(degrees);
         // what is under the mouse now
         updateHover(event->position().x(), event->position().y());
     }
 }
 
-void FPGAViewWidget::zoom(int level)
+void FPGAViewWidget::zoom(float degrees)
 {
-    if (zoom_ < zoomLvl1_) {
-        zoom_ -= level / 500.0;
-    } else if (zoom_ < zoomLvl2_) {
-        zoom_ -= level / 100.0;
-    } else {
-        zoom_ -= level / 10.0;
-    }
+    // Relative zoom: the same wheel rotation changes the scale by the same factor at any distance
+    // (a fixed step per notch barely zooms on large devices)
+    zoom_ *= std::pow(zoomStep_, -degrees / 15.0f);
 
     if (zoom_ < zoomNear_)
         zoom_ = zoomNear_;
@@ -1913,6 +1936,23 @@ void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)
     title->setEnabled(false);
     if (armedCell_ != IdString()) {
         QAction *place = editAction(describePlaceCell(ctx_, armedCell_, bel) + "\tclick");
+        if (can_edit) {
+            // Offer it only if it would succeed; the reason otherwise in the tooltip
+            IdString cell = armedCell_;
+            auto fnd = ctx_->cells.find(cell);
+            std::string err;
+            if (fnd == ctx_->cells.end())
+                err = "cell does not exist";
+            else if (fnd->second->bel == bel)
+                err = cell.str(ctx_) + " is already here";
+            else
+                err = editStack_->dryRun([&](EditBatch &b) { return addPlaceCell(b, cell, bel); });
+            if (!err.empty()) {
+                place->setEnabled(false);
+                place->setText(describePlaceCell(ctx_, cell, bel) + "  (refused)");
+                place->setToolTip(QString::fromStdString(err));
+            }
+        }
         connect(place, &QAction::triggered, this, [this, bel] { placeArmedAt(bel); });
     }
     CellInfo *bound = ctx_->getBoundBelCell(bel);

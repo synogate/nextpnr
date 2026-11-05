@@ -189,8 +189,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     QImage movieLastImage;
     const float zoomNear_ = 0.05f; // do not zoom closer than this
     float zoomFar_ = 10.0f;        // do not zoom further than this
-    const float zoomLvl1_ = 1.0f;
-    const float zoomLvl2_ = 5.0f;
+    // Zoom factor per wheel notch (15 degrees); zooming is relative to the current distance
+    const float zoomStep_ = 1.2f;
 
     struct PickedElement
     {
@@ -320,6 +320,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     QElapsedTimer clock_;
     qint64 hoverSince_ = 0;
     static constexpr int TOOLTIP_DELAY_MS = 300;
+    // A hover text was built while the context was locked (e.g. by the render thread): rebuild soon
+    bool hoverRetryPending_ = false;
     static constexpr int MENU_MAX_CANDIDATES = 20;
 
     std::vector<PickedElement> pickCandidates(float worldx, float worldy);
@@ -513,7 +515,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
     void clampZoom();
     void zoomToBB(const PickQuadTree::BoundingBox &bb, float margin, bool clamp);
-    void zoom(int level);
+    // Zoom in by `degrees` of wheel rotation (negative: out), fractions of a notch included
+    void zoom(float degrees);
     void renderLines(void);
     void renderGraphicElement(LineShaderData &out, PickQuadTree::BoundingBox &bb, const GraphicElement &el, float x,
                               float y);

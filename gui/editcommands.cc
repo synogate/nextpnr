@@ -801,6 +801,7 @@ std::string EditStack::run(const QString &text, const std::function<std::string(
         return why.toStdString();
     }
     EditBatch batch(ctx);
+    bool rollback_failed = false;
     ctx->lock();
     std::string err = runGuarded([&]() { return fn(batch); });
     if (!err.empty()) {
@@ -809,8 +810,10 @@ std::string EditStack::run(const QString &text, const std::function<std::string(
                 batch.cmds[i]->revert(ctx);
             return {};
         });
-        if (!rerr.empty())
+        if (!rerr.empty()) {
             err += "; rollback failed: " + rerr;
+            rollback_failed = true;
+        }
         batch.cmds.clear();
     }
     bool changed = !batch.cmds.empty();
@@ -820,7 +823,9 @@ std::string EditStack::run(const QString &text, const std::function<std::string(
 
     if (!err.empty()) {
         Q_EMIT message(text + " failed: " + QString::fromStdString(err));
-        Q_EMIT designChanged();
+        // A clean rollback restored the design: no refresh (it would reset the trees and properties)
+        if (rollback_failed)
+            Q_EMIT designChanged();
         return err;
     }
     if (changed) {
