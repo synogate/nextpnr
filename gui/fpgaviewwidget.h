@@ -33,6 +33,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QWaitCondition>
+#include <array>
 #include <boost/optional.hpp>
 
 #include "designwidget.h"
@@ -162,6 +163,13 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void disarmPlacement();
     // Centre the view on the bounding box of these bels (keeping the zoom)
     void centerOnBels(std::vector<BelId> bels);
+    // Net view: the routing tree of this net, its source wire and sink wires, and a straight line
+    // (ratsnest) from the driver bel to the sink bel of each arc not routed (empty: none)
+    void setNetView(IdString net);
+    // Ratsnest of the unrouted arcs of all nets (at most MAX_RATSNEST lines)
+    void setShowAllUnrouted(bool on);
+    // Recompute the net view and the ratsnest from the current design state
+    void refreshNetView();
   Q_SIGNALS:
     void clickedBel(BelId bel, bool add);
     void clickedWire(WireId wire, bool add);
@@ -174,6 +182,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void showCellRequested(IdString cell);
     // Arrow key in edit mode: move the selection one step in this direction (grid units)
     void nudgeRequested(int dx, int dy);
+    // Select a net in the Nets tree (after rip-up from the context menu)
+    void showNetRequested(IdString net);
 
   private:
     std::vector<Overlay> overlays_;
@@ -335,6 +345,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void showSelectMenu(const QPoint &pos);
     // Edit actions on a bel and the cell bound to it, for the right-click menu
     void addBelEditActions(QMenu &menu, BelId bel);
+    // Rip-up actions on the wire / pip under the cursor (of a net), for the right-click menu
+    void addRouteEditActions(QMenu &menu, const std::vector<PickedElement> &cands);
 
     // Placement by click
     IdString armedCell_;
@@ -370,6 +382,18 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     static constexpr int OVERLAY_SETS = 3, OVERLAY_SLOTS = 4;
     // Line shader slots of the overlay, after those of the Arch graphics
     static int overlaySlot(int i) { return archLineSlot(ARCH_LAYERS, 0, 0) + i; }
+
+    // Net view and ratsnest: decal sets (routing tree, source wire, routed sink wires, sink wires of
+    // arcs not routed) and line sets (ratsnest of the net, of all nets)
+    static constexpr int NET_TREE = 0, NET_SOURCE = 1, NET_SINK = 2, NET_SINK_BAD = 3, NET_DECAL_SETS = 4;
+    static constexpr int NET_RATSNEST = 0, ALL_RATSNEST = 1, NET_LINE_SETS = 2;
+    static constexpr int NET_SLOTS = NET_DECAL_SETS + NET_LINE_SETS;
+    static constexpr int MAX_RATSNEST = 20000;
+    static int netSlot(int i) { return overlaySlot(OVERLAY_SLOTS) + i; }
+    IdString netView_;
+    bool showAllUnrouted_ = false;
+    // Returns the number of ratsnest lines of all nets, or -1 if capped at MAX_RATSNEST
+    int updateNetOverlay();
 
     Context *ctx_;
     EditStack *editStack_ = nullptr;
@@ -438,6 +462,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         QColor hovered;
         QColor highlight[8];
         QColor overlay[OVERLAY_SLOTS];
+        QColor net[NET_SLOTS];
     } colors_;
 
     struct RendererArgs
@@ -468,6 +493,10 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         bool overlayChanged = false;
         // The hovered bel when placing the armed cell there would fail (rendered with `changed`)
         DecalXY overlayHoverBad;
+        // Net view and ratsnest (see NET_TREE ...), and whether they changed
+        std::vector<DecalXY> netDecals[NET_DECAL_SETS];
+        std::vector<std::array<float, 4>> netLines[NET_LINE_SETS];
+        bool netChanged = false;
         // Hint text
         std::string hintText;
         // cursor pos
@@ -503,6 +532,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         LineShaderData gfxHovered;
         LineShaderData gfxHighlighted[8];
         LineShaderData gfxOverlay[OVERLAY_SLOTS];
+        LineShaderData gfxNet[NET_SLOTS];
         // Global bounding box of data from Arch.
         PickQuadTree::BoundingBox bbGlobal;
         // Bounding box of selected items.

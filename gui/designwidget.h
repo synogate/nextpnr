@@ -120,6 +120,8 @@ class DesignWidget : public QWidget
     void armCellRequested(IdString cell);
     // Centre the device view on these bels
     void centerOnBels(std::vector<BelId> bels);
+    // The net to show in the device view (selected net, or net of the selected wire / pip; empty: none)
+    void netSelected(IdString net);
 
   private Q_SLOTS:
     void prepareMenuProperty(const QPoint &pos);
@@ -140,6 +142,8 @@ class DesignWidget : public QWidget
     void onClickedPip(PipId pip, bool keep);
     // Select a cell in the Cells tree (without arming it for placement)
     void showCell(IdString cell);
+    // Select a net in the Nets tree
+    void showNet(IdString net);
     // Arm the selected cell, or the cell on the selected bel, for placement by click
     void armSelected();
     // Select and arm the next unplaced cell (by name, after the last one chosen this way) and centre

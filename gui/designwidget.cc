@@ -37,6 +37,7 @@
 #include <QTreeWidgetItem>
 #include "editcommands.h"
 #include "elementinfo.h"
+#include "netstatus.h"
 #include "fpgaviewwidget.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -729,6 +730,29 @@ void DesignWidget::showCell(IdString cell)
     arm_ignore = false;
 }
 
+void DesignWidget::showNet(IdString net)
+{
+    if (ctx == nullptr)
+        return;
+    boost::optional<TreeModel::Item *> item;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        item = getTreeByElementType(ElementType::NET)->nodeForId(IdStringList(net));
+    }
+    if (!item)
+        return;
+    int index = getIndexByElementType(ElementType::NET);
+    arm_ignore = true;
+    clearAllSelectionModels();
+    if (tabWidget->currentIndex() != index)
+        tabWidget->setCurrentIndex(index);
+    QModelIndex mi = getTreeByElementType(ElementType::NET)->indexFromNode(*item);
+    selectionModel[index]->setCurrentIndex(mi, QItemSelectionModel::ClearAndSelect);
+    treeView[index]->scrollTo(mi);
+    arm_ignore = false;
+}
+
 IdString DesignWidget::singleTreeCell()
 {
     int cells = getIndexByElementType(ElementType::CELL);
@@ -1097,6 +1121,7 @@ void DesignWidget::emitSelectionInfo()
 {
     if (ctx == nullptr) {
         Q_EMIT selectionInfo(QString());
+        Q_EMIT netSelected(IdString());
         return;
     }
     int num_selected = 0;
@@ -1109,13 +1134,17 @@ void DesignWidget::emitSelectionInfo()
     }
     if (num_selected == 0 || item == nullptr) {
         Q_EMIT selectionInfo("No selection");
+        Q_EMIT netSelected(IdString());
         return;
     }
     if (num_selected > 1) {
         Q_EMIT selectionInfo(QString("%1 items selected").arg(num_selected));
+        Q_EMIT netSelected(IdString());
         return;
     }
     std::string text;
+    // The net shown in the device view: the selected net, or the net of the selected wire / pip
+    NetInfo *view_net = nullptr;
     IdStringList c = item->id();
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
@@ -1129,14 +1158,18 @@ void DesignWidget::emitSelectionInfo()
         }
         case ElementType::WIRE: {
             WireId wire = ctx->getWireByName(c);
-            if (wire != WireId())
+            if (wire != WireId()) {
                 text = ElementInfo::wireText(ctx, wire, true, false);
+                view_net = ctx->getBoundWireNet(wire);
+            }
             break;
         }
         case ElementType::PIP: {
             PipId pip = ctx->getPipByName(c);
-            if (pip != PipId())
+            if (pip != PipId()) {
                 text = ElementInfo::pipText(ctx, pip, true, false);
+                view_net = ctx->getBoundPipNet(pip);
+            }
             break;
         }
         case ElementType::GROUP: {
@@ -1170,13 +1203,22 @@ void DesignWidget::emitSelectionInfo()
                 text += "(none)";
             text += "  |  users: " + std::to_string(net->users.entries()) +
                     "  |  wires: " + std::to_string(net->wires.size());
+            view_net = net;
             break;
         }
         default:
             break;
         }
+        if (view_net != nullptr) {
+            std::string summary = NetStatus::summary(NetStatus::compute(ctx, view_net));
+            if (item->type() == ElementType::NET)
+                text += "  |  " + summary;
+            else
+                text += "  |  net " + view_net->name.str(ctx) + ": " + summary;
+        }
     }
     Q_EMIT selectionInfo(QString::fromStdString(text));
+    Q_EMIT netSelected(view_net != nullptr ? view_net->name : IdString());
 }
 
 void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QItemSelection &)
@@ -1403,6 +1445,27 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
             if (value.size() > MAX_VALUE_LENGTH)
                 value = value.substr(0, MAX_VALUE_LENGTH) + "... (" + std::to_string(value.size()) + " characters)";
             addProperty(attrsItem, QtType::QString, item.first.c_str(ctx), value.c_str());
+        }
+
+        NetStatus::Status st = NetStatus::compute(ctx, net);
+        QtProperty *routingItem = addSubGroup(topItem, "Routing");
+        addProperty(routingItem, QtType::QString, "Status", QString::fromStdString(NetStatus::summary(st)));
+        QString source = st.source != WireId() ? ctx->nameOfWire(st.source) : "";
+        addProperty(routingItem, QtType::QString, "Source Wire", source, ElementType::WIRE);
+        QtProperty *arcsItem = addSubGroup(routingItem, "Arcs");
+        for (auto &arc : st.arcs) {
+            QString name = QString("%1.%2").arg(arc.cell.c_str(ctx)).arg(arc.port.c_str(ctx));
+            if (arc.phys_idx > 0)
+                name += QString(" [%1]").arg(arc.phys_idx);
+            QtProperty *arcItem = addSubGroup(arcsItem, name);
+            std::string state = NetStatus::stateName(arc.state);
+            if (arc.blocked)
+                state += " (sink wire used by " + std::string(ctx->nameOf(ctx->getBoundWireNet(arc.sink))) + ")";
+            addProperty(arcItem, QtType::QString, "State", QString::fromStdString(state));
+            QString sink = arc.sink != WireId() ? ctx->nameOfWire(arc.sink) : "";
+            addProperty(arcItem, QtType::QString, "Sink Wire", sink, ElementType::WIRE);
+            if (!arc.path.empty())
+                addProperty(arcItem, QtType::Int, "Wires", int(arc.path.size()));
         }
 
         QtProperty *wiresItem = addSubGroup(topItem, "Wires");
@@ -1708,6 +1771,73 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
                     return {};
                 });
             });
+        }
+    }
+    // Rip-up on nets
+    if (editStack != nullptr && !editStack->busy()) {
+        std::vector<IdString> nets;
+        for (auto item : items)
+            if (item->type() == ElementType::NET && ctx->nets.count(item->id()[0]))
+                nets.push_back(item->id()[0]);
+        if (!nets.empty()) {
+            QString why;
+            bool can_edit = editStack->canEdit(&why);
+            menu.setToolTipsVisible(true);
+            menu.addSeparator();
+            QString what = nets.size() == 1 ? QString("net %1").arg(nets[0].c_str(ctx))
+                                            : QString("%1 nets").arg(nets.size());
+            QAction *unroute = menu.addAction("Unroute " + what);
+            unroute->setEnabled(can_edit);
+            if (!can_edit)
+                unroute->setToolTip(why);
+            connect(unroute, &QAction::triggered, this, [this, nets, what] {
+                editStack->run("Unroute " + what, [&](EditBatch &b) -> std::string {
+                    for (IdString net : nets) {
+                        NetInfo *ni = ctx->nets.at(net).get();
+                        // Nets without routing besides the source wire are skipped
+                        WireId src = ctx->getNetinfoSourceWire(ni);
+                        bool routed = false;
+                        for (auto &w : ni->wires)
+                            routed |= w.first != src;
+                        if (!routed)
+                            continue;
+                        std::string err = addUnrouteNet(b, net);
+                        if (!err.empty())
+                            return err;
+                    }
+                    return {};
+                });
+            });
+            if (nets.size() == 1) {
+                IdString net = nets[0];
+                NetInfo *ni = ctx->nets.at(net).get();
+                std::vector<std::pair<QString, WireId>> arcs;
+                {
+                    std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+                    std::lock_guard<std::mutex> lock(ctx->mutex);
+                    NetStatus::Status st = NetStatus::compute(ctx, ni);
+                    for (auto &arc : st.arcs)
+                        if (!arc.path.empty() && !NetStatus::arcOnlyWires(ctx, ni, st, arc.sink).empty())
+                            arcs.emplace_back(QString("%1.%2").arg(arc.cell.c_str(ctx)).arg(arc.port.c_str(ctx)),
+                                              arc.sink);
+                }
+                if (!arcs.empty()) {
+                    QMenu *sub = menu.addMenu(QString("Unroute arc (%1)").arg(arcs.size()));
+                    sub->setEnabled(can_edit);
+                    const size_t max_arcs = 40;
+                    for (size_t i = 0; i < arcs.size() && i < max_arcs; i++) {
+                        QString name = arcs[i].first;
+                        WireId sink = arcs[i].second;
+                        QAction *a = sub->addAction("to " + name);
+                        connect(a, &QAction::triggered, this, [this, net, sink, name] {
+                            editStack->run("Unroute arc to " + name,
+                                           [&](EditBatch &b) { return addUnrouteArc(b, net, sink); });
+                        });
+                    }
+                    if (arcs.size() > max_arcs)
+                        sub->addAction(QString("... %1 more").arg(arcs.size() - max_arcs))->setEnabled(false);
+                }
+            }
         }
     }
     menu.exec(treeView[num]->mapToGlobal(pos));

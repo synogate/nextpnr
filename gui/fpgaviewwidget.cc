@@ -41,6 +41,7 @@
 #include "fpgaviewwidget.h"
 #include "log.h"
 #include "mainwindow.h"
+#include "netstatus.h"
 
 #if QT_VERSION_MAJOR >= 6
 #define EVENT_POS(event) ((event)->position())
@@ -77,6 +78,12 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     colors_.overlay[OVERLAY_SWAP] = QColor("#ff9900");
     colors_.overlay[OVERLAY_BLOCKED] = QColor("#c03030");
     colors_.overlay[OVERLAY_HOVER_BAD] = QColor("#ff2020");
+    colors_.net[NET_TREE] = QColor("#c07030");
+    colors_.net[NET_SOURCE] = QColor("#ff40ff");
+    colors_.net[NET_SINK] = QColor("#40e0ff");
+    colors_.net[NET_SINK_BAD] = QColor("#ffe020");
+    colors_.net[NET_DECAL_SETS + NET_RATSNEST] = QColor("#ffe020");
+    colors_.net[NET_DECAL_SETS + ALL_RATSNEST] = QColor("#a0a040");
 
     rendererArgs_->changed = false;
     rendererArgs_->gridChanged = false;
@@ -116,6 +123,7 @@ void FPGAViewWidget::setEditStack(EditStack *stack)
         }
         // The hovered element's binding state may have changed
         applyHover();
+        refreshNetView();
     });
     connect(stack, &EditStack::stateChanged, this, [this] {
         if (armedCell_ != IdString() && !editStack_->canEdit())
@@ -129,7 +137,9 @@ void FPGAViewWidget::newContext(Context *ctx)
     hoverCandidates_.clear();
     ctx_ = nullptr;
     disarmPlacement();
+    netView_ = IdString();
     ctx_ = ctx;
+    updateNetOverlay();
     {
         QMutexLocker lock(&rendererArgsLock_);
 
@@ -151,7 +161,7 @@ QSize FPGAViewWidget::sizeHint() const { return QSize(640, 480); }
 
 void FPGAViewWidget::initializeGL()
 {
-    if (!lineShader_.compile(overlaySlot(OVERLAY_SLOTS))) {
+    if (!lineShader_.compile(netSlot(NET_SLOTS))) {
         log_error("Could not compile shader.\n");
     }
     if (!textShader_.compile(archTextSlot(ARCH_LAYERS, 0, 0))) {
@@ -607,6 +617,13 @@ void FPGAViewWidget::paintGL()
     // Valid-site overlay of the cell armed for placement
     for (int i = 0; i < OVERLAY_SLOTS; i++)
         lineShader_.draw(overlaySlot(i), colors_.overlay[i], i == OVERLAY_HOVER_BAD ? thick2Px : thick11Px, matrix);
+    // Net view and ratsnest: the source and sink wires thick, on top of the tree
+    const int netOrder[NET_SLOTS] = {NET_DECAL_SETS + ALL_RATSNEST, NET_TREE, NET_SINK_BAD, NET_SINK, NET_SOURCE,
+                                     NET_DECAL_SETS + NET_RATSNEST};
+    for (int i : netOrder) {
+        bool thick = i == NET_SOURCE || i == NET_SINK || i == NET_SINK_BAD;
+        lineShader_.draw(netSlot(i), colors_.net[i], thick ? thick2Px * 1.5f : thick11Px, matrix);
+    }
 
     // Draw highlighted items.
     for (int i = 0; i < 8; i++) {
@@ -769,6 +786,9 @@ void FPGAViewWidget::renderLines(void)
     std::vector<DecalXY> overlayDecals[OVERLAY_SETS];
     DecalXY overlayHoverBad;
     bool overlayChanged;
+    std::vector<DecalXY> netDecals[NET_DECAL_SETS];
+    std::vector<std::array<float, 4>> netLines[NET_LINE_SETS];
+    bool netChanged;
     bool highlightedOrSelectedChanged;
     bool gridChanged;
     PickQuadTree::BoundingBox viewRect;
@@ -790,6 +810,14 @@ void FPGAViewWidget::renderLines(void)
             for (int i = 0; i < OVERLAY_SETS; i++)
                 overlayDecals[i] = rendererArgs_->overlayDecals[i];
         overlayHoverBad = rendererArgs_->overlayHoverBad;
+        netChanged = rendererArgs_->netChanged;
+        rendererArgs_->netChanged = false;
+        if (netChanged) {
+            for (int i = 0; i < NET_DECAL_SETS; i++)
+                netDecals[i] = rendererArgs_->netDecals[i];
+            for (int i = 0; i < NET_LINE_SETS; i++)
+                netLines[i] = rendererArgs_->netLines[i];
+        }
 
         highlightedOrSelectedChanged = rendererArgs_->changed;
         gridChanged = rendererArgs_->gridChanged;
@@ -901,6 +929,8 @@ void FPGAViewWidget::renderLines(void)
             // The overlay is re-rendered below when it changed
             for (int i = 0; i < OVERLAY_SLOTS; i++)
                 data->gfxOverlay[i] = rendererData_->gfxOverlay[i];
+            for (int i = 0; i < NET_SLOTS; i++)
+                data->gfxNet[i] = rendererData_->gfxNet[i];
             data->arch.setGeneration(++archGeneration_);
             rendererData_ = std::move(data);
         }
@@ -993,6 +1023,22 @@ void FPGAViewWidget::renderLines(void)
             int last = rendererData_->gfxOverlay[i].last_render;
             rendererData_->gfxOverlay[i] = std::move(gfx[i]);
             rendererData_->gfxOverlay[i].last_render = last + 1;
+        }
+    }
+    if (netChanged) {
+        LineShaderData gfx[NET_SLOTS];
+        PickQuadTree::BoundingBox bb;
+        for (int i = 0; i < NET_DECAL_SETS; i++)
+            for (auto &decal : netDecals[i])
+                renderDecal(gfx[i], bb, decal);
+        for (int i = 0; i < NET_LINE_SETS; i++)
+            for (auto &l : netLines[i])
+                PolyLine(l[0], l[1], l[2], l[3]).build(gfx[NET_DECAL_SETS + i]);
+        QMutexLocker locker(&rendererDataLock_);
+        for (int i = 0; i < NET_SLOTS; i++) {
+            int last = rendererData_->gfxNet[i].last_render;
+            rendererData_->gfxNet[i] = std::move(gfx[i]);
+            rendererData_->gfxNet[i].last_render = last + 1;
         }
     }
 
@@ -1305,6 +1351,7 @@ void FPGAViewWidget::showSelectMenu(const QPoint &pos)
     BelId bel = candidateBel(cands);
     if (bel != BelId())
         addBelEditActions(menu, bel);
+    addRouteEditActions(menu, cands);
     menu.exec(mapToGlobal(pos));
 }
 
@@ -2007,6 +2054,214 @@ void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)
     connect(show, &QAction::triggered, this, [this, name] { Q_EMIT showCellRequested(name); });
 }
 
+void FPGAViewWidget::setNetView(IdString net)
+{
+    if (net == netView_ && net == IdString())
+        return;
+    netView_ = net;
+    updateNetOverlay();
+}
+
+void FPGAViewWidget::setShowAllUnrouted(bool on)
+{
+    showAllUnrouted_ = on;
+    int count = updateNetOverlay();
+    if (on && editStack_ != nullptr) {
+        if (count < 0)
+            editStack_->notify(QString("Unrouted arcs: showing the first %1 only").arg(MAX_RATSNEST));
+        else
+            editStack_->notify(QString("Unrouted arcs: %1").arg(count));
+    }
+}
+
+void FPGAViewWidget::refreshNetView()
+{
+    if (netView_ != IdString() || showAllUnrouted_)
+        updateNetOverlay();
+}
+
+int FPGAViewWidget::updateNetOverlay()
+{
+    using NetStatus::ArcState;
+    std::vector<DecalXY> decals[NET_DECAL_SETS];
+    std::vector<std::array<float, 4>> lines[NET_LINE_SETS];
+    bool capped = false;
+    if (ctx_ != nullptr && (netView_ != IdString() || showAllUnrouted_)) {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        // Lines from the driver bel to the sink bels of the arcs not routed; false if capped
+        auto ratsnest = [&](NetInfo *ni, const NetStatus::Status &st, std::vector<std::array<float, 4>> &out) {
+            if (ni->driver.cell == nullptr || ni->driver.cell->bel == BelId())
+                return true;
+            float x0, y0;
+            if (!NetStatus::belCentre(ctx_, ni->driver.cell->bel, x0, y0))
+                return true;
+            for (auto &arc : st.arcs) {
+                if (arc.state != ArcState::UNROUTED && arc.state != ArcState::PARTIAL)
+                    continue;
+                CellInfo *c = ni->users.at(arc.user).cell;
+                float x1, y1;
+                if (c == nullptr || !NetStatus::belCentre(ctx_, c->bel, x1, y1))
+                    continue;
+                if (int(out.size()) >= MAX_RATSNEST)
+                    return false;
+                out.push_back({x0, y0, x1, y1});
+            }
+            return true;
+        };
+        if (netView_ != IdString()) {
+            auto fnd = ctx_->nets.find(netView_);
+            if (fnd == ctx_->nets.end()) {
+                netView_ = IdString();
+            } else {
+                NetInfo *ni = fnd->second.get();
+                NetStatus::Status st = NetStatus::compute(ctx_, ni);
+                for (auto &w : ni->wires) {
+                    decals[NET_TREE].push_back(ctx_->getWireDecal(w.first));
+                    if (w.second.pip != PipId())
+                        decals[NET_TREE].push_back(ctx_->getPipDecal(w.second.pip));
+                }
+                if (st.source != WireId())
+                    decals[NET_SOURCE].push_back(ctx_->getWireDecal(st.source));
+                for (auto &arc : st.arcs)
+                    if (arc.sink != WireId() && arc.sink != st.source)
+                        decals[arc.state == ArcState::ROUTED ? NET_SINK : NET_SINK_BAD].push_back(
+                                ctx_->getWireDecal(arc.sink));
+                ratsnest(ni, st, lines[NET_RATSNEST]);
+            }
+        }
+        if (showAllUnrouted_) {
+            for (auto &n : ctx_->nets) {
+                NetInfo *ni = n.second.get();
+                if (ni->users.entries() == 0)
+                    continue;
+                NetStatus::Status st = NetStatus::compute(ctx_, ni);
+                if (st.routed == st.routable())
+                    continue;
+                if (!ratsnest(ni, st, lines[ALL_RATSNEST])) {
+                    capped = true;
+                    break;
+                }
+            }
+        }
+    }
+    int count = capped ? -1 : int(lines[ALL_RATSNEST].size());
+    {
+        QMutexLocker locker(&rendererArgsLock_);
+        for (int i = 0; i < NET_DECAL_SETS; i++)
+            rendererArgs_->netDecals[i] = std::move(decals[i]);
+        for (int i = 0; i < NET_LINE_SETS; i++)
+            rendererArgs_->netLines[i] = std::move(lines[i]);
+        rendererArgs_->netChanged = true;
+    }
+    pokeRenderer();
+    return count;
+}
+
+void FPGAViewWidget::addRouteEditActions(QMenu &menu, const std::vector<PickedElement> &cands)
+{
+    if (editStack_ == nullptr || ctx_ == nullptr || editStack_->busy())
+        return;
+    // The wire or pip of a net here: the hovered one if it is one, else the first
+    std::vector<const PickedElement *> order;
+    if (cands == hoverCandidates_ && hoverIndex_ >= 0 && hoverIndex_ < int(cands.size()))
+        order.push_back(&cands.at(hoverIndex_));
+    for (auto &c : cands)
+        order.push_back(&c);
+    WireId wire;
+    PipId pip;
+    NetInfo *ni = nullptr;
+    for (auto *c : order) {
+        if (c->type == ElementType::WIRE && (ni = ctx_->getBoundWireNet(c->wire)) != nullptr) {
+            wire = c->wire;
+            break;
+        }
+        if (c->type == ElementType::PIP && (ni = ctx_->getBoundPipNet(c->pip)) != nullptr) {
+            pip = c->pip;
+            wire = ctx_->getPipDstWire(pip);
+            break;
+        }
+    }
+    if (ni == nullptr)
+        return;
+    IdString net = ni->name;
+    NetStatus::Status st = NetStatus::compute(ctx_, ni);
+    if (pip == PipId()) {
+        auto fnd = ni->wires.find(wire);
+        if (fnd != ni->wires.end())
+            pip = fnd->second.pip;
+    }
+
+    QString why;
+    bool can_edit = editStack_->canEdit(&why);
+    menu.setToolTipsVisible(true);
+    auto editAction = [&](QMenu &m, const QString &text, const std::string &refused = std::string()) {
+        QAction *action = m.addAction(text);
+        action->setEnabled(can_edit && refused.empty());
+        if (!can_edit)
+            action->setToolTip(why);
+        else if (!refused.empty())
+            action->setToolTip(QString::fromStdString(refused));
+        return action;
+    };
+    auto run = [this, net](const QString &text, std::function<std::string(EditBatch &)> fn) {
+        if (editStack_->run(text, fn).empty())
+            Q_EMIT showNetRequested(net);
+    };
+
+    menu.addSeparator();
+    QString netName = QString::fromStdString(net.str(ctx_));
+    QAction *title =
+            menu.addAction(QString("Net %1: %2").arg(netName).arg(QString::fromStdString(NetStatus::summary(st))));
+    title->setEnabled(false);
+    QAction *show = menu.addAction(QString("Show net %1").arg(netName));
+    connect(show, &QAction::triggered, this, [this, net] { Q_EMIT showNetRequested(net); });
+
+    QAction *unroute = editAction(menu, QString("Unroute net %1").arg(netName));
+    connect(unroute, &QAction::triggered, this, [run, net, netName] {
+        run("Unroute net " + netName, [net](EditBatch &b) { return addUnrouteNet(b, net); });
+    });
+
+    // The arcs through this wire
+    std::vector<const NetStatus::Arc *> arcs;
+    for (auto &arc : st.arcs)
+        if (std::find(arc.path.begin(), arc.path.end(), wire) != arc.path.end())
+            arcs.push_back(&arc);
+    auto arcName = [&](const NetStatus::Arc *arc) {
+        return QString("%1.%2").arg(arc->cell.c_str(ctx_)).arg(arc->port.c_str(ctx_));
+    };
+    auto addArc = [&](QMenu &m, const NetStatus::Arc *arc, const QString &label) {
+        WireId sink = arc->sink;
+        QString name = arcName(arc);
+        std::string refused;
+        if (NetStatus::arcOnlyWires(ctx_, ni, st, sink).empty())
+            refused = "no routing serves only this arc (shared with other arcs)";
+        QAction *a = editAction(m, label, refused);
+        connect(a, &QAction::triggered, this, [run, net, sink, name] {
+            run("Unroute arc to " + name, [net, sink](EditBatch &b) { return addUnrouteArc(b, net, sink); });
+        });
+    };
+    if (arcs.size() == 1) {
+        addArc(menu, arcs[0], "Unroute arc to " + arcName(arcs[0]));
+    } else if (arcs.size() > 1) {
+        QMenu *sub = menu.addMenu(QString("Unroute arc (%1 through here)").arg(arcs.size()));
+        sub->setToolTipsVisible(true);
+        for (size_t i = 0; i < arcs.size() && i < size_t(MENU_MAX_CANDIDATES); i++)
+            addArc(*sub, arcs[i], "to " + arcName(arcs[i]));
+    }
+
+    if (pip != PipId()) {
+        size_t n = NetStatus::subtree(NetStatus::downstream(ctx_, ni), ctx_->getPipDstWire(pip)).size();
+        QString undo = QString("Remove pip %1").arg(ctx_->nameOfPip(pip));
+        QString text = undo;
+        if (n > 1)
+            text += QString(" (and %1 wires downstream)").arg(n - 1);
+        QAction *rm = editAction(menu, text);
+        connect(rm, &QAction::triggered, this,
+                [run, pip, undo] { run(undo, [pip](EditBatch &b) { return addRemovePip(b, pip); }); });
+    }
+}
+
 void FPGAViewWidget::update_vbos()
 {
     lineShader_.update_vbos(GraphicElement::STYLE_GRID, rendererData_->gfxGrid);
@@ -2028,6 +2283,8 @@ void FPGAViewWidget::update_vbos()
 
     for (int i = 0; i < OVERLAY_SLOTS; i++)
         lineShader_.update_vbos(overlaySlot(i), rendererData_->gfxOverlay[i]);
+    for (int i = 0; i < NET_SLOTS; i++)
+        lineShader_.update_vbos(netSlot(i), rendererData_->gfxNet[i]);
 
     lineShader_.update_vbos(GraphicElement::STYLE_SELECTED, rendererData_->gfxSelected);
     lineShader_.update_vbos(GraphicElement::STYLE_HOVER, rendererData_->gfxHovered);

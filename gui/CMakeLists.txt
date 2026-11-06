@@ -12,6 +12,8 @@ set(GUI_SOURCES
     editcommands.h
     elementinfo.cc
     elementinfo.h
+    netstatus.cc
+    netstatus.h
     fpgaviewwidget.cc
     fpgaviewwidget.h
     line_editor.cc

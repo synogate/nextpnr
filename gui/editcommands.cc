@@ -17,6 +17,7 @@
 
 #include "editcommands.h"
 #include "log.h"
+#include "netstatus.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -631,6 +632,65 @@ QString describePlaceCell(Context *ctx, IdString cell, BelId bel)
         text = "Place " + name + " at " + ctx->nameOfBel(bel);
     }
     return QString::fromStdString(text);
+}
+
+// ---------------------------------------------------------------------------
+// Rip-up
+
+namespace {
+
+std::string unbindWires(EditBatch &b, const std::vector<WireId> &wires)
+{
+    for (WireId w : wires) {
+        std::string err = b.add(std::make_unique<UnbindWireCmd>(w));
+        if (!err.empty())
+            return err;
+    }
+    return {};
+}
+
+} // namespace
+
+std::string addUnrouteNet(EditBatch &b, IdString net)
+{
+    Context *ctx = b.getContext();
+    NetInfo *ni = findNet(ctx, net);
+    if (ni == nullptr)
+        return "net " + q(net.str(ctx)) + " does not exist";
+    WireId src = ctx->getNetinfoSourceWire(ni);
+    std::vector<WireId> wires;
+    for (auto &w : ni->wires)
+        if (w.first != src)
+            wires.push_back(w.first);
+    if (wires.empty())
+        return "net " + q(net.str(ctx)) + " has no routing";
+    return unbindWires(b, wires);
+}
+
+std::string addUnrouteArc(EditBatch &b, IdString net, WireId sink)
+{
+    Context *ctx = b.getContext();
+    NetInfo *ni = findNet(ctx, net);
+    if (ni == nullptr)
+        return "net " + q(net.str(ctx)) + " does not exist";
+    NetStatus::Status st = NetStatus::compute(ctx, ni);
+    std::vector<WireId> wires = NetStatus::arcOnlyWires(ctx, ni, st, sink);
+    if (wires.empty())
+        return "no routing serves only the arc to " + q(ctx->nameOfWire(sink));
+    return unbindWires(b, wires);
+}
+
+std::string addRemovePip(EditBatch &b, PipId pip)
+{
+    Context *ctx = b.getContext();
+    if (pip == PipId())
+        return "invalid pip";
+    NetInfo *ni = ctx->getBoundPipNet(pip);
+    if (ni == nullptr)
+        return "pip " + q(ctx->nameOfPip(pip)) + " is not used";
+    WireId dst = ctx->getPipDstWire(pip);
+    auto down = NetStatus::downstream(ctx, ni);
+    return unbindWires(b, NetStatus::subtree(down, dst));
 }
 
 // ---------------------------------------------------------------------------

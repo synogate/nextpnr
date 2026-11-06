@@ -266,6 +266,16 @@ std::string addMoveCells(EditBatch &b, const std::vector<IdString> &cells, int d
 // Undo text for addPlaceCell: "Place X at B", "Move X to B", "Swap X with Y", ...
 QString describePlaceCell(Context *ctx, IdString cell, BelId bel);
 
+// Rip-up (see netstatus.h for the arc model). The binding of the net's source wire is kept, as
+// after routing (the routers bind it themselves when missing, and rip up only what is not locked).
+// Remove all routing of a net: every wire except the source wire.
+std::string addUnrouteNet(EditBatch &b, IdString net);
+// Remove the routing serving only the arc to `sink` (a sink wire of the net): from the sink wire
+// up its path while a wire drives nothing else of the net (NetStatus::arcOnlyWires).
+std::string addUnrouteArc(EditBatch &b, IdString net, WireId sink);
+// Remove a bound pip, its destination wire and everything of the net downstream of it.
+std::string addRemovePip(EditBatch &b, PipId pip);
+
 // A set of commands applied as one unit (one undo entry). Only constructed by EditStack::run.
 class EditBatch
 {

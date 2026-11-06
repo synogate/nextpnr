@@ -165,10 +165,13 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(designview, &DesignWidget::armCellRequested, fpgaView, &FPGAViewWidget::armCell);
     connect(designview, &DesignWidget::centerOnBels, fpgaView, &FPGAViewWidget::centerOnBels);
     connect(fpgaView, &FPGAViewWidget::nudgeRequested, designview, &DesignWidget::nudgeSelection);
+    connect(designview, &DesignWidget::netSelected, fpgaView, &FPGAViewWidget::setNetView);
+    connect(fpgaView, &FPGAViewWidget::showNetRequested, designview, &DesignWidget::showNet);
 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
     connect(this, &BaseMainWindow::updateTreeView, timingview, &TimingWidget::designChanged);
+    connect(this, &BaseMainWindow::updateTreeView, fpgaView, &FPGAViewWidget::refreshNetView);
 
     createMenusAndBars();
 
@@ -418,6 +421,14 @@ void BaseMainWindow::createMenusAndBars()
     actionCancelPlacement->setEnabled(false);
     connect(actionCancelPlacement, &QAction::triggered, fpgaView, &FPGAViewWidget::disarmPlacement);
 
+    // View menu actions
+    QAction *actionShowUnrouted = new QAction("Show unrouted arcs", this);
+    actionShowUnrouted->setCheckable(true);
+    actionShowUnrouted->setChecked(false);
+    actionShowUnrouted->setShortcut(QKeySequence(Qt::Key_U));
+    actionShowUnrouted->setStatusTip("Draw a straight line from driver to sink for every arc not routed, in all nets");
+    connect(actionShowUnrouted, &QAction::toggled, fpgaView, &FPGAViewWidget::setShowAllUnrouted);
+
     // set initial state
     fpgaView->enableDisableDecals(actionDisplayBel->isChecked(), actionDisplayWire->isChecked(),
                                   actionDisplayPip->isChecked(), actionDisplayGroups->isChecked());
@@ -430,8 +441,10 @@ void BaseMainWindow::createMenusAndBars()
     QMenu *menuHelp = new QMenu("&Help", menuBar);
     menuDesign = new QMenu("&Design", menuBar);
     menuEdit = new QMenu("&Edit", menuBar);
+    QMenu *menuView = new QMenu("&View", menuBar);
     menuBar->addAction(menuFile->menuAction());
     menuBar->addAction(menuEdit->menuAction());
+    menuBar->addAction(menuView->menuAction());
     menuBar->addAction(menuDesign->menuAction());
     menuBar->addAction(menuHelp->menuAction());
 
@@ -456,6 +469,9 @@ void BaseMainWindow::createMenusAndBars()
     menuEdit->addAction(actionUnlockSelection);
     menuEdit->addAction(actionUnlockAllCells);
     menuEdit->addAction(actionUnlockAllNets);
+
+    // Add View menu actions
+    menuView->addAction(actionShowUnrouted);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);
