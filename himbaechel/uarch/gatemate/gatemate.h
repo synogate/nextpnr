@@ -299,6 +299,12 @@ struct GateMateImpl : HimbaechelAPI
     std::vector<bool> used_cpes;
     std::vector<uint32_t> pip_data;
     std::vector<uint32_t> pip_mask;
+    // pip_mask etc. are computed (postPlace, or on first use for a design loaded placed)
+    std::atomic<bool> pip_masks_ready{false};
+    mutable std::mutex pip_masks_mutex_;
+    void compute_pip_masks(bool with_routing);
+    void add_routed_pip_masks();
+    void ensure_pip_masks() const;
     int fpga_mode;
     int timing_mode;
     std::map<const NetInfo *, int> global_signals;

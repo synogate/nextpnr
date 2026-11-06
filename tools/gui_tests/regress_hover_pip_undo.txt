@@ -1,0 +1,26 @@
+# Regression test for two bugs on a design loaded placed and routed:
+#  - hovering a pip crashed in GateMateImpl::checkPipAvail (pip masks only computed in postPlace)
+#  - after Ctrl+Z with the mouse over the vacated bel the GUI stalled for seconds per event
+# Design: prjpeppercorn-test-cases/035-dff-ffobf/dff-ffobf_olimex_pnr.json
+resize 1400 1000
+view 4.5 97.6 1.2
+key E
+action Unlock all cells
+delay 50
+dragbel X3Y97/CPE_LT_L X5Y97/CPE_LT_L
+wait 300
+status
+assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X5Y97/CPE_LT_L"
+shot 01_dragged.png
+delay 150
+hoverbel X3Y97/CPE_LT_L
+key Ctrl+Z
+echo undo-done
+hoverbel X3Y97/CPE_LT_L
+echo hover1
+move 300 300
+echo hover2
+hoverbel X3Y97/CPE_LT_L
+echo hover3
+assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X3Y97/CPE_LT_L"
+shot 02_undone.png

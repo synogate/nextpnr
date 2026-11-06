@@ -737,9 +737,25 @@ void GateMateImpl::postPlace()
     }
     repack();
     ctx->assignArchInfo();
-    used_cpes.resize(ctx->getGridDimX() * ctx->getGridDimY());
-    pip_data.resize(ctx->getGridDimX() * ctx->getGridDimY());
-    pip_mask.resize(ctx->getGridDimX() * ctx->getGridDimY());
+    compute_pip_masks(false);
+    if (partition_unrouted) {
+        // The partition is complete once placed: as after routing (postRoute), but with no routing kept
+        detach_partition_ports();
+        save_partition_attrs();
+        ctx->settings[ctx->id("partition-unrouted")] = 1;
+        timing_analysis(ctx, false, false, false, false, true);
+    }
+    update_gui_labels();
+}
+
+// The CPE configuration the routing has to respect (pip_mask, pip_data, used_cpes), from the placed cells and,
+// with_routing, the multiplexer settings of the routing already there (as preRoute() adds them)
+void GateMateImpl::compute_pip_masks(bool with_routing)
+{
+    int tiles = ctx->getGridDimX() * ctx->getGridDimY();
+    used_cpes.assign(tiles, false);
+    pip_data.assign(tiles, 0);
+    pip_mask.assign(tiles, 0);
 
     auto set_param_mask_data = [&](CellInfo *cell, IdString param, uint32_t pip_mask, uint32_t &mask, uint32_t &data) {
         if (cell->params.count(param)) {
@@ -749,6 +765,8 @@ void GateMateImpl::postPlace()
         }
     };
     for (auto &cell : ctx->cells) {
+        if (cell.second->bel == BelId())
+            continue;
         // We need to skip CPE_MULT since using CP outputs is mandatory
         // even if output is actually not connected
         // An 8:1 multiplexer drives MUXOUT itself
@@ -796,15 +814,38 @@ void GateMateImpl::postPlace()
         pip_mask[cell.second.get()->bel.tile] = mask;
         pip_data[cell.second.get()->bel.tile] = data;
     }
-    if (partition_unrouted) {
-        // The partition is complete once placed: as after routing (postRoute), but with no routing kept
-        detach_partition_ports();
-        save_partition_attrs();
-        ctx->settings[ctx->id("partition-unrouted")] = 1;
-        timing_analysis(ctx, false, false, false, false, true);
-    }
-    update_gui_labels();
+    if (with_routing)
+        add_routed_pip_masks();
+    pip_masks_ready = true;
 }
+
+void GateMateImpl::add_routed_pip_masks()
+{
+    for (auto &net : ctx->nets) {
+        NetInfo *ni = net.second.get();
+        for (auto &w : ni->wires) {
+            if (w.second.pip != PipId()) {
+                const auto &extra_data = *pip_extra_data(w.second.pip);
+                if (extra_data.type == PipExtra::PIP_EXTRA_MUX && extra_data.resource != 0) {
+                    pip_mask[w.second.pip.tile] |= extra_data.resource;
+                    pip_data[w.second.pip.tile] |= extra_data.value ? extra_data.resource : 0;
+                }
+            }
+        }
+    }
+}
+
+// postPlace() computes the masks; a design loaded placed (e.g. in the GUI, or routed with --no-place) has not been
+// through it, so they are computed when first needed
+void GateMateImpl::ensure_pip_masks() const
+{
+    if (pip_masks_ready)
+        return;
+    std::lock_guard<std::mutex> lock(pip_masks_mutex_);
+    if (!pip_masks_ready)
+        const_cast<GateMateImpl *>(this)->compute_pip_masks(true);
+}
+
 void GateMateImpl::configureRouter2(Router2Cfg &cfg)
 {
     if (scarce_pip_cost.empty())
@@ -851,11 +892,10 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
 {
     if (!pip_allowed_by_options(pip))
         return false;
-    const auto &extra_data = *pip_extra_data(pip);
     // The masks and used CPEs are set up by postPlace: not yet, or not at all for a design loaded
-    // placed and routed (as when the GUI shows a pip of one)
-    if (pip.tile >= int(pip_mask.size()))
-        return true;
+    // placed and routed (as when the GUI shows a pip of one), so they are computed on first use
+    ensure_pip_masks();
+    const auto &extra_data = *pip_extra_data(pip);
     if (extra_data.type == PipExtra::PIP_EXTRA_MUX && (extra_data.block != 0)) {
         if (pip_mask[pip.tile] & extra_data.block) {
             return false;
@@ -890,21 +930,8 @@ void GateMateImpl::preRoute()
     route_mult();
     route_clock();
     ctx->assignArchInfo();
-
-    for (auto &net : ctx->nets) {
-        NetInfo *ni = net.second.get();
-        if (ni->wires.empty())
-            continue;
-        for (auto &w : ni->wires) {
-            if (w.second.pip != PipId()) {
-                const auto &extra_data = *pip_extra_data(w.second.pip);
-                if (extra_data.type == PipExtra::PIP_EXTRA_MUX && extra_data.resource != 0) {
-                    pip_mask[w.second.pip.tile] |= extra_data.resource;
-                    pip_data[w.second.pip.tile] |= extra_data.value ? extra_data.resource : 0;
-                }
-            }
-        }
-    }
+    ensure_pip_masks();
+    add_routed_pip_masks();
     prerouted_nets.clear();
     // (the routing imported with partitions is the router's to change, as is that of the repairs)
     for (auto &net : ctx->nets)
