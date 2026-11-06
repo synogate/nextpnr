@@ -24,6 +24,7 @@
 #include <QTimer>
 #include "basewindow.h"
 #include "designwidget.h"
+#include "editcommands.h"
 #include "fpgaviewwidget.h"
 #include "log.h"
 #include "pythontab.h"
@@ -417,8 +418,14 @@ void BaseMainWindow::mcpTool(const QString &name, const QJsonObject &args, McpSe
             // The architecture's data on cells and nets (indices, port caches) after the netlist changed
             static const QRegularExpression edits("\\b(create|remove|rename)(Cell|Net)\\b|\\b(dis)?connectPorts?\\b|"
                                                   "\\b(move|copy|remove|rename)Port\\b|\\badd(Input|Output|Inout)\\b");
-            if (ctx->cells.size() != cells || ctx->nets.size() != nets || edits.match(code).hasMatch())
+            bool netlist_edited = ctx->cells.size() != cells || ctx->nets.size() != nets || edits.match(code).hasMatch();
+            if (netlist_edited)
                 ctx->assignArchInfo();
+            // The code may have placed or routed: what the architecture derives from that is out of date; and
+            // the GUI's edit history does not apply to cells and nets that are gone or renamed
+            ctx->notifyDesignEdited();
+            if (netlist_edited)
+                editStack->clear();
         }
         ctx->refreshUi();
         // The trees only when there are other cells or nets: rebuilding them loses the selection
@@ -435,7 +442,8 @@ void BaseMainWindow::mcpTool(const QString &name, const QJsonObject &args, McpSe
         QAction *action = nullptr;
         QStringList all, available;
         for (auto a : menuDesign->actions()) {
-            if (a->isSeparator() || a->menu() || a == actionOptions || a == actionExecutePy || a == actionMcp)
+            if (a->isSeparator() || a->menu() || a == actionOptions || a == actionExecutePy || a == actionMcp ||
+                a == actionRunTiming)
                 continue;
             QString text = a->text().remove('&');
             all.append(text);

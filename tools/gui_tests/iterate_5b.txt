@@ -63,7 +63,8 @@ assert_py all(rt(n) > 3 for n in N) and set(bad()) <= B0
 assert_action Route on
 # --- unplace the cluster in the routed design: its CPE-internal routing and the routing of the nets it drives
 # are unbound with it, undo restores them
-py T=str(ctx.cells[L].bel).split("/")[0]; iw=lambda: sorted(str(w) for n, ni in ctx.nets for w, m in ni.wires if str(w).startswith(T + "/CPE.") and str(w).endswith("_int") and not str(w).startswith(T + "/CPE.IN")); I0=iw(); W0=sum(len(ni.wires) for n, ni in ctx.nets); print(T, "internal routing:", I0)
+# (only the nets of the cluster that no other cell in its CPE uses: the placer may have put a cell into the other half)
+py T=str(ctx.cells[L].bel).split("/")[0]; F="$auto$ff.cc:337:slice$106"; cn=lambda c: {p.net.name for k, p in ctx.cells[c].ports if p.net is not None}; others=set().union(*[cn(n) for n, c in ctx.cells if n not in (L, F) and c.bel is not None and str(c.bel).startswith(T + "/")]); NS=(cn(L) | cn(F)) - others; iw=lambda: sorted(str(w) for n, ni in ctx.nets if n in NS for w, m in ni.wires if str(w).startswith(T + "/CPE.") and str(w).endswith("_int") and not str(w).startswith(T + "/CPE.IN")); I0=iw(); W0=sum(len(ni.wires) for n, ni in ctx.nets); print(T, "internal routing of", sorted(NS), ":", I0)
 assert_py len(I0) > 0
 key E
 zoomcell $abc$348$auto$blifparse.cc:397:parse_blif$384 1.2

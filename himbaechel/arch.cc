@@ -292,6 +292,13 @@ bool Arch::place()
 
 bool Arch::route()
 {
+    // Routing again (e.g. after nets were unrouted by hand in the GUI) starts from finished routing: what
+    // finishRoute does (on GateMate: pins renamed to the inputs the routing reached, CP-line cells) is what
+    // routing a design routed before expects
+    if (route_finish_pending) {
+        log_info("Finishing the previous routing first.\n");
+        finishRoute();
+    }
     set_fast_pip_delays(true);
     uarch->preRoute();
     std::string router = str_or_default(settings, id("router"), defaultRouter);

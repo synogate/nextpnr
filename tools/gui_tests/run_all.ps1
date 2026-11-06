@@ -8,7 +8,8 @@
                   cells FIXED by the packer)
     dff_synth     035-dff-ffobf/dff-ffobf.json with -o ccf=olimex.ccf (not packed; Pack in the GUI)
     counter_pnr   008-counter synthesized with yosys and placed and routed without the GUI (placer cells
-                  WEAK, IO cells FIXED); built once into <OutDir>/designs
+                  WEAK, IO cells FIXED); tools/gui_tests/designs/counter_pnr.json (else built once into
+                  <OutDir>/designs)
     counter_synth the synthesized 008-counter with its CCF (not packed; Pack in the GUI)
     counter_synth_bit  the same, also writing the bitstream (-o out=bitstream.txt) when routed
     counter_part  008-counter as module core synthesized without IO pads, with --vopt as-partition
@@ -58,6 +59,11 @@ function Get-Design([string]$name) {
             if ($name -eq "counter_synth") { return @{ Json = $synth; Extra = $counterCcf } }
             # writes the bitstream (text config) into the test's output directory when routed
             if ($name -eq "counter_synth_bit") { return @{ Json = $synth; Extra = "$counterCcf -o out=bitstream.txt" } }
+            # The scripts click on the cells and wires where this placement and routing put them: a fixed copy
+            # (designs/counter_pnr.json, made by this procedure), so that changes of the placer or router do not
+            # move them
+            $fixed = Join-Path $here "designs\counter_pnr.json"
+            if ((Test-Path $fixed) -and -not (Test-Path $pnr)) { Copy-Item $fixed $pnr }
             if (-not (Test-Path $pnr)) {
                 # without --gui no window opens; run it on the hidden desktop anyway (no console either)
                 & (Join-Path $root "tools\hidden_desktop.ps1") -Exe $exe -WorkDir $designs `

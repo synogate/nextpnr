@@ -1095,17 +1095,9 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
     if (cmd == "savejson") {
         if (!need(1))
             return false;
-        Context *ctx = win_->getContext();
         QFileInfo fi(rest); // relative to the working directory (the test's output directory)
-        std::string fn = fi.absoluteFilePath().toStdString();
-        std::ofstream f(fn);
-        bool ok;
-        {
-            std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
-            std::lock_guard<std::mutex> lock(ctx->mutex);
-            prepareDesignForWrite(ctx);
-            ok = f && write_json_file(f, fn, ctx);
-        }
+        // As File > Save JSON (finishes a routing left open for the repairs, which also writes the bitstream)
+        bool ok = win_->writeJson(fi.absoluteFilePath().toStdString());
         if (!ok) {
             error_ = "cannot write " + fi.absoluteFilePath();
             return false;

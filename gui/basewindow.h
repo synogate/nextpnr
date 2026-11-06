@@ -94,6 +94,8 @@ class BaseMainWindow : public QMainWindow
     virtual bool setArchOption(const std::string &key, const QJsonValue &value, QString &error);
     // Before the design is saved, e.g. to finish the routing
     virtual void beforeSave() {}
+    // Before a hand edit (EditStack::setBeforeEdit), e.g. to finish the routing as well
+    virtual void beforeEdit() {}
     // Saves the design to a JSON file, logging how it went
     bool writeJson(const std::string &filename);
     // The architecture's part of savePartition (HimbaechelAPI::preparePartitionWrite); called with the context lock
@@ -206,6 +208,8 @@ class BaseMainWindow : public QMainWindow
 
     QAction *actionExecutePy;
     QAction *actionMcp;
+    // (Design and View menus; not a step of the flow)
+    QAction *actionRunTiming;
 
     QAction *actionPlay;
     QAction *actionPause;

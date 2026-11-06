@@ -133,6 +133,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(task, &TaskManager::pack_finished, this, &BaseMainWindow::taskIdle);
     connect(task, &TaskManager::place_finished, this, &BaseMainWindow::taskIdle);
     connect(task, &TaskManager::route_finished, this, &BaseMainWindow::taskIdle);
+    connect(task, &TaskManager::run_finished, this, &BaseMainWindow::taskIdle);
     connect(task, &TaskManager::taskCanceled, this, &BaseMainWindow::taskIdle);
 
     // Events for context change
@@ -145,6 +146,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     // Edit command layer
     designview->setEditStack(editStack);
+    editStack->setBeforeEdit([this] { beforeEdit(); });
     fpgaView->setEditStack(editStack);
     connect(editStack, &EditStack::designChanged, designview, &DesignWidget::refreshAfterEdit);
     connect(editStack, &EditStack::stateChanged, this, &BaseMainWindow::editStateChanged);
@@ -525,7 +527,7 @@ void BaseMainWindow::createMenusAndBars()
     actionShowUnrouted->setStatusTip("Draw a straight line from driver to sink for every arc not routed, in all nets");
     connect(actionShowUnrouted, &QAction::toggled, fpgaView, &FPGAViewWidget::setShowAllUnrouted);
 
-    QAction *actionRunTiming = new QAction("Run timing analysis", this);
+    actionRunTiming = new QAction("Run timing analysis", this);
     actionRunTiming->setShortcut(QKeySequence(Qt::Key_T));
     actionRunTiming->setStatusTip("Static timing analysis of the design as it is (unplaced cells left out, unrouted "
                                   "arcs estimated): Fmax per clock and the critical path in the Timing dock");

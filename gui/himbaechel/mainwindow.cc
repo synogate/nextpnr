@@ -136,6 +136,16 @@ void MainWindow::beforeSave()
     }
 }
 
+void MainWindow::beforeEdit()
+{
+    // Hand edits work on finished routing (pins renamed to the inputs the routing reached, CP-line cells), as a
+    // routed design loaded from JSON is
+    if (ctx->route_finish_pending) {
+        log("Hand edits finish the routing first (the repairs are not available after that).\n");
+        beforeSave();
+    }
+}
+
 bool MainWindow::setArchOption(const std::string &key, const QJsonValue &value, QString &error)
 {
     // As --vopt key[=value]: a string, or a flag (true: given); the numbers the uarch reads with

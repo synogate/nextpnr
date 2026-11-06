@@ -937,8 +937,9 @@ std::string GateMateImpl::preparePartitionWrite(bool check_only, bool *changes_d
     if (changes_design)
         *changes_design = false;
     if (!as_partition)
-        return "the design is not set up as a partition: start nextpnr with --vopt as-partition (or --vopt "
-               "partition-unrouted) on the partition's JSON synthesized without IO pads, then pack and place it";
+        return "the design is not set up as a partition: check 'Implement this design as a partition' in the "
+               "Partitions tab before packing (or start nextpnr with --vopt as-partition) on the partition's JSON "
+               "synthesized without IO pads, then pack and place it";
     if (!ctx->settings.count(ctx->id("pack")))
         return "the design is not packed yet";
     for (auto &cell : ctx->cells)

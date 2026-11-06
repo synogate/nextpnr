@@ -1045,6 +1045,8 @@ void EditStack::setEditMode(bool on)
     if (edit_mode == on)
         return;
     edit_mode = on;
+    if (on && ctx != nullptr && !task_busy && before_edit)
+        before_edit();
     Q_EMIT message(on ? "Edit mode on" : "Edit mode off");
     Q_EMIT stateChanged();
 }
@@ -1073,6 +1075,8 @@ std::string EditStack::run(const QString &text, const std::function<std::string(
         Q_EMIT message(why);
         return why.toStdString();
     }
+    if (before_edit)
+        before_edit();
     EditBatch batch(ctx);
     bool rollback_failed = false;
     ctx->lock();

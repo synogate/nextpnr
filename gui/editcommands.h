@@ -372,6 +372,10 @@ class EditStack : public QObject
     void notify(const QString &msg) { Q_EMIT message(msg); }
 
     QUndoStack *undoStack() { return &stack; }
+    // Called before an edit runs and when edit mode is turned on (not for dry runs), without the context lock:
+    // e.g. to finish the routing a Route left open for the repairs (Arch::route_finish_pending), which hand edits
+    // must not change under it
+    void setBeforeEdit(std::function<void()> fn) { before_edit = std::move(fn); }
 
   public Q_SLOTS:
     void setEditMode(bool on);
@@ -395,6 +399,7 @@ class EditStack : public QObject
     QUndoStack stack;
     bool edit_mode = false;
     bool task_busy = false;
+    std::function<void()> before_edit;
 };
 
 NEXTPNR_NAMESPACE_END

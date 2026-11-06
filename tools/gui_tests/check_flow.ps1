@@ -36,11 +36,17 @@ cells = {n: c for n, c in ctx.cells}
 for n, (tile, strength) in h["cells"].items():
     if n in cells and (str(cells[n].bel).split("/")[0], int(cells[n].belStrength)) != (tile, strength):
         bad.append("cell %s at %s" % (n, cells[n].bel))
+# (finishing the routing hands the wires behind a CP line or bridge to the nets of the cells it makes for them)
+derived = {}
+for n, ni in ctx.nets:
+    if ni.driver.cell is not None and ni.driver.cell.type in ("CPE_CPLINES", "CPE_BRIDGE"):
+        for w, m in ni.wires:
+            derived[str(w)] = (str(m.pip), int(m.strength))
 for net, R in h["locked_routing"].items():
     T = {str(w): (str(m.pip), int(m.strength)) for w, m in ctx.nets[net].wires}
     for w, p in R.items():
-        if T.get(w) != (p, 6):
-            bad.append("net %s wire %s: %s" % (net, w, T.get(w)))
+        if T.get(w, derived.get(w)) != (p, 6):
+            bad.append("net %s wire %s: %s" % (net, w, T.get(w, derived.get(w))))
 print("HAND bad: %d %s" % (len(bad), bad[:5]))
 '@ | Set-Content -Encoding utf8 $hand
     $out = & $exe --device CCGM1A1 --json flow_5a.json --run (Join-Path $PSScriptRoot "check_routed.py") --run $hand 2>&1
