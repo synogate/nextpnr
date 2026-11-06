@@ -245,6 +245,8 @@ RESOURCE_NAMES = {
     1 << 9:  "C_PX_I",
     1 << 10: "C_PY1_I",
     1 << 11: "C_PY2_I",
+    1 << 12: "C_HORIZ",
+    1 << 13: "C_C_P",
 }
 
 def main():

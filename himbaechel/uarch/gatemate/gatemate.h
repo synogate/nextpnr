@@ -426,6 +426,7 @@ struct GateMateImpl : HimbaechelAPI
     bool use_cp_for_clk;
     bool use_cp_for_cpe;
     bool use_bridges;
+    bool use_cpout;
 };
 
 NEXTPNR_NAMESPACE_END

@@ -141,6 +141,8 @@ enum PipMask
     C_PX_I = 1 << 9,
     C_PY1_I = 1 << 10,
     C_PY2_I = 1 << 11,
+    C_HORIZ = 1 << 12,
+    C_C_P = 1 << 13,
 
     IS_MULT = 1 << 29,
     IS_ADDF = 1 << 30,

@@ -55,6 +55,7 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("clk-cp", "use CP lines for CLK and EN");
     specific.add_options()("no-cpe-cp", "do not use CP lines pass through CPE");
     specific.add_options()("no-bridges", "do not use CPE in bridge mode");
+    specific.add_options()("no-cpout", "do not route from CP lines back to OUT1 / OUT2 through CPOUT");
     specific.add_options()("as-partition",
                            "implement the design as a partition: top level ports become unrouted boundary nets instead "
                            "of IO pads, for importing the result with partition");
@@ -260,6 +261,7 @@ void GateMateImpl::init_database(Arch *arch)
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
+    use_cpout = args.options.count("no-cpout") == 0;
     partition_unrouted = args.options.count("partition-unrouted") > 0;
     as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
     partition_open = args.options.count("partition-open") > 0;
@@ -353,9 +355,9 @@ void GateMateImpl::init(Context *ctx)
         if (hybrid && !evaluate)
             radius = options.count("hybrid-radius") ? options["hybrid-radius"].as<int>() : 4;
         bool near_only = hybrid && !evaluate;
-        std::string key = stringf("%s %s %d%d%d r%d%s", ctx->chip_info->name.get(),
+        std::string key = stringf("%s %s %d%d%d%d r%d%s", ctx->chip_info->name.get(),
                                   IdString(ctx->speed_grade->name).c_str(ctx), use_cp_for_clk, use_cp_for_cpe,
-                                  use_bridges, radius, near_only ? " near" : "");
+                                  use_bridges, use_cpout, radius, near_only ? " near" : "");
         lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key, near_only);
         if (options.count("hybrid-missing")) {
             std::string value = options["hybrid-missing"].as<std::string>();
@@ -739,6 +741,13 @@ void GateMateImpl::postPlace()
         set_param_mask_data(cell.second.get(), id_C_PX_I, PipMask::C_PX_I, mask, data);
         set_param_mask_data(cell.second.get(), id_C_PY1_I, PipMask::C_PY1_I, mask, data);
         set_param_mask_data(cell.second.get(), id_C_PY2_I, PipMask::C_PY2_I, mask, data);
+        set_param_mask_data(cell.second.get(), id_C_HORIZ, PipMask::C_HORIZ, mask, data);
+        set_param_mask_data(cell.second.get(), id_C_C_P, PipMask::C_C_P, mask, data);
+        // C_HORIZ also picks the carry in of C_EN_CIN and C_ADDCIN, which keep it at 0 if not set (the CPOUT
+        // pips are blocked outright for adders, comparators and multipliers)
+        int func = int_or_default(cell.second->params, id_C_FUNCTION, 0);
+        if (func == C_EN_CIN || func == C_ADDCIN)
+            mask |= PipMask::C_HORIZ;
         pip_mask[cell.second.get()->bel.tile] = mask;
         pip_data[cell.second.get()->bel.tile] = data;
     }
@@ -783,6 +792,9 @@ bool GateMateImpl::pip_allowed_by_options(PipId pip) const
         extra_data.resource <= PipMask::C_PY2_I) {
         return false;
     }
+    if (!use_cpout && extra_data.type == PipExtra::PIP_EXTRA_MUX &&
+        (extra_data.resource == PipMask::C_HORIZ || extra_data.resource == PipMask::C_C_P))
+        return false;
     if (!use_bridges && extra_data.type == PipExtra::PIP_EXTRA_MUX &&
         IdString(extra_data.name) == ctx->id("CPE.C_SN")) {
         return false;
