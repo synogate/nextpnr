@@ -23,6 +23,8 @@
   powershell ... -File tools\gui_tests\run_all.ps1 -OutDir C:\tmp\gt -Only placement_2a
 #>
 param(
+    # another build of nextpnr-himbaechel (default: build\Release of this checkout)
+    [string]$Exe = "",
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$Cases = "C:\Users\mio\source\prjpeppercorn-test-cases",
     [string]$Yosys = "",
@@ -33,7 +35,7 @@ param(
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
 $root = Split-Path -Parent (Split-Path -Parent $here)
-$exe = Join-Path $root "build\Release\nextpnr-himbaechel.exe"
+$exe = if ($Exe -ne "") { $Exe } else { Join-Path $root "build\Release\nextpnr-himbaechel.exe" }
 if ($Yosys -eq "") {
     $Yosys = if (Test-Path "C:\oss-cad-suite\bin\yosys.exe") { "C:\oss-cad-suite\bin\yosys.exe" } else { "yosys" }
 }
@@ -120,7 +122,7 @@ foreach ($s in $scripts) {
     $out = Join-Path $OutDir $base
     if (Test-Path $out) { Remove-Item -Recurse -Force $out }
     $start = Get-Date
-    & (Join-Path $root "tools\run_gui_test.ps1") -Json $d.Json -ExtraArgs $d.Extra -Script $s.FullName `
+    & (Join-Path $root "tools\run_gui_test.ps1") -Exe $exe -Json $d.Json -ExtraArgs $d.Extra -Script $s.FullName `
         -OutDir $out -TimeoutSec $TimeoutSec | Out-Null
     $code = $LASTEXITCODE
     $secs = [int]((Get-Date) - $start).TotalSeconds

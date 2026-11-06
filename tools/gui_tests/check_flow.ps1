@@ -12,13 +12,15 @@
   Returns the number of failed checks.
 #>
 param(
+    # another build of nextpnr-himbaechel (default: build\Release of this checkout)
+    [string]$Exe = "",
     [Parameter(Mandatory = $true)][string]$Dir,
     [string]$Cases = "C:\Users\mio\source\prjpeppercorn-test-cases",
     [string]$OssCad = "C:\oss-cad-suite"
 )
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$exe = Join-Path $root "build\Release\nextpnr-himbaechel.exe"
+$exe = if ($Exe -ne "") { $Exe } else { Join-Path $root "build\Release\nextpnr-himbaechel.exe" }
 $Dir = (Resolve-Path $Dir).Path
 # (eqy's make runs bash scripts: Git's bash, not WSL's from system32)
 $gitBash = "C:\Program Files\Git\usr\bin"
