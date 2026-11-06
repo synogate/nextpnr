@@ -788,6 +788,10 @@ struct Arch : BaseArch<ArchRanges>
     DecalXY getGroupDecal(GroupId group) const override;
     bool guiDrawsUnusedRouting() const override { return uarch->guiDrawsUnusedRouting(); }
     void notifyDesignEdited() override { uarch->notifyDesignEdited(); }
+    std::string prepareCellForMove(CellInfo *cell, bool check_only) override
+    {
+        return uarch->prepareCellForMove(cell, check_only);
+    }
     std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return uarch->getDetailDecals(); }
     std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override
     {

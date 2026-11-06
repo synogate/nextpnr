@@ -333,6 +333,7 @@ template <typename R> struct BaseArch : ArchAPI<R>
     virtual DecalXY getGroupDecal(GroupId /*group*/) const override { return DecalXY(); }
     virtual bool guiDrawsUnusedRouting() const override { return true; }
     virtual void notifyDesignEdited() override {}
+    virtual std::string prepareCellForMove(CellInfo * /*cell*/, bool /*check_only*/) override { return {}; }
     virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return {}; }
     virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override { return {}; }
     virtual float getGuiColumnX(int x) const override { return x; }

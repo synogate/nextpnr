@@ -296,15 +296,17 @@ void GateMatePacker::pack_cpe()
         }
     }
 
-    std::sort(l2t5_list.begin(), l2t5_list.end());
+    // (in the order of the cells, not of their addresses: the result must not change from run to run)
+    pool<IdString> l2t5_cells;
+    for (auto ci : l2t5_list)
+        l2t5_cells.insert(ci->name);
     for (auto ci : l2t5_list) {
         NetInfo *upperNet = ci->getPort(id_I4);
 
         bool merge = false;
         if (upperNet && upperNet->driver.cell && upperNet->driver.cell->type == id_CPE_L2T4 &&
             upperNet->driver.cell->cluster.empty()) {
-            auto it = std::lower_bound(l2t5_list.begin(), l2t5_list.end(), upperNet->driver.cell);
-            merge = it == l2t5_list.end() || *it != upperNet->driver.cell;
+            merge = !l2t5_cells.count(upperNet->driver.cell->name);
         }
 
         if (merge) {

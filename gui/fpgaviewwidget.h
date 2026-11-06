@@ -107,6 +107,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     IdString routingNet() const { return routeNet_; }
     WireId routingHead() const { return routeHead_; }
     Context *getContext() const { return ctx_; }
+    // Stop the thread that renders the lines in the background (it reads the context): before the context goes
+    // away when the window closes
+    void stopRendering() { renderRunner_.reset(); }
 
     // Route mode candidates: the pips downhill of the head, by class (free, used by another net,
     // unavailable)

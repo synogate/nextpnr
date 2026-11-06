@@ -220,6 +220,10 @@ BaseMainWindow::~BaseMainWindow()
 {
     saveWindowState();
     delete task;
+    // The view's child widgets outlive the context (members go before the QWidget base deletes its children):
+    // its render thread must not run on with the context destroyed
+    if (fpgaView)
+        fpgaView->stopRendering();
 }
 
 // Window geometry, toolbars, docks and splitters are kept between sessions. NEXTPNR_GUI_SETTINGS=<file.ini> uses

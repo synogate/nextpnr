@@ -16,6 +16,7 @@
  */
 
 #include "editcommands.h"
+#include <algorithm>
 #include "log.h"
 #include "netstatus.h"
 
@@ -399,6 +400,86 @@ std::string SetNetStrengthCmd::describe(Context *ctx) const
 }
 
 // ---------------------------------------------------------------------------
+// PrepareCellForMoveCmd
+
+std::vector<PrepareCellForMoveCmd::PortState> PrepareCellForMoveCmd::ports(const CellInfo *ci)
+{
+    std::vector<PortState> result;
+    for (auto &p : ci->ports)
+        result.push_back({p.first, p.second.type, p.second.net ? p.second.net->name : IdString()});
+    std::sort(result.begin(), result.end(),
+              [](const PortState &a, const PortState &b) { return a.name.index < b.name.index; });
+    return result;
+}
+
+std::string PrepareCellForMoveCmd::checkApply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    std::string err = ctx->prepareCellForMove(ci, true);
+    if (!err.empty())
+        return "cannot move " + q(cell.str(ctx)) + " of the routed design: " + err;
+    return {};
+}
+
+void PrepareCellForMoveCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    prev_ports = ports(ci);
+    prev_params = ci->params;
+    prev_bel_pins = ci->cell_bel_pins;
+    ctx->prepareCellForMove(ci, false);
+    new_ports = ports(ci);
+}
+
+std::string PrepareCellForMoveCmd::checkRevert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    auto now = ports(ci);
+    if (now.size() != new_ports.size())
+        return "ports of " + q(cell.str(ctx)) + " have changed";
+    for (size_t i = 0; i < now.size(); i++)
+        if (now[i].name != new_ports[i].name || now[i].net != new_ports[i].net)
+            return "ports of " + q(cell.str(ctx)) + " have changed";
+    for (auto &p : prev_ports)
+        if (p.net != IdString() && findNet(ctx, p.net) == nullptr)
+            return "net " + q(p.net.str(ctx)) + " does not exist";
+    return {};
+}
+
+void PrepareCellForMoveCmd::revert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (prev_ports.size() == new_ports.size()) {
+        bool same = true;
+        for (size_t i = 0; i < prev_ports.size() && same; i++)
+            same = prev_ports[i].name == new_ports[i].name && prev_ports[i].net == new_ports[i].net;
+        if (same && ci->params == prev_params)
+            return; // (nothing was changed)
+    }
+    for (auto &p : new_ports)
+        ci->disconnectPort(p.name);
+    for (auto &p : new_ports)
+        ci->ports.erase(p.name);
+    for (auto &p : prev_ports) {
+        ci->ports[p.name].name = p.name;
+        ci->ports[p.name].type = p.type;
+        if (p.net != IdString())
+            ci->connectPort(p.name, findNet(ctx, p.net));
+    }
+    ci->params = prev_params;
+    ci->cell_bel_pins = prev_bel_pins;
+}
+
+std::string PrepareCellForMoveCmd::describe(Context *ctx) const
+{
+    return "Undo the post-route changes of " + cell.str(ctx);
+}
+
+// ---------------------------------------------------------------------------
 // Placement helpers
 
 std::vector<CellInfo *> placementGroup(Context *ctx, CellInfo *ci)
@@ -467,6 +548,31 @@ std::string addUnbindBel(EditBatch &b, BelId bel)
             std::string err = b.add(std::make_unique<UnbindWireCmd>(w));
             if (!err.empty())
                 return err;
+        }
+        // A cell of a routed design: what the post-route pass changed for the routing at this place goes too.
+        // A net the cell was taken off (e.g. CP lines that only reach this place) loses its routing as well.
+        pool<IdString> nets_before;
+        for (auto &port : ci->ports)
+            if (port.second.net != nullptr && port.second.type == PORT_IN)
+                nets_before.insert(port.second.net->name);
+        IdString name = ci->name;
+        std::string err = b.add(std::make_unique<PrepareCellForMoveCmd>(name));
+        if (!err.empty())
+            return err;
+        for (IdString n : nets_before) {
+            NetInfo *ni = findNet(ctx, n);
+            if (ni == nullptr || !ni->users.empty() || ni->wires.empty())
+                continue;
+            std::vector<WireId> wires;
+            for (auto &w : ni->wires)
+                wires.push_back(w.first);
+            for (WireId w : wires) {
+                if (!ni->wires.count(w))
+                    continue; // (unbound with an earlier wire)
+                err = b.add(std::make_unique<UnbindWireCmd>(w));
+                if (!err.empty())
+                    return err;
+            }
         }
     }
     return b.add(std::make_unique<UnbindBelCmd>(bel));

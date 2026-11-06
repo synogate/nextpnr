@@ -101,6 +101,8 @@ struct HimbaechelAPI
     virtual bool isPipInverting(PipId pip) const { return false; }
     // See ArchAPI::notifyDesignEdited
     virtual void notifyDesignEdited() {}
+    // See ArchAPI::prepareCellForMove
+    virtual std::string prepareCellForMove(CellInfo *cell, bool check_only) { return {}; }
     // GUI, File > Save as partition: make the design what a partition file holds (as the arch's own partition flow
     // writes it). With check_only nothing changes. Returns "" or why it can not be saved as a partition;
     // *changes_design tells whether it takes something out of the design (the GUI asks first).

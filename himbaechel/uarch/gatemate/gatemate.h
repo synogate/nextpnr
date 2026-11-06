@@ -78,6 +78,10 @@ struct GateMateImpl : HimbaechelAPI
     // Placement or routing changed by hand: the pip masks are recomputed (with the routing) when next needed
     void notifyDesignEdited() override { pip_masks_ready = false; }
     std::string preparePartitionWrite(bool check_only, bool *changes_design) override;
+    // A cell of a routed design moved by hand: the inverse of postRoute's changes to it (LUT inputs and a
+    // register's clock / enable renamed to the CPE inputs the routing reached, carry-line selects; inputs fed
+    // through CP-line cells reconnected to the net those pass on)
+    std::string prepareCellForMove(CellInfo *cell, bool check_only) override;
     // Whether a pip is usable at all with the chosen options, regardless of placement
     bool pip_allowed_by_options(PipId pip) const;
 

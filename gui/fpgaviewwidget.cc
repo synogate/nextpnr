@@ -115,7 +115,7 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     displayGroup_ = false;
 }
 
-FPGAViewWidget::~FPGAViewWidget() {}
+FPGAViewWidget::~FPGAViewWidget() { stopRendering(); }
 
 void FPGAViewWidget::setEditStack(EditStack *stack)
 {
@@ -715,7 +715,11 @@ void FPGAViewWidget::paintGL()
     ImGui::Render();
 }
 
-void FPGAViewWidget::pokeRenderer(void) { renderRunner_->poke(); }
+void FPGAViewWidget::pokeRenderer(void)
+{
+    if (renderRunner_)
+        renderRunner_->poke();
+}
 
 void FPGAViewWidget::enableDisableDecals(bool bels, bool wires, bool pips, bool groups)
 {

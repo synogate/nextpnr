@@ -930,21 +930,10 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
 
 bool GateMateImpl::design_routed_before() const
 {
-    // postRoute renames the LUT inputs to the CPE inputs (IN1..IN8) and a register's CLK_INT / EN_INT to the
-    // input the routing reaches
-    static const pool<IdString> cpe_inputs = {id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8};
-    for (auto &cell : ctx->cells) {
-        const CellInfo *ci = cell.second.get();
-        if (ci->type.in(id_CPE_L2T4, id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
-            for (auto &port : ci->ports)
-                if (cpe_inputs.count(port.first))
-                    return true;
-        } else if (ci->type.in(id_CPE_FF, id_CPE_FF_L, id_CPE_FF_U, id_CPE_LATCH)) {
-            if (ci->ports.count(id_CLK) || ci->ports.count(id_EN))
-                return true;
-        }
-    }
-    return false;
+    // postRoute renamed the LUT inputs to the CPE inputs (IN1..IN8) and a register's CLK_INT / EN_INT to the input
+    // the routing reaches. The pin names do not tell (the packer gives a 4:1 multiplexer's data and many adders
+    // IN1..IN4 too), the "route" setting does: Arch::route sets it after postRoute, and it is saved with the design.
+    return ctx->settings.count(ctx->id("route")) > 0;
 }
 
 void GateMateImpl::preRoute()
@@ -1632,6 +1621,103 @@ void GateMateImpl::finishRoute()
     if (args.options.count("out")) {
         write_bitstream(args.device, args.options["out"].as<std::string>());
     }
+}
+
+std::string GateMateImpl::prepareCellForMove(CellInfo *cell, bool check_only)
+{
+    // postRoute renames the LUT inputs to the CPE inputs the routing reached (IN1..IN4 of a half, IN1..IN8 of a
+    // whole CPE, the LUT contents in that order): these are pins of every CPE, the router routes them anywhere.
+    // Not so an input taken from a carry line instead (C_I1..C_I4: PINY1, CINX, PINX), which only reaches it here
+    // and only in its half: it goes back to the CPE input it replaces.
+    auto param = [&](IdString p) { return int_or_default(cell->params, p, 0); };
+    dict<IdString, IdString> rename;
+    std::vector<IdString> clear;
+    std::vector<std::pair<IdString, int>> set;
+    if (cell->type.in(id_CPE_L2T4, id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
+        bool merged = cell->type != id_CPE_L2T4;
+        int c_i1 = param(id_C_I1), c_i2 = param(id_C_I2), c_i3 = param(id_C_I3), c_i4 = param(id_C_I4);
+        if (cell->ports.count(id_PINY1) && (c_i1 || c_i3)) {
+            if (c_i1 && c_i3)
+                return "both C_I1 and C_I3 of " + cell->name.str(ctx) + " take PINY1";
+            rename[id_PINY1] = (merged && c_i3) ? id_IN6 : id_IN2;
+            clear.push_back(c_i1 ? id_C_I1 : id_C_I3);
+        }
+        if (cell->ports.count(id_CINX) && c_i2) {
+            rename[id_CINX] = id_IN4;
+            clear.push_back(id_C_I2);
+        }
+        if (cell->ports.count(id_PINX) && c_i4) {
+            rename[id_PINX] = merged ? id_IN8 : id_IN4;
+            clear.push_back(id_C_I4);
+        }
+    } else if (cell->type.in(id_CPE_FF, id_CPE_FF_L, id_CPE_FF_U, id_CPE_LATCH)) {
+        // The clock and enable were renamed to CLK / EN (pins of every register), or with C_CLKSEL / C_ENSEL to the
+        // carry lines CINY2 / PINY2, which go back to CLK / EN (the polarity in C_CPE_CLK / C_CPE_EN became 0b00 or
+        // 0b11 then, from 0b10 or 0b01 for a net)
+        for (auto [port, cp_port, sel, pol] : {std::make_tuple(id_CLK, id_CINY2, id_C_CLKSEL, id_C_CPE_CLK),
+                                               std::make_tuple(id_EN, id_PINY2, id_C_ENSEL, id_C_CPE_EN)}) {
+            if (param(sel) == 1 && cell->ports.count(cp_port)) {
+                rename[cp_port] = port;
+                clear.push_back(sel);
+                set.emplace_back(pol, (param(pol) & 1) ? 0b01 : 0b10);
+            }
+        }
+    } else if (cell->type == id_CPE_MX8) {
+        if (param(id_C_CLKSEL) == 1 || param(id_C_ENSEL) == 1)
+            return "the selects of " + cell->name.str(ctx) +
+                   " come from carry lines (CINY2 / PINY2): unroute and repack the design instead";
+    }
+    for (auto &r : rename)
+        if (r.first != r.second && cell->ports.count(r.second))
+            return "cell " + cell->name.str(ctx) + " has both " + r.first.str(ctx) + " and " + r.second.str(ctx);
+
+    // Inputs fed through CP-line cells (made by postRoute from the routing, fixed at their CPEs): the CP lines only
+    // reach the old place, so the input goes back to the net they pass on
+    if (!pass_backtrace_ready) {
+        std::lock_guard<std::mutex> lock(pass_backtrace_mutex_);
+        if (!pass_backtrace_ready)
+            restore_pass_backtrace();
+    }
+    dict<IdString, NetInfo *> reconnect;
+    for (auto &port : cell->ports) {
+        if (port.second.type != PORT_IN || !port.second.net)
+            continue;
+        NetInfo *net = port.second.net;
+        for (int i = 0; i < 64 && net && net->driver.cell && net->driver.cell->type == id_CPE_CPLINES; i++) {
+            CellInfo *drv = net->driver.cell;
+            auto bt = pass_backtrace.find(drv->name);
+            if (bt == pass_backtrace.end() || !bt->second.count(net->driver.port))
+                return "cannot tell which net the CP lines of " + drv->name.str(ctx) + " pass on to " +
+                       cell->name.str(ctx);
+            net = drv->getPort(bt->second.at(net->driver.port));
+        }
+        if (!net || (net->driver.cell && net->driver.cell->type == id_CPE_CPLINES))
+            return "cannot find the net the CP lines pass on to " + cell->name.str(ctx) + "." + port.first.str(ctx);
+        if (net != port.second.net)
+            reconnect[port.first] = net;
+    }
+    if (check_only)
+        return {};
+
+    for (auto &r : rename) {
+        if (r.first == r.second)
+            continue;
+        cell->renamePort(r.first, r.second);
+        cell->cell_bel_pins.erase(r.first);
+        cell->cell_bel_pins[r.second] = {r.second};
+    }
+    for (IdString p : clear)
+        cell->params.erase(p);
+    for (auto &s : set)
+        cell->params[s.first] = Property(s.second, 2);
+    for (auto &r : reconnect) {
+        IdString port = rename.count(r.first) ? rename.at(r.first) : r.first;
+        cell->disconnectPort(port);
+        cell->connectPort(port, r.second);
+    }
+    if (!rename.empty() || !reconnect.empty())
+        pip_masks_ready = false;
+    return {};
 }
 
 BoundingBox GateMateImpl::getRouteBoundingBox(WireId src, WireId dst) const

@@ -203,6 +203,34 @@ class UnbindWireCmd : public EditCommand
     PlaceStrength prev_strength = STRENGTH_NONE;
 };
 
+// Undo what the arch's post-route pass changed on a cell for its routing (ArchAPI::prepareCellForMove: on
+// GateMate the pins renamed to the CPE inputs the routing reached and the inputs fed through CP-line cells), so
+// a cell of a routed design can be routed again at another place. Revert restores the cell's ports (names,
+// directions, nets), parameters and bel pin mapping as they were.
+class PrepareCellForMoveCmd : public EditCommand
+{
+  public:
+    explicit PrepareCellForMoveCmd(IdString cell) : cell(cell) {}
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    struct PortState
+    {
+        IdString name;
+        PortType type;
+        IdString net;
+    };
+    static std::vector<PortState> ports(const CellInfo *ci);
+    IdString cell;
+    std::vector<PortState> prev_ports, new_ports;
+    dict<IdString, Property> prev_params;
+    dict<IdString, std::vector<IdString>> prev_bel_pins;
+};
+
 // Change the placement strength of a cell.
 class SetCellStrengthCmd : public EditCommand
 {

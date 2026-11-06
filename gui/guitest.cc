@@ -66,6 +66,7 @@
 #include "jsonwrite.h"
 #include "pyinterpreter.h"
 #include "pythontab.h"
+#include "worker.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -243,6 +244,13 @@ GuiTest::GuiTest(BaseMainWindow *win, const QString &script) : QObject(win), win
         lastMessage_ = msg;
         log("  message: " + msg);
     });
+    // The log of the pack / place / route passes (shown in the console) goes into the test log too
+    connect(win->task, &TaskManager::log, this, [](const std::string &text) {
+        QString t = QString::fromStdString(text);
+        while (t.endsWith(QLatin1Char('\n')))
+            t.chop(1);
+        writeLog(t);
+    });
     log("script " + script);
     // Started from the constructor: the first step runs once the event loop runs, i.e. after the
     // design is loaded and the window is shown
@@ -257,8 +265,9 @@ void GuiTest::finish(int code)
 {
     done_ = true;
     log(code == 0 ? "PASSED" : QString("FAILED (exit %1)").arg(code));
+    // (the log stays open: a crash while the window closes is logged too)
     if (g_log)
-        fclose(g_log), g_log = nullptr;
+        fflush(g_log);
     QTimer::singleShot(0, [code] { QCoreApplication::exit(code); });
 }
 
@@ -278,7 +287,15 @@ void GuiTest::step()
         nextDelay_ = -1;
         g_result = STEP_OK;
         error_.clear();
-        if (!exec(w, line))
+        bool ok;
+        try {
+            ok = exec(w, line);
+        } catch (const log_execution_error_exception &) {
+            ok = false, g_result = STEP_OK, error_ = "error (see the log above)";
+        } catch (const std::exception &e) {
+            ok = false, g_result = STEP_OK, error_ = QString("exception: ") + e.what();
+        }
+        if (!ok)
             g_result = g_result == STEP_RETRY ? STEP_RETRY : STEP_FAIL;
         if (g_result == STEP_RETRY) {
             if (waitKind_ == 0) {
