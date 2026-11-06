@@ -933,34 +933,6 @@ struct Router2
         return false;
     }
 
-    // Whether the path found through the midpoint sets a resource that other nets use with another value
-    bool path_in_resource_conflict(int midpoint_wire)
-    {
-        auto conflict = [&](PipId pip) {
-            auto key = ctx->getResourceKeyForPip(pip);
-            if (key == GroupId())
-                return false;
-            int value = ctx->getResourceValueForPip(pip);
-            for (auto &vc : resource_data(key).value_count)
-                if (vc.first != value && vc.second > 0)
-                    return true;
-            return false;
-        };
-        for (bool fwd : {true, false}) {
-            int cursor = midpoint_wire;
-            while (fwd ? was_visited_fwd(cursor, std::numeric_limits<float>::max())
-                       : was_visited_bwd(cursor, std::numeric_limits<float>::max())) {
-                PipId pip = fwd ? flat_wires.at(cursor).pip_fwd : flat_wires.at(cursor).pip_bwd;
-                if (pip == PipId())
-                    break;
-                if (conflict(pip))
-                    return true;
-                cursor = wire_to_idx.at(fwd ? ctx->getPipSrcWire(pip) : ctx->getPipDstWire(pip));
-            }
-        }
-        return false;
-    }
-
     bool was_visited_fwd(int wire, float cost)
     {
         return flat_wires.at(wire).cost_fwd != PerWireData::NOT_VISITED && flat_wires.at(wire).cost_fwd <= cost;
@@ -1099,9 +1071,18 @@ struct Router2
 
             // The searches don't stop at the first wire where they meet, as the cheapest path through the other
             // side may run elsewhere. Instead, the meeting point with the lowest sum of the forward and backward
-            // costs is kept, until neither frontier can improve on it or the extra exploration budget runs out.
+            // costs is kept, until one frontier can't improve on it or the exploration budget runs out.
+            //
+            // For that test to hold, each search must on its own be a complete A*: a wire the other side has
+            // reached is a meeting point, but it is still expanded. Were it not, the cheapest path could run through
+            // a wire one side reached first while the other side's cost there was still provisional; that side
+            // would then no longer hold the path in its frontier, and stop on a worse meeting point. Meeting points
+            // are recorded whenever either cost of a wire changes, so the best one is never missed.
+            //
+            // There is no fixed number of extra steps after the first meeting: a meeting point is recorded as soon
+            // as a wire is reached, however expensive, so such a limit would end the search before a detour around
+            // congestion is found, and the router would never resolve the last few overused wires.
             float best_meet = std::numeric_limits<float>::max();
-            int meet_limit = -1;
             auto try_meet = [&](int wire) {
                 auto &wd = flat_wires.at(wire);
                 float c = wd.cost_fwd + wd.cost_bwd;
@@ -1109,8 +1090,6 @@ struct Router2
                 if (c < best_meet && !path_resource_conflict(nd, wire)) {
                     best_meet = c;
                     midpoint_wire = wire;
-                    if (meet_limit < 0)
-                        meet_limit = iter + std::max(200, iter);
                 }
             };
 
@@ -1119,20 +1098,6 @@ struct Router2
                                 : (!t.fwd_queue.empty() || !t.bwd_queue.empty())) &&
                    ((!is_bb && midpoint_wire == -1) || iter < toexplore)) {
                 ++iter;
-                if (meet_limit >= 0 && iter > meet_limit) {
-                    // Out of the extra budget: more where the best meeting point sets a resource other nets use
-                    // with another value and a frontier still promises less than a quarter of its cost. The way around
-                    // such a resource often only starts further on (a sink's other way in from another plane),
-                    // and a path through a resource in conflict is not legal however long it is kept.
-                    float frontier = std::numeric_limits<float>::max();
-                    if (!t.fwd_queue.empty())
-                        frontier = std::min(frontier, t.fwd_queue.top().score.total());
-                    if (!t.bwd_queue.empty())
-                        frontier = std::min(frontier, t.bwd_queue.top().score.total());
-                    if (!(4 * frontier < best_meet) || !path_in_resource_conflict(midpoint_wire))
-                        break;
-                    meet_limit = iter + std::max(200, iter);
-                }
                 if (!t.fwd_queue.empty() && !const_mode) {
                     // Explore forwards
                     auto curr = t.fwd_queue.top();
@@ -1144,10 +1109,8 @@ struct Router2
                         expand = false; // stale entry, the wire was reached cheaper since
                     else if (midpoint_wire != -1 && curr.score.total() >= best_meet)
                         break; // the forward frontier can't improve on the best meeting point
-                    else if (was_visited_bwd(curr.wire, std::numeric_limits<float>::max())) {
+                    else if (was_visited_bwd(curr.wire, std::numeric_limits<float>::max()))
                         try_meet(curr.wire);
-                        expand = false;
-                    }
                     for (PipId dh : ctx->getPipsDownhill(curr_data.w)) {
                         if (!expand)
                             break;
@@ -1191,6 +1154,8 @@ struct Router2
                             continue; // thread safety issue
                         set_visited_fwd(t, next_idx, dh, next_score.cost);
                         t.fwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
+                        if (was_visited_bwd(next_idx, std::numeric_limits<float>::max()))
+                            try_meet(next_idx);
                     }
                 }
                 if (!t.bwd_queue.empty()) {
@@ -1218,10 +1183,8 @@ struct Router2
                             continue; // stale entry, the wire was reached cheaper since
                         if (midpoint_wire != -1 && curr.score.total() >= best_meet)
                             break; // the backward frontier can't improve on the best meeting point
-                        if (was_visited_fwd(curr.wire, std::numeric_limits<float>::max())) {
+                        if (was_visited_fwd(curr.wire, std::numeric_limits<float>::max()))
                             try_meet(curr.wire);
-                            continue;
-                        }
                     }
                     // Don't allow the same wire to be bound to the same net with a different driving pip
                     PipId bound_pip;
@@ -1268,6 +1231,8 @@ struct Router2
                             continue; // thread safety issue
                         set_visited_bwd(t, next_idx, uh, next_score.cost);
                         t.bwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
+                        if (!const_mode && was_visited_fwd(next_idx, std::numeric_limits<float>::max()))
+                            try_meet(next_idx);
                     }
                 }
             }
