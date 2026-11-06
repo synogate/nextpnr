@@ -52,6 +52,11 @@ struct Router2Cfg
     // pips that cost next to nothing (a virtual or internal mux with only the delay epsilon) is otherwise never
     // worth a detour, however high its history and present congestion: its users never give way (a livelock).
     float resource_conflict_base_cost;
+    // The same for a wire: the least base cost its history and present congestion are charged by. The
+    // congestion of a wire is charged by the base cost of the pip that drives it, so where that pip costs only the
+    // delay epsilon (GateMate: the CPE's internal muxes, against a routing hop that costs ten times that), an
+    // overuse there is all but free, and the router parks the overuse it cannot resolve on such wires for good.
+    float wire_conflict_base_cost;
 
     // Weight given to delay estimate in A*. Higher values
     // mean faster and more directed routing, at the risk

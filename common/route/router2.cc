@@ -552,8 +552,7 @@ struct Router2
                         ((std::abs(pl.x - nd.cx) + std::abs(pl.y - nd.cy)) / float(nd.hpwl));
         }
 
-        // The resource the pip sets, else the one of the wire. (The backward search passes the pip's source
-        // wire: by the wire alone, the resource pips next to the sinks were never charged there.)
+        // The resource the pip sets, else the one of the wire
         int resource_idx = -1, value = -1;
         GroupId pip_resource = pip != PipId() ? ctx->getResourceKeyForPip(pip) : GroupId();
         if (pip_resource != GroupId()) {
@@ -592,8 +591,13 @@ struct Router2
         float resource_cost = base_cost * resource_factor;
         if (resource_idx >= 0 && base_cost < cfg.resource_conflict_base_cost)
             resource_cost += (cfg.resource_conflict_base_cost - base_cost) * (resource_factor - 1.0f);
-        return base_cost * hist_cost * present_cost / (1 + (source_uses * crit_weight)) + bias_cost +
-               resource_cost / (1 + crit_weight) + arb_cost;
+        // Likewise for the wire (unchanged where it has neither congestion nor history)
+        float wire_factor = hist_cost * present_cost;
+        float wire_cost = base_cost * wire_factor;
+        if (base_cost < cfg.wire_conflict_base_cost)
+            wire_cost += (cfg.wire_conflict_base_cost - base_cost) * (wire_factor - 1.0f);
+        return wire_cost / (1 + (source_uses * crit_weight)) + bias_cost + resource_cost / (1 + crit_weight) +
+               arb_cost;
     }
 
     float get_togo_cost(NetInfo *net, store_index<PortRef> user, int wire, WireId src_sink, bool bwd, float crit_weight)
@@ -1202,8 +1206,12 @@ struct Router2
                         WireId next = ctx->getPipSrcWire(uh);
                         int next_idx = wire_to_idx.at(next);
                         WireScore next_score;
-                        next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, uh, crit_weight);
-                        next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, uh, crit_weight);
+                        // A pip is charged with the wire it drives, as in the forward search: the backward cost of a
+                        // wire covers the wires after it up to the sink, and the two costs at a meeting point add
+                        // up to the cost of the path through it (each wire once, the sink included)
+                        next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, curr_data.w, uh, crit_weight);
+                        next_score.cost =
+                                curr.score.cost + score_wire_for_arc(net, i, phys_pin, curr_data.w, uh, crit_weight);
                         next_score.togo_cost = const_mode ? 0
                                                           : estimate_weight * get_togo_cost(net, i, next_idx, src_wire,
                                                                                             true, crit_weight);
@@ -2188,6 +2196,7 @@ Router2Cfg::Router2Cfg(Context *ctx)
     ipin_cost_adder = ctx->setting<float>("router2/ipinCostAdder", 0.0f);
     bias_cost_factor = ctx->setting<float>("router2/biasCostFactor", 0.25f);
     resource_conflict_base_cost = ctx->setting<float>("router2/resourceConflictBaseCost", 0.0f);
+    wire_conflict_base_cost = ctx->setting<float>("router2/wireConflictBaseCost", 0.0f);
     if (ctx->settings.count(ctx->id("router2/alt-weights"))) {
         init_curr_cong_weight = ctx->setting<float>("router2/initCurrCongWeight", 5.0f);
         hist_cong_weight = ctx->setting<float>("router2/histCongWeight", 0.5f);

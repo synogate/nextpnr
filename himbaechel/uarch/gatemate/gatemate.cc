@@ -460,6 +460,17 @@ void GateMateImpl::init(Context *ctx)
                 std::to_string(options["router-estimate-weight"].as<float>());
     else if (!ctx->settings.count(ctx->id("router2/estimateWeight")))
         ctx->settings[ctx->id("router2/estimateWeight")] = std::to_string(1.1f);
+    // Defaults for router2 go into the settings here, before the router reads them: Router2Cfg stores its own
+    // default for every setting it reads, so a test for an unset one in configureRouter2 never holds.
+    // The CPE's internal muxes that are resources (the virtual LUT input and subtree swaps, the CP-line selects)
+    // cost only the delay epsilon: in conflict they are charged like a routing hop
+    if (!ctx->settings.count(ctx->id("router2/resourceConflictBaseCost")))
+        ctx->settings[ctx->id("router2/resourceConflictBaseCost")] = std::to_string(0.1f);
+    // The same for the wires behind those muxes (the TI, IN*_int and LUT input wires), against the input muxes
+    // in front of them (about 0.19 ns): else two nets on a TI wire stay there for good, rather than one moving
+    // to the other input of the LUT2 through an input mux another net uses
+    if (!ctx->settings.count(ctx->id("router2/wireConflictBaseCost")))
+        ctx->settings[ctx->id("router2/wireConflictBaseCost")] = std::to_string(0.2f);
     for (const auto &pad : ctx->package_info->pads) {
         available_pads.emplace(IdString(pad.package_pin));
         BelId bel = ctx->getBelByName(IdStringList::concat(IdString(pad.tile), IdString(pad.bel)));
@@ -864,10 +875,6 @@ void GateMateImpl::ensure_pip_masks() const
 
 void GateMateImpl::configureRouter2(Router2Cfg &cfg)
 {
-    // The CPE's internal muxes that are resources (the virtual LUT input and subtree swaps, the CP-line selects)
-    // cost only the delay epsilon: in conflict they are charged like a routing hop
-    if (!ctx->settings.count(ctx->id("router2/resourceConflictBaseCost")))
-        cfg.resource_conflict_base_cost = 0.1f;
     if (scarce_pip_cost.empty())
         return;
     int y_pips = 0, ydiag_pips = 0;
