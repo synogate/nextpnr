@@ -430,16 +430,23 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
 #endif
 
     // Slopes: growth of the delay from an output to an input of the same phase, from the first
-    // multiple of 4 beyond the radius to 48 tiles further
-    int near = (radius + 3) / 4 * 4, far = near + 48;
+    // multiple of 4 beyond the radius to up to 48 tiles further (as far as the chip goes on each side;
+    // a fixed 48 left no point on a side of a short axis, and the slope 0)
+    int near = (radius + 3) / 4 * 4;
     auto slope = [&](const std::vector<int> &line) {
         float sum = 0;
         int count = 0;
         for (int sign : {-1, 1}) {
-            int a = line[axis + sign * near], b = line[axis + sign * far];
-            if (a != INT_MAX && b != INT_MAX) {
-                sum += std::max(0.0f, float(b - a) / (far - near));
-                count++;
+            int a = line[axis + sign * near];
+            if (a == INT_MAX)
+                continue;
+            for (int d = std::min(near + 48, axis); d >= near + 8; d -= 4) {
+                int b = line[axis + sign * d];
+                if (b != INT_MAX) {
+                    sum += std::max(0.0f, float(b - a) / (d - near));
+                    count++;
+                    break;
+                }
             }
         }
         return count ? sum / count : 0.0f;
