@@ -89,10 +89,13 @@ class PeriodicRunner : public QThread
 };
 
 class EditStack;
+class GuiTest;
 
 class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
     Q_OBJECT
+    // Scripted GUI tests (NEXTPNR_GUI_TEST, see guitest.h)
+    friend class GuiTest;
 
   public:
     FPGAViewWidget(QWidget *parent = 0);

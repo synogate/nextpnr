@@ -36,6 +36,7 @@
 #include "editcommands.h"
 #include "fpgaviewwidget.h"
 #include "timingwidget.h"
+#include "guitest.h"
 #include "json_frontend.h"
 #include "jsonwrite.h"
 #include "log.h"
@@ -179,6 +180,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     for (auto splitter : findChildren<QSplitter *>())
         if (!splitter->objectName().isEmpty())
             splitter->restoreState(settings.value("mainwindow/" + splitter->objectName()).toByteArray());
+    GuiTest::startIfRequested(this);
 }
 
 BaseMainWindow::~BaseMainWindow() { delete task; }

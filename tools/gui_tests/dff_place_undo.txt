@@ -1,0 +1,30 @@
+# GUI test (gui/guitest.h): zoom to a cell, edit mode, move it by click, undo.
+# Design: prjpeppercorn-test-cases/035-dff-ffobf/dff-ffobf_olimex_pnr.json
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\run_gui_test.ps1 `
+#     -Json <...>\035-dff-ffobf\dff-ffobf_olimex_pnr.json -Script tools\gui_tests\dff_place_undo.txt -OutDir <out>
+resize 1400 1000
+zoomcell $iopadmap$top.led$iosel$OUT1_cpe 0.4
+shot 01_zoom.png
+key E
+action Unlock all cells
+assert_status Unlock all cells
+selectcell $iopadmap$top.led$iosel$OUT1_cpe
+key P
+status
+assert_status Moving
+hoverbel X5Y97/CPE_LT_L
+wait 500
+shot 02_armed.png
+clickbel X5Y97/CPE_LT_L
+wait 300
+status
+assert_status Move $iopadmap$top.led$iosel$OUT1_cpe to X5Y97/CPE_LT_L
+assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X5Y97/CPE_LT_L"
+shot 03_placed.png
+# keep the mouse off the vacated bel (hovering it after undo stalls the GUI for seconds)
+move 5 5
+key Ctrl+Z
+wait 300
+assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X3Y97/CPE_LT_L"
+assert_status Undo: Move
+shot 04_undone.png

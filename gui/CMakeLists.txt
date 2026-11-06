@@ -16,6 +16,8 @@ set(GUI_SOURCES
     netstatus.h
     fpgaviewwidget.cc
     fpgaviewwidget.h
+    guitest.cc
+    guitest.h
     line_editor.cc
     line_editor.h
     lineshader.cc
@@ -80,6 +82,13 @@ target_include_directories(nextpnr-${target}-gui PRIVATE
 if (Qt6_FOUND)
     target_link_libraries(nextpnr-${target}-gui PUBLIC Qt6::Widgets)
     target_link_libraries(nextpnr-${target}-gui PRIVATE Qt6::OpenGL Qt6::OpenGLWidgets)
+    # The GUI test driver injects input like the platform does (keyboard modifiers, shortcuts)
+    set(QT_NO_PRIVATE_MODULE_WARNING ON)
+    find_package(Qt6 COMPONENTS GuiPrivate QUIET)
+    if (TARGET Qt6::GuiPrivate)
+        target_link_libraries(nextpnr-${target}-gui PRIVATE Qt6::GuiPrivate)
+        target_compile_definitions(nextpnr-${target}-gui PRIVATE NEXTPNR_GUITEST_QPA)
+    endif()
 else()
     target_link_libraries(nextpnr-${target}-gui PUBLIC Qt5::Widgets)
     target_link_libraries(nextpnr-${target}-gui PRIVATE Qt5::OpenGL)

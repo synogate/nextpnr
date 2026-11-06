@@ -50,6 +50,8 @@ class FPGAViewWidget;
 class BaseMainWindow : public QMainWindow
 {
     Q_OBJECT
+    // Scripted GUI tests (NEXTPNR_GUI_TEST, see guitest.h)
+    friend class GuiTest;
 
   public:
     explicit BaseMainWindow(std::unique_ptr<Context> context, CommandHandler *handler, QWidget *parent = 0);
