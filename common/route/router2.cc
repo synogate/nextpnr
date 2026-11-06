@@ -440,7 +440,7 @@ struct Router2
 
         auto &rd = resource_data(resource_key);
         auto resource_value = ctx->getResourceValueForPip(pip);
-        auto resource_found = net.resources.at(resource_key);
+        auto &resource_found = net.resources.at(resource_key);
 
         --resource_found.count;
         --rd.value_count.at(resource_value);
@@ -792,6 +792,62 @@ struct Router2
         wd.cost_bwd = cost;
     }
 
+    // Whether the half path searched so far up to wire (towards the source for fwd, towards the sink for bwd) uses the
+    // resource key with another value. A path can pass through the same resource group twice where a tile lets a
+    // signal leave and come back (GateMate: CP line -> CPOUT -> OUT -> CP line of the same CPE).
+    bool chain_resource_conflict(int wire, bool fwd, GroupId key, int value)
+    {
+        for (int guard = 0; guard < 100000; guard++) {
+            auto &wd = flat_wires.at(wire);
+            if ((fwd ? wd.cost_fwd : wd.cost_bwd) == PerWireData::NOT_VISITED)
+                return false;
+            PipId pip = fwd ? wd.pip_fwd : wd.pip_bwd;
+            if (pip == PipId())
+                return false;
+            if (ctx->getResourceKeyForPip(pip) == key && ctx->getResourceValueForPip(pip) != value)
+                return true;
+            wire = wire_to_idx.at(fwd ? ctx->getPipSrcWire(pip) : ctx->getPipDstWire(pip));
+        }
+        return false;
+    }
+
+    // Whether the path found (both halves through the midpoint and the existing routing it tacks onto) uses a
+    // resource with two values, or with another value than the net already has
+    bool path_resource_conflict(PerNetData &nd, int midpoint_wire)
+    {
+        dict<GroupId, int> used;
+        auto check = [&](PipId pip) {
+            auto key = ctx->getResourceKeyForPip(pip);
+            if (key == GroupId())
+                return false;
+            int value = ctx->getResourceValueForPip(pip);
+            auto fnd = nd.resources.find(key);
+            if (fnd != nd.resources.end() && fnd->second.value != value)
+                return true;
+            auto ins = used.emplace(key, value);
+            return !ins.second && ins.first->second != value;
+        };
+        int cursor = midpoint_wire;
+        while (was_visited_fwd(cursor, std::numeric_limits<float>::max())) {
+            PipId pip = flat_wires.at(cursor).pip_fwd;
+            if (pip == PipId())
+                break;
+            if (check(pip))
+                return true;
+            cursor = wire_to_idx.at(ctx->getPipSrcWire(pip));
+        }
+        cursor = midpoint_wire;
+        while (was_visited_bwd(cursor, std::numeric_limits<float>::max())) {
+            PipId pip = flat_wires.at(cursor).pip_bwd;
+            if (pip == PipId())
+                break;
+            if (check(pip))
+                return true;
+            cursor = wire_to_idx.at(ctx->getPipDstWire(pip));
+        }
+        return false;
+    }
+
     bool was_visited_fwd(int wire, float cost)
     {
         return flat_wires.at(wire).cost_fwd != PerWireData::NOT_VISITED && flat_wires.at(wire).cost_fwd <= cost;
@@ -936,7 +992,8 @@ struct Router2
             auto try_meet = [&](int wire) {
                 auto &wd = flat_wires.at(wire);
                 float c = wd.cost_fwd + wd.cost_bwd;
-                if (c < best_meet) {
+                // Each half is checked as it is searched, but together they may use a resource with two values
+                if (c < best_meet && !path_resource_conflict(nd, wire)) {
                     best_meet = c;
                     midpoint_wire = wire;
                     if (meet_limit < 0)
@@ -1001,6 +1058,8 @@ struct Router2
                             auto fnd_resource = nd.resources.find(resource_key);
                             if (fnd_resource != nd.resources.end() &&
                                 fnd_resource->second.value != ctx->getResourceValueForPip(dh))
+                                continue;
+                            if (chain_resource_conflict(curr.wire, true, resource_key, ctx->getResourceValueForPip(dh)))
                                 continue;
                         }
                         if (!thread_test_wire(t, nwd))
@@ -1077,6 +1136,8 @@ struct Router2
                             if (fnd_resource != nd.resources.end() &&
                                 fnd_resource->second.value != ctx->getResourceValueForPip(uh))
                                 continue;
+                            if (chain_resource_conflict(curr.wire, false, resource_key, ctx->getResourceValueForPip(uh)))
+                                continue;
                         }
                         if (!thread_test_wire(t, nwd))
                             continue; // thread safety issue
@@ -1087,6 +1148,11 @@ struct Router2
             }
             if (midpoint_wire != -1)
                 break;
+        }
+        // The two halves of the path may each be fine but use a resource with different values together
+        if (midpoint_wire != -1 && !const_mode && path_resource_conflict(nd, midpoint_wire)) {
+            ROUTE_LOG_DBG("   Path found uses a resource with two values, retrying\n");
+            midpoint_wire = -1;
         }
         ArcRouteResult result = ARC_SUCCESS;
         if (midpoint_wire != -1) {
