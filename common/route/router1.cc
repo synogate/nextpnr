@@ -1335,18 +1335,20 @@ bool Context::checkRoutedDesign() const
         };
 
         dict<WireId, std::unique_ptr<ExtraWireInfo>> db;
+        auto src_wire = ctx->getNetinfoSourceWire(net_info);
 
         for (auto &it : net_info->wires) {
             WireId w = it.first;
             PipId p = it.second.pip;
 
-            if (p != PipId()) {
+            // The source wire may be bound with the pip driving it from another net (GateMate turns bridge pips
+            // into cells after routing, the net behind the bridge starts at the pip's destination)
+            if (p != PipId() && w != src_wire) {
                 log_assert(ctx->getPipDstWire(p) == w);
                 db.emplace(ctx->getPipSrcWire(p), std::make_unique<ExtraWireInfo>()).first->second->children.insert(w);
             }
         }
 
-        auto src_wire = ctx->getNetinfoSourceWire(net_info);
         if (net_info->constant_value == IdString()) {
             if (src_wire == WireId()) {
                 log_assert(net_info->driver.cell == nullptr);
@@ -1376,10 +1378,13 @@ bool Context::checkRoutedDesign() const
             }
         }
 
-        std::function<void(WireId, int)> setOrderNum;
+        // below_sink: the wire is below a sink wire of the net (routing continuing past a sink, e.g. GateMate's
+        // routing inside a CPE from a LUT input's bel pin wire on, in a design whose LUT inputs were renamed after
+        // routing); it may end without reaching a sink
+        std::function<void(WireId, int, bool)> setOrderNum;
         pool<WireId> logged_wires;
 
-        setOrderNum = [&](WireId w, int num) {
+        setOrderNum = [&](WireId w, int num, bool below_sink) {
             auto &db_entry = *db.emplace(w, std::make_unique<ExtraWireInfo>()).first->second;
             if (db_entry.order_num != 0) {
                 found_loop = true;
@@ -1392,12 +1397,15 @@ bool Context::checkRoutedDesign() const
                     log("  %*s-> %s\n", 2 * num, "", ctx->nameOfWire(child));
                     logged_wires.insert(child);
                 }
-                setOrderNum(child, num + 1);
+                setOrderNum(child, num + 1, below_sink || dest_wires.count(w) != 0);
             }
             if (db_entry.children.empty()) {
                 if (dest_wires.count(w) != 0) {
                     if (ctx->debug)
                         log("  %*s=> sink %d\n", 2 * num, "", dest_wires.at(w).idx());
+                } else if (below_sink) {
+                    if (ctx->debug)
+                        log("  %*s=> end below a sink\n", 2 * num, "");
                 } else {
                     if (ctx->debug)
                         log("  %*s=> stub\n", 2 * num, "");
@@ -1413,10 +1421,10 @@ bool Context::checkRoutedDesign() const
         if (net_info->constant_value != IdString()) {
             for (const auto &wire : net_info->wires) {
                 if (wire.second.pip == PipId() && ctx->getWireConstantValue(wire.first) == net_info->constant_value)
-                    setOrderNum(wire.first, 1);
+                    setOrderNum(wire.first, 1, false);
             }
         } else {
-            setOrderNum(src_wire, 1);
+            setOrderNum(src_wire, 1, false);
         }
 
         pool<WireId> dangling_wires;
@@ -1441,7 +1449,7 @@ bool Context::checkRoutedDesign() const
                 for (WireId w : root_wires) {
                     log("  dangling wire: %s\n", ctx->nameOfWire(w));
                     logged_wires.insert(w);
-                    setOrderNum(w, 1);
+                    setOrderNum(w, 1, false);
                 }
 
                 for (WireId w : dangling_wires) {

@@ -226,7 +226,11 @@ struct Router2
                 auto iter = bound->wires.find(wire);
                 if (iter != bound->wires.end()) {
                     auto &nd = nets.at(bound->udata);
-                    nd.wires[wire] = std::make_pair(bound->wires.at(wire).pip, 0);
+                    // The source wire may be bound with the pip driving it from another net (GateMate turns bridge
+                    // pips into cells after routing, the net behind the bridge starts at the pip's destination).
+                    // For the router the routing starts there; bind_and_check_all leaves that binding as it is.
+                    PipId pip = (wire == nd.src_wire) ? PipId() : bound->wires.at(wire).pip;
+                    nd.wires[wire] = std::make_pair(pip, 0);
                     pwd.curr_cong = 1;
                     if (bound->wires.at(wire).strength == STRENGTH_PLACER) {
                         pwd.reserved_net = bound->udata;
@@ -244,6 +248,9 @@ struct Router2
             flat_wires.push_back(pwd);
         }
 
+        for (auto &net_pair : ctx->nets)
+            find_wires_below_sinks(net_pair.second.get());
+
         for (auto &net_pair : ctx->nets) {
             auto *net = net_pair.second.get();
             auto &nd = nets.at(net->udata);
@@ -254,6 +261,49 @@ struct Router2
                         record_prerouted_net(net, usr.index, phys_pin);
                     }
                 }
+            }
+        }
+    }
+
+    // The routing a net has below one of its sink wires, reaching no other sink (routing continuing past the sink, e.g.
+    // GateMate's routing inside a CPE from a LUT input's bel pin wire on, in a design whose LUT inputs were renamed
+    // after routing). It belongs to no arc: it stays bound as it is, reserved for its net.
+    pool<WireId> below_sink_wires;
+
+    void find_wires_below_sinks(NetInfo *net)
+    {
+        if (net->wires.empty())
+            return;
+        WireId src_wire = nets.at(net->udata).src_wire;
+        dict<WireId, std::vector<WireId>> children;
+        for (auto &w : net->wires)
+            if (w.second.pip != PipId() && w.first != src_wire)
+                children[ctx->getPipSrcWire(w.second.pip)].push_back(w.first);
+        pool<WireId> sinks;
+        for (auto &usr : net->users)
+            for (auto sink : ctx->getNetinfoSinkWires(net, usr))
+                sinks.insert(sink);
+        for (auto sink : sinks) {
+            if (!children.count(sink))
+                continue;
+            std::vector<WireId> subtree, todo = children.at(sink);
+            bool other_sink = false;
+            while (!todo.empty() && subtree.size() < 64) {
+                WireId w = todo.back();
+                todo.pop_back();
+                other_sink |= sinks.count(w) > 0;
+                subtree.push_back(w);
+                auto fnd = children.find(w);
+                if (fnd != children.end())
+                    todo.insert(todo.end(), fnd->second.begin(), fnd->second.end());
+            }
+            if (other_sink || !todo.empty())
+                continue;
+            for (WireId w : subtree) {
+                below_sink_wires.insert(w);
+                auto &wd = wire_data(w);
+                if (wd.reserved_net == -1)
+                    wd.reserved_net = net->udata;
             }
         }
     }
@@ -1578,8 +1628,13 @@ struct Router2
                 continue;
 #endif
             net_wires.clear();
+            WireId src_wire = ctx->getNetinfoSourceWire(net);
             for (auto &w : net->wires) {
-                if (w.second.strength <= STRENGTH_STRONG) {
+                if ((w.first == src_wire && w.second.pip != PipId()) || below_sink_wires.count(w.first)) {
+                    // The source wire bound with a driving pip of another net (see setup_wires) keeps it, the
+                    // routing below a sink wire stays as it is (see find_wires_below_sinks)
+                    continue;
+                } else if (w.second.strength <= STRENGTH_STRONG) {
                     net_wires.push_back(w.first);
                 } else if (ctx->debug) {
                     log("Net %s didn't rip up wire %s because strength was %d\n", ctx->nameOf(net),

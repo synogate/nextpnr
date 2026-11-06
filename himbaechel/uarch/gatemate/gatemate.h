@@ -164,6 +164,11 @@ struct GateMateImpl : HimbaechelAPI
     float route_learn_step = 0.25;
     // Nets routed before router2 (clocks, multipliers), which routing again leaves alone
     pool<IdString> prerouted_nets;
+    // The design was routed and finished by postRoute before (e.g. a routed JSON loaded and routed again): its LUT
+    // inputs are renamed to the CPE inputs the routing reaches, bridges and CP lines are cells. Routing it again
+    // keeps the routing inside the CPEs; postRoute skips the passes that need the design as the placer left it.
+    bool routed_before = false;
+    bool design_routed_before() const;
     bool swap_pairs = true, swap_halves = true;
     // Criticality-weighted delay from a LUT tree's inputs to its output, as it is and with the pairs
     // swapped; with `routed`, as it is uses the real routing, otherwise both use least_delay()
@@ -401,6 +406,8 @@ struct GateMateImpl : HimbaechelAPI
                           dict<WireId, IdString> &wire_to_net, int &num);
     void reassign_cplines(NetInfo *net, const dict<WireId, PipMap> &net_wires, WireId wire,
                           dict<WireId, IdString> &wire_to_net, int &num, IdString in_port);
+    // pass_backtrace of the bridge and CP line cells of a design routed before (it is not saved with the design)
+    void restore_pass_backtrace();
     void repack();
 
     bool get_delay_from_tmg_db(IdString id, DelayQuad &delay) const;

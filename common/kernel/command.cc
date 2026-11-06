@@ -780,6 +780,15 @@ int CommandHandler::exec()
     } catch (log_execution_error_exception) {
         printFooter();
         return 125;
+    } catch (const std::exception &e) {
+        // An uncaught exception (e.g. a failed NPNR_ASSERT) would otherwise end in std::terminate,
+        // which prints nothing with MSVC
+        if (vm.count("on-failure"))
+            throw; // the --on-failure terminate handler runs the script
+        log_flush();
+        fprintf(stderr, "ERROR: uncaught exception: %s\n", e.what());
+        fflush(stderr);
+        return 126;
     }
 }
 

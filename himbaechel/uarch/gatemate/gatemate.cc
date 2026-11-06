@@ -915,6 +915,25 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
     return true;
 }
 
+bool GateMateImpl::design_routed_before() const
+{
+    // postRoute renames the LUT inputs to the CPE inputs (IN1..IN8) and a register's CLK_INT / EN_INT to the
+    // input the routing reaches
+    static const pool<IdString> cpe_inputs = {id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8};
+    for (auto &cell : ctx->cells) {
+        const CellInfo *ci = cell.second.get();
+        if (ci->type.in(id_CPE_L2T4, id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
+            for (auto &port : ci->ports)
+                if (cpe_inputs.count(port.first))
+                    return true;
+        } else if (ci->type.in(id_CPE_FF, id_CPE_FF_L, id_CPE_FF_U, id_CPE_LATCH)) {
+            if (ci->ports.count(id_CLK) || ci->ports.count(id_EN))
+                return true;
+        }
+    }
+    return false;
+}
+
 void GateMateImpl::preRoute()
 {
     if (partition_unrouted)
@@ -925,7 +944,13 @@ void GateMateImpl::preRoute()
         replicate_drivers(replicate_fanout);
     if (ctx->args.options.count("route-seed"))
         ctx->rngseed(ctx->args.options["route-seed"].as<uint64_t>());
-    if (lut_swap)
+    routed_before = design_routed_before();
+    if (routed_before) {
+        log_info("The design was routed before (LUT inputs renamed to the CPE inputs): the routing inside the CPEs "
+                 "stays, the repair and LUT input passes are skipped.\n");
+        restore_pass_backtrace();
+    }
+    if (lut_swap && !routed_before)
         swap_lut_inputs();
     route_mult();
     route_clock();
@@ -985,6 +1010,9 @@ void GateMateImpl::reassign_bridges(NetInfo *start_net, const dict<WireId, PipMa
 
             // We have a bridge that needs to be translated to a bel.
             IdString name = ctx->idf("%s$bridge%d", cur.net->name.c_str(ctx), num);
+            // (a design routed before already has bridge cells)
+            while (ctx->cells.count(name) || ctx->nets.count(ctx->idf("%s$muxout", name.c_str(ctx))))
+                name = ctx->idf("%s$bridge%d", cur.net->name.c_str(ctx), ++num);
 
             IdStringList id = ctx->getPipName(pip);
             Loc loc = ctx->getPipLocation(pip);
@@ -1127,6 +1155,44 @@ void GateMateImpl::reassign_cplines(NetInfo *ni, const dict<WireId, PipMap> &net
     }
 }
 
+void GateMateImpl::restore_pass_backtrace()
+{
+    static const dict<std::string, IdString> input_port_map = {
+            {"CPE.CINX", id_CINX},          {"CPE.CINY1", id_CINY1},          {"CPE.CINY2", id_CINY2},
+            {"CPE.PINX", id_PINX},          {"CPE.PINY1", id_PINY1},          {"CPE.PINY2", id_PINY2},
+            {"CPE.OUT1_IN_int", id_OUT1}, {"CPE.OUT2_IN_int", id_OUT2}, {"CPE.COMPOUT_IN_int", id_COMPOUT}};
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->type == id_CPE_BRIDGE) {
+            for (auto &port : ci->ports)
+                if (port.second.type == PORT_IN && port.second.net)
+                    pass_backtrace[ci->name][id_MUXOUT] = port.first;
+        } else if (ci->type == id_CPE_CPLINES) {
+            // The input an output passes on: up the routing from the output's wire (the CP line pip driving it,
+            // then the multiplexers inside the CPE) to the first wire of an input
+            for (auto &port : ci->ports) {
+                if (port.second.type != PORT_OUT || !port.second.net)
+                    continue;
+                WireId w = ctx->getNetinfoSourceWire(port.second.net);
+                for (int step = 0; step < 8 && w != WireId(); step++) {
+                    NetInfo *bound = ctx->getBoundWireNet(w);
+                    if (!bound)
+                        break;
+                    auto it = bound->wires.find(w);
+                    if (it == bound->wires.end() || it->second.pip == PipId())
+                        break;
+                    w = ctx->getPipSrcWire(it->second.pip);
+                    auto fnd = input_port_map.find(ctx->getWireName(w)[1].str(ctx));
+                    if (fnd != input_port_map.end() && ci->getPort(fnd->second)) {
+                        pass_backtrace[ci->name][port.first] = fnd->second;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void GateMateImpl::postRoute()
 {
     repairRoute();
@@ -1136,23 +1202,27 @@ void GateMateImpl::postRoute()
 void GateMateImpl::repairRoute()
 {
     release_partition_routing();
-    if (route_runs > 0)
-        route_learning(route_runs);
-    if (net_repair > 0)
-        repair_critical_nets(net_repair);
-    if (route_repair != 0)
-        repair_critical_routing(route_repair);
-    if (place_repair != 0) {
-        repair_critical_placement(place_repair);
-        // The moved trees' new connections can often be repaired too
+    // These passes change the placement, the LUT inputs and the routing of the design as the placer left it, not
+    // of one routed and finished before
+    if (!routed_before) {
+        if (route_runs > 0)
+            route_learning(route_runs);
         if (net_repair > 0)
             repair_critical_nets(net_repair);
         if (route_repair != 0)
             repair_critical_routing(route_repair);
+        if (place_repair != 0) {
+            repair_critical_placement(place_repair);
+            // The moved trees' new connections can often be repaired too
+            if (net_repair > 0)
+                repair_critical_nets(net_repair);
+            if (route_repair != 0)
+                repair_critical_routing(route_repair);
+        }
+        if (lut_swap_rounds > 0)
+            improve_lut_inputs(lut_swap_rounds);
+        fix_mx8_inputs();
     }
-    if (lut_swap_rounds > 0)
-        improve_lut_inputs(lut_swap_rounds);
-    fix_mx8_inputs();
     if (report_crit_routing)
         report_critical_routing();
     if (ctx->args.options.count("place-crit-out")) {
