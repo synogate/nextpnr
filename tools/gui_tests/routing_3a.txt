@@ -1,0 +1,54 @@
+# Phase 3a: net view overlay, rip-up from the pip/wire context menu (Remove pip, Unroute arc, Unroute
+# net), undo of each, View > Show unrouted arcs.
+# design: counter_pnr
+resize 1400 1000
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; nw=lambda: len(ctx.nets[N].wires); W0=nw(); print(W0, len(ctx.nets[N].users))
+zoombel X77Y116/CPE_LT_L 1.2
+key E
+# --- selecting the net shows its routing (tree, source, sinks)
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+wait 500
+status
+assert_status $auto$alumacc.cc:512:replace_alu$26.Y[0]
+shot 01_net_view.png
+# --- Remove pip (and what only it feeds), undo
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+assert_menu Unroute net
+shot 02_pip_menu.png
+menu Remove pip
+wait 300
+status
+assert_status Remove pip X77Y116/IM.P08.Y/IM.P08.D2/INV
+py print(W0, nw())
+assert_py nw() < W0
+shot 03_pip_removed.png
+key Ctrl+Z
+assert_py nw() == W0
+# --- Unroute arc, undo
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+menu Unroute arc
+wait 300
+status
+assert_status Unroute arc to
+py print(W0, nw())
+assert_py 0 < nw() < W0
+key Ctrl+Z
+assert_py nw() == W0
+# --- Unroute net, undo
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+menu Unroute net
+wait 300
+assert_status Unroute net
+py print(W0, nw())
+assert_py nw() <= 1
+# --- Show unrouted arcs (U): the arcs of the unrouted net appear as straight lines
+key U
+wait 500
+status
+assert_status Unrouted arcs:
+shot 04_unrouted_arcs.png
+key Ctrl+Z
+assert_py nw() == W0
+wait 300
+shot 05_rerouted_undo.png
+key U

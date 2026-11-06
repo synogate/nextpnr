@@ -80,7 +80,8 @@ std::string summary(const Status &st);
 dict<WireId, std::vector<WireId>> downstream(Context *ctx, NetInfo *net);
 // The wire and every wire of the net below it (through bound pips), wire first
 std::vector<WireId> subtree(const dict<WireId, std::vector<WireId>> &down, WireId wire);
-// The wires to unbind to remove the routing of one arc: from the sink up its path while a wire
+// The wires to unbind to remove the routing of one arc: what the net routes below the sink wire
+// (unless it reaches another sink), then from the sink up its path while a wire
 // drives nothing else of the net, is not the sink of another routed arc and is not the source
 std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, WireId sink);
 

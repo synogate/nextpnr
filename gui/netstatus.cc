@@ -202,6 +202,21 @@ std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, W
             break;
         if (i > 0 && other_sinks.count(w))
             break;
+        if (i == 0) {
+            // Routing below the sink wire (e.g. GateMate's LUT-input routing inside the CPE, from the
+            // bel pin wire on) belongs to this arc, unless it reaches another sink
+            std::vector<WireId> tail = subtree(down, w);
+            bool shared = false;
+            for (size_t j = 1; j < tail.size(); j++)
+                shared |= other_sinks.count(tail[j]) > 0;
+            if (shared)
+                break;
+            for (WireId t : tail) {
+                result.push_back(t);
+                removed.insert(t);
+            }
+            continue;
+        }
         // Drives anything else of the net (other than what is removed already)?
         bool other = false;
         auto fnd = down.find(w);
