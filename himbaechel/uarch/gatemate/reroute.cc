@@ -538,7 +538,9 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
         }
     };
     for (int attempt = 0; attempt < 4 && !routed; attempt++) {
-        std::vector<WireId> bound; // by this attempt, to undo
+        // Bound by this attempt, to undo, with the net that bound it: displace() can rip up a net routed earlier
+        // in the attempt, and its wires may be free again or another net's by the undo
+        std::vector<std::pair<NetInfo *, WireId>> bound;
         size_t failed = arcs.size();
         for (size_t i = 0; i < arcs.size() && failed == arcs.size(); i++) {
             auto [estimate, net, sink] = arcs[i]; // (displace() adds to arcs)
@@ -552,7 +554,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
                     break;
                 }
                 ctx->bindWire(src, net, STRENGTH_WEAK);
-                bound.push_back(src);
+                bound.emplace_back(net, src);
             }
             delay_t delay = 0;
             // Near the connection first, as router2 does
@@ -577,7 +579,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
                     why = stringf("%s is taken", ctx->nameOfWire(w));
                 } else {
                     ctx->bindPip(path[j], net, STRENGTH_WEAK);
-                    bound.push_back(w);
+                    bound.emplace_back(net, w);
                 }
             }
         }
@@ -586,8 +588,9 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
             log_info("    routing %s to %s: %s\n", std::get<1>(arcs[failed])->name.c_str(ctx),
                      ctx->nameOfWire(std::get<2>(arcs[failed])), why.c_str());
         if (!routed) {
-            for (auto w = bound.rbegin(); w != bound.rend(); ++w)
-                ctx->unbindWire(*w);
+            for (auto b = bound.rbegin(); b != bound.rend(); ++b)
+                if (ctx->getBoundWireNet(b->second) == b->first)
+                    ctx->unbindWire(b->second);
             std::rotate(arcs.begin(), arcs.begin() + failed, arcs.begin() + failed + 1);
         }
     }
