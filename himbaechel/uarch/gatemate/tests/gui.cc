@@ -707,7 +707,8 @@ TEST_F(GateMateGuiTest, used_pips_end_in_an_arrow)
 {
     // Which way a signal goes: the drawing of each used pip ends in one arrow, at the end of the
     // path away from the source (a path into a LUT2 ends at the row of the input it uses, not
-    // always at the destination's own place)
+    // always at the destination's own place). A used pip into a CPE wire also draws the ways on from
+    // there through the CPE's configuration (drawn last, see configured_from): not part of its path.
     routed_mix(1);
     place_and_route();
     int checked = 0, failures = 0;
@@ -717,6 +718,14 @@ TEST_F(GateMateGuiTest, used_pips_end_in_an_arrow)
             if (pip == PipId() || failures >= 20)
                 continue;
             auto g = lines(ctx->getPipDecal(pip).decal);
+            std::vector<GraphicElement> onward;
+            impl->configured_from(onward, WireId(pip.tile, chip_pip_info(ctx->chip_info, pip).dst_wire));
+            size_t onward_lines = 0;
+            for (auto &e : onward)
+                onward_lines += (e.type == GraphicElement::TYPE_LINE || e.type == GraphicElement::TYPE_ARROW) &&
+                                std::isinf(e.max_scale);
+            ASSERT_LE(onward_lines, g.size()) << ctx->nameOfPip(pip);
+            g.resize(g.size() - onward_lines);
             if (g.empty())
                 continue;
             auto ends = impl->gui_pip_ends(pip);
