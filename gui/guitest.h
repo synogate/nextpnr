@@ -61,13 +61,21 @@
  *   focus view|tree|console    give the keyboard focus to that widget
  *   action <text>              trigger the QAction with this text (without '&', case-insensitive;
  *                              a prefix is enough if unique)
- *   selectcell <name>          select a cell in the Cells tree; selectnet <name> in the Nets tree
+ *   selectcell <name> [ctrl]   click the cell's row in the Cells tree like a user (arms it in edit
+ *                              mode; ctrl: add it to the selection); selectnet <name> selects a net
+ *                              in the Nets tree (programmatically, like "Show in tree")
  *   menu <text>                pick the entry of the open popup / context menu starting with text
  *                              (waits up to 3 s for the menu; submenus: menu A > B)
+ *   assert_menu <text> / assert_menu_disabled <text>
+ *                              the open menu has an enabled / a disabled entry starting with text
+ *                              (logs its tooltip); assert_nomenu <text>: has no such entry
  *   menuclose                  close open popup menus
  *   dialog [value]             set the value of the open input dialog (if any) and accept it,
  *                              or accept the open message box / dialog
+ *                              (other dialogs: the values, separated by blanks, go into its spin
+ *                              boxes in order, e.g. dialog 2 -1 for "Move selection by")
  *   dialog_cancel              reject the open dialog
+ *   check <text> on|off        set a visible checkable button (e.g. a checkbox) starting with text
  *   status                     print the status bar texts (message, last message, selection,
  *                              placement)
  *   assert_status <substring>  one of these texts contains substring

@@ -17,6 +17,7 @@
 
 #include "guitest.h"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QDialog>
@@ -31,6 +32,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPointer>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QTextStream>
 #include <QTimer>
@@ -866,7 +868,41 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
                 error_ = "no cell " + w.at(1);
                 return false;
             }
+            // Like a user's click on the row: showCell reveals and selects it (without arming, as
+            // "Show in tree" does), then the row is clicked (with Ctrl: added to the old selection)
+            Qt::MouseButton button;
+            Qt::KeyboardModifiers mods;
+            if (!parseMods(w, 2, button, mods))
+                return false;
+            QTreeView *tree = nullptr;
+            QModelIndexList before;
+            for (QTreeView *t : win_->designview->findChildren<QTreeView *>())
+                if (t->isVisible())
+                    tree = t;
+            if (tree && mods.testFlag(Qt::ControlModifier))
+                before = tree->selectionModel()->selectedIndexes();
             win_->designview->showCell(id);
+            tree = nullptr;
+            for (QTreeView *t : win_->designview->findChildren<QTreeView *>())
+                if (t->isVisible())
+                    tree = t;
+            if (!tree) {
+                error_ = "no visible tree";
+                return false;
+            }
+            QModelIndex mi = tree->currentIndex();
+            tree->scrollTo(mi);
+            tree->selectionModel()->clearSelection();
+            for (const QModelIndex &b : before)
+                tree->selectionModel()->select(b, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+            QRect r = tree->visualRect(mi);
+            if (!mi.isValid() || r.isEmpty()) {
+                error_ = "row of " + w.at(1) + " not visible in the tree";
+                return false;
+            }
+            QPointF p(r.left() + std::min(20, r.width() / 2), r.center().y());
+            mouse(tree->viewport(), p, Qt::LeftButton, Qt::LeftButton, QEvent::MouseButtonPress, mods);
+            mouse(tree->viewport(), p, Qt::NoButton, Qt::LeftButton, QEvent::MouseButtonRelease, mods);
         } else {
             if (!ctx->nets.count(id)) {
                 error_ = "no net " + w.at(1);
@@ -876,7 +912,7 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         }
         return true;
     }
-    if (cmd == "menu") {
+    if (cmd == "menu" || cmd == "assert_menu" || cmd == "assert_menu_disabled" || cmd == "assert_nomenu") {
         if (!need(1))
             return false;
         QMenu *menu = popupMenu();
@@ -896,9 +932,25 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
             if (!hit && plain(a->text()).startsWith(want, Qt::CaseInsensitive))
                 hit = a;
         }
+        if (cmd == "assert_nomenu") {
+            if (hit) {
+                error_ = "menu has entry '" + plain(hit->text()) + "'";
+                return false;
+            }
+            return true;
+        }
         if (!hit) {
             error_ = "no menu entry '" + want + "' in [" + entries.join(" | ") + "]";
             return false;
+        }
+        if (cmd == "assert_menu" || cmd == "assert_menu_disabled") {
+            log("  entry '" + plain(hit->text()) + "' " + (hit->isEnabled() ? "enabled" : "disabled") +
+                (hit->toolTip().isEmpty() || hit->toolTip() == hit->text() ? "" : ", tooltip: " + hit->toolTip()));
+            if ((cmd == "assert_menu_disabled") == hit->isEnabled()) {
+                error_ = QString("menu entry is %1").arg(hit->isEnabled() ? "enabled" : "disabled");
+                return false;
+            }
+            return true;
         }
         if (!hit->isEnabled()) {
             error_ = "menu entry '" + plain(hit->text()) + "' is disabled";
@@ -950,10 +1002,33 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
                     in->setTextValue(rest);
             }
         }
+        else if (!rest.isEmpty()) {
+            // Any other dialog: the values go into its spin boxes, in order
+            QStringList values = rest.split(' ', Qt::SkipEmptyParts);
+            QList<QSpinBox *> spins = dlg->findChildren<QSpinBox *>();
+            for (int i = 0; i < values.size() && i < spins.size(); i++)
+                spins.at(i)->setValue(values.at(i).toInt());
+        }
         if (auto *mb = qobject_cast<QMessageBox *>(dlg))
             log("  message box: " + mb->text());
         QTimer::singleShot(0, dlg, &QDialog::accept);
         return true;
+    }
+    if (cmd == "check") {
+        if (!need(2))
+            return false;
+        bool on = w.last().compare("on", Qt::CaseInsensitive) == 0;
+        QString want = QStringList(w.mid(1, w.size() - 2)).join(' ');
+        for (QAbstractButton *b : win_->findChildren<QAbstractButton *>()) {
+            if (!b->isCheckable() || !b->isVisible() || !plain(b->text()).startsWith(want, Qt::CaseInsensitive))
+                continue;
+            if (b->isChecked() != on)
+                b->click();
+            log("  '" + plain(b->text()) + "' " + (b->isChecked() ? "on" : "off"));
+            return true;
+        }
+        error_ = "no visible checkable button '" + want + "'";
+        return false;
     }
     if (cmd == "status") {
         QStringList t = statusTexts();

@@ -1,0 +1,29 @@
+# Cells FIXED by the packer (here every cell: the IO CPEs, whose LUT half and RAMIO half only connect
+# inside their CPE next to the IO) can not be moved or unlocked; hovering their pips is safe.
+# design: dff_pnr
+resize 1400 1000
+zoomcell $iopadmap$top.led$iosel$OUT1_cpe 0.4
+shot 01_zoom.png
+key E
+action Unlock all cells
+assert_status Nothing to unlock
+assert_status 11 FIXED by the packer kept
+selectcell $iopadmap$top.led$iosel$OUT1_cpe
+assert_status Cannot move
+assert_nostatus Moving
+key P
+assert_nostatus Moving
+clickbel X3Y97/CPE_LT_L right
+assert_menu_disabled $iopadmap$top.led$iosel$OUT1_cpe is FIXED
+assert_nomenu Move
+assert_nomenu Unplace
+shot 02_fixed_menu.png
+menuclose
+# a drag is refused too
+view 4.5 97.6 1.2
+dragbel X3Y97/CPE_LT_L X5Y97/CPE_LT_L
+wait 300
+assert_status fixed by the packer
+assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X3Y97/CPE_LT_L"
+assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_ramo"].bel) == "X3Y97/CPE_RAMIO_L"
+shot 03_drag_refused.png

@@ -1772,6 +1772,11 @@ void FPGAViewWidget::armCell(IdString cell)
         ci = ctx_->getClusterRootCell(ci->cluster);
     if (ci->name == armedCell_)
         return;
+    std::string fixed = cellFixedReason(ctx_, ci);
+    if (!fixed.empty()) {
+        editStack_->notify("Cannot move: " + QString::fromStdString(fixed));
+        return;
+    }
     armedCell_ = ci->name;
     size_t group = 1;
     {
@@ -2013,6 +2018,15 @@ void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)
     if (group.size() > 1)
         what = QString("cluster %1 (%2 cells)").arg(group.front().c_str(ctx_)).arg(group.size());
 
+    if (isCellFixed(bound)) {
+        // Bound by the packer to the site the hardware ties it to
+        QAction *fixed = menu.addAction(QString("%1 is FIXED by the packer: cannot be moved or unlocked").arg(what));
+        fixed->setEnabled(false);
+        fixed->setToolTip(QString::fromStdString(cellFixedReason(ctx_, bound)));
+        QAction *show = menu.addAction(QString("Show %1 in tree").arg(name.c_str(ctx_)));
+        connect(show, &QAction::triggered, this, [this, name] { Q_EMIT showCellRequested(name); });
+        return;
+    }
     QAction *move = editAction(QString("Move %1...\tP").arg(what));
     connect(move, &QAction::triggered, this, [this, name] { armCell(name); });
 

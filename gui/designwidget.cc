@@ -975,6 +975,7 @@ void DesignWidget::unlockCells(const QString &text, std::vector<IdString> cells)
     }
     // Clusters as a whole; only placed, locked cells change
     std::vector<IdString> locked;
+    int fixed = 0;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
@@ -983,17 +984,24 @@ void DesignWidget::unlockCells(const QString &text, std::vector<IdString> cells)
             auto fnd = ctx->cells.find(name);
             if (fnd == ctx->cells.end())
                 continue;
-            for (CellInfo *c : placementGroup(ctx, fnd->second.get()))
-                if (seen.insert(c->name).second && c->bel != BelId() && isCellLocked(c))
+            for (CellInfo *c : placementGroup(ctx, fnd->second.get())) {
+                if (!seen.insert(c->name).second || c->bel == BelId() || !isCellLocked(c))
+                    continue;
+                // Bound by the packer to the site the hardware ties them to: they stay
+                if (isCellFixed(c))
+                    fixed++;
+                else
                     locked.push_back(c->name);
+            }
         }
     }
+    QString kept = fixed ? QString(", %1 FIXED by the packer kept").arg(fixed) : QString();
     if (locked.empty()) {
         editStack->notify(cells.empty() ? "Nothing to unlock: select cells or bels with cells first"
-                                        : "Nothing to unlock: no placed locked cells");
+                                        : "Nothing to unlock: no placed locked cells" + kept);
         return;
     }
-    editStack->run(QString("%1 (%2 cells)").arg(text).arg(locked.size()), [&](EditBatch &b) -> std::string {
+    editStack->run(QString("%1 (%2 cells%3)").arg(text).arg(locked.size()).arg(kept), [&](EditBatch &b) -> std::string {
         for (IdString name : locked) {
             std::string err = b.add(std::make_unique<SetCellStrengthCmd>(name, STRENGTH_MANUAL));
             if (!err.empty())
@@ -1696,7 +1704,7 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
     if (editStack != nullptr && !editStack->busy()) {
         std::vector<IdString> cells, placed;
         pool<IdString> seen;
-        bool any_locked = false, any_unlocked = false;
+        bool any_locked = false, any_unlocked = false, any_fixed = false;
         for (auto item : items) {
             if (item->type() != ElementType::CELL)
                 continue;
@@ -1707,6 +1715,10 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
             for (CellInfo *c : placementGroup(ctx, fnd->second.get())) {
                 if (!seen.insert(c->name).second || c->bel == BelId())
                     continue;
+                if (isCellFixed(c)) {
+                    any_fixed = true;
+                    continue;
+                }
                 placed.push_back(c->name);
                 (isCellLocked(c) ? any_locked : any_unlocked) = true;
             }
@@ -1728,6 +1740,16 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
             QAction *place = editAction(ctx->cells.at(cell)->bel != BelId() ? "Move by click...\tP"
                                                                               : "Place by click...\tP");
             connect(place, &QAction::triggered, this, [this, cell] { Q_EMIT armCellRequested(cell); });
+            std::string fixed = cellFixedReason(ctx, ctx->cells.at(cell).get());
+            if (!fixed.empty()) {
+                place->setEnabled(false);
+                place->setToolTip(QString::fromStdString(fixed));
+            }
+        }
+        if (any_fixed) {
+            QAction *note = menu.addAction(placed.empty() ? "FIXED by the packer: cannot be moved or unlocked"
+                                                          : "(cells FIXED by the packer are left out)");
+            note->setEnabled(false);
         }
         auto setStrength = [this, placed](const QString &text, PlaceStrength strength) {
             editStack->run(text, [&](EditBatch &b) -> std::string {

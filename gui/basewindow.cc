@@ -406,12 +406,12 @@ void BaseMainWindow::createMenusAndBars()
 
     QAction *actionUnlockSelection = new QAction("Unlock selected cells", this);
     actionUnlockSelection->setStatusTip("Set the selected locked cells (clusters as a whole) to STRONG, so that "
-                                        "they can be swapped and moved by the placers");
+                                        "they can be swapped and moved by the placers (cells FIXED by the packer stay)");
     connect(actionUnlockSelection, &QAction::triggered, designview, &DesignWidget::unlockSelection);
 
     QAction *actionUnlockAllCells = new QAction("Unlock all cells", this);
-    actionUnlockAllCells->setStatusTip("Set every locked placed cell (e.g. FIXED from a placed JSON) to STRONG, as "
-                                       "one undoable edit");
+    actionUnlockAllCells->setStatusTip("Set every locked placed cell (USER, LOCKED, ...) to STRONG, as one undoable "
+                                       "edit; cells FIXED by the packer to their IO/RAM/clock sites stay");
     connect(actionUnlockAllCells, &QAction::triggered, designview, &DesignWidget::unlockAllCells);
 
     QAction *actionUnlockAllNets = new QAction("Unlock all routing", this);

@@ -1,0 +1,88 @@
+# Phase 2a: arming from the tree, place/move/swap by click, refused clicks, greyed refused context
+# entries, Lock/Unlock all, FIXED cells.
+# design: counter_pnr
+resize 1400 1000
+zoombel X77Y116/CPE_LT_L 1.2
+py L1="$abc$348$auto$blifparse.cc:397:parse_blif$384"; L2="$abc$348$auto$blifparse.cc:397:parse_blif$381"
+assert_py str(ctx.cells[L1].bel) == "X77Y116/CPE_LT_L" and str(ctx.cells[L2].bel) == "X77Y117/CPE_LT_L"
+assert_py ctx.checkBelAvail("X76Y116/CPE_LT_L")
+# --- tree arming: not in edit mode -> selecting does not arm
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_nostatus Moving
+# edit mode on, select again -> armed
+key E
+assert_status Edit mode on
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$381
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+# Esc cancels, P re-arms the tree selection
+key Esc
+assert_nostatus Moving
+key P
+assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+# selecting another cell re-arms that one
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$381
+assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$381
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+hoverbel X76Y116/CPE_LT_L
+wait 300
+shot 01_armed_hover_free.png
+# --- move to a free bel by click
+clickbel X76Y116/CPE_LT_L
+wait 200
+assert_status Move $abc$348$auto$blifparse.cc:397:parse_blif$384 to X76Y116/CPE_LT_L
+assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L"
+# --- swap onto an occupied (unlocked) bel
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+key P
+hoverbel X77Y117/CPE_LT_L
+wait 300
+shot 02_armed_hover_swap.png
+clickbel X77Y117/CPE_LT_L
+wait 200
+assert_status Swap $abc$348$auto$blifparse.cc:397:parse_blif$384 with $abc$348$auto$blifparse.cc:397:parse_blif$381
+assert_py str(ctx.cells[L1].bel) == "X77Y117/CPE_LT_L" and str(ctx.cells[L2].bel) == "X76Y116/CPE_LT_L"
+key Ctrl+Z
+assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L" and str(ctx.cells[L2].bel) == "X77Y117/CPE_LT_L"
+# --- lock L2 via the bel context menu
+key Esc
+clickbel X77Y117/CPE_LT_L right
+menu Lock
+wait 200
+assert_status Lock
+assert_py ctx.cells[L2].belStrength == STRENGTH_USER
+# --- refused click (onto the locked cell) keeps the armed cell and the selection
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+key P
+status
+clickbel X77Y117/CPE_LT_L
+wait 200
+status
+assert_status locked cell
+assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status CELL $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L"
+shot 03_refused.png
+# --- the context menu greys the refused placement, with the reason as tooltip
+clickbel X77Y117/CPE_LT_L right
+assert_menu_disabled Swap
+assert_menu Unlock
+shot 04_refused_menu.png
+menuclose
+# --- Unlock all: the USER-locked cell becomes STRONG, FIXED cells stay
+key Esc
+action Unlock all cells
+assert_status Unlock all cells (1 cells
+assert_status FIXED by the packer kept
+assert_py ctx.cells[L2].belStrength == STRENGTH_STRONG
+assert_py all(c.belStrength == STRENGTH_FIXED for n, c in ctx.cells if c.type in ("IOSEL", "CPE_RAMO"))
+key Ctrl+Z
+assert_py ctx.cells[L2].belStrength == STRENGTH_USER
+# --- FIXED cells (IO CPEs) can not be armed, and their bel menu says why
+py io=[n for n, c in ctx.cells if c.type == "CPE_RAMO"][0]; print(io, ctx.cells[io].bel)
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$350_ramo
+key P
+assert_status Cannot move
+assert_status is fixed by the packer
+assert_nostatus Moving

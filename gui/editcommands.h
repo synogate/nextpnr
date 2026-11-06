@@ -240,11 +240,18 @@ class SetNetStrengthCmd : public EditCommand
 // Placement strengths of manual edits. A cell placed or moved by hand gets STRENGTH_MANUAL: the
 // placers may still move it (they keep only cells above STRENGTH_STRONG). "Lock" sets
 // STRENGTH_MANUAL_LOCKED, "Unlock" STRENGTH_MANUAL. A cell counts as locked when its strength is
-// above STRENGTH_STRONG (also FIXED/LOCKED cells from the packer or constraints): a locked cell is
-// never displaced by a swap, but can still be moved explicitly, and then keeps its strength.
+// above STRENGTH_STRONG (also LOCKED cells from constraints): a locked cell is never displaced by a
+// swap, but can still be moved explicitly, and then keeps its strength.
+// STRENGTH_FIXED cells were bound by the packer to a site the hardware ties them to (e.g. on GateMate
+// the CPE next to an IO or RAM port, whose LUT half and RAMIO half only connect inside that CPE, the
+// IO/RAM cells themselves, clocking and the CP-line cells of the routing): the placers never move them,
+// so neither can the GUI (no move, no unlock).
 constexpr PlaceStrength STRENGTH_MANUAL = STRENGTH_STRONG;
 constexpr PlaceStrength STRENGTH_MANUAL_LOCKED = STRENGTH_USER;
 inline bool isCellLocked(const CellInfo *ci) { return ci->belStrength > STRENGTH_STRONG; }
+inline bool isCellFixed(const CellInfo *ci) { return ci->bel != BelId() && ci->belStrength == STRENGTH_FIXED; }
+// Why a cell cannot be moved by hand ("" if it can)
+std::string cellFixedReason(Context *ctx, const CellInfo *ci);
 
 // The cells that are placed together with ci: its whole cluster (root first), or ci alone.
 std::vector<CellInfo *> placementGroup(Context *ctx, CellInfo *ci);

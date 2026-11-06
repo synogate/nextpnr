@@ -1,26 +1,26 @@
-# Regression test for two bugs on a design loaded placed and routed:
-#  - hovering a pip crashed in GateMateImpl::checkPipAvail (pip masks only computed in postPlace)
-#  - after Ctrl+Z with the mouse over the vacated bel the GUI stalled for seconds per event
-# Design: prjpeppercorn-test-cases/035-dff-ffobf/dff-ffobf_olimex_pnr.json
+# Regression test, design loaded placed and routed:
+#  - hovering a pip crashed in GateMateImpl::checkPipAvail (pip masks were only computed in postPlace)
+#  - after Ctrl+Z with the mouse over the vacated bel the GUI once stalled for seconds per event
+# design: counter_pnr
 resize 1400 1000
-view 4.5 97.6 1.2
-key E
-action Unlock all cells
-delay 50
-dragbel X3Y97/CPE_LT_L X5Y97/CPE_LT_L
+zoombel X77Y116/CPE_LT_L 1.2
+hoverpip X77Y116/IM.P08.Y/IM.P08.D2/INV
 wait 300
-status
-assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X5Y97/CPE_LT_L"
-shot 01_dragged.png
-delay 150
-hoverbel X3Y97/CPE_LT_L
+shot 01_hover_pip.png
+hoverpip X77Y116/CPE.IN8/IM.P08.Y
+wait 300
+key E
+# a fast drag across pips
+dragbel X77Y116/CPE_LT_L X76Y116/CPE_LT_L
+wait 300
+assert_py str(ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$384"].bel) == "X76Y116/CPE_LT_L"
+shot 02_dragged.png
+# undo with the mouse on the vacated bel, then keep hovering there
+hoverbel X77Y116/CPE_LT_L
 key Ctrl+Z
-echo undo-done
-hoverbel X3Y97/CPE_LT_L
-echo hover1
+hoverbel X77Y116/CPE_LT_L
 move 300 300
-echo hover2
-hoverbel X3Y97/CPE_LT_L
-echo hover3
-assert_py str(ctx.cells["$iopadmap$top.led$iosel$OUT1_cpe"].bel) == "X3Y97/CPE_LT_L"
-shot 02_undone.png
+hoverbel X77Y116/CPE_LT_L
+hoverpip X77Y116/IM.P08.Y/IM.P08.D2/INV
+assert_py str(ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$384"].bel) == "X77Y116/CPE_LT_L"
+shot 03_undone.png

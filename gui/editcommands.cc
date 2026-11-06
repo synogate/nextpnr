@@ -413,6 +413,14 @@ std::vector<CellInfo *> placementGroup(Context *ctx, CellInfo *ci)
     return group;
 }
 
+std::string cellFixedReason(Context *ctx, const CellInfo *ci)
+{
+    if (!isCellFixed(ci))
+        return {};
+    return q(ci->name.str(ctx)) + " is fixed by the packer to " + q(ctx->nameOfBel(ci->bel)) +
+           " [FIXED: tied to its IO/RAM/clock site or routing] and cannot be moved";
+}
+
 std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
 {
     Context *ctx = b.getContext();
@@ -436,6 +444,11 @@ std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
             return "the cluster of " + q(cell.str(ctx)) + " does not fit with its root at " + q(ctx->nameOfBel(bel));
     } else {
         targets.emplace_back(ci, bel);
+    }
+    for (auto &t : targets) {
+        std::string fixed = cellFixedReason(ctx, t.first);
+        if (!fixed.empty())
+            return fixed;
     }
     BelId root_bel = bel;
     for (auto &t : targets)
@@ -463,6 +476,9 @@ std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
         if (bound->cluster != ClusterId())
             return "bel " + q(ctx->nameOfBel(tb)) + " is occupied by " + q(bound->name.str(ctx)) +
                    ", which is part of a cluster: swapping with clusters is not supported";
+        if (isCellFixed(bound))
+            return "bel " + q(ctx->nameOfBel(tb)) + " is occupied by " + q(bound->name.str(ctx)) +
+                   ", which is fixed by the packer [FIXED]";
         if (isCellLocked(bound))
             return "bel " + q(ctx->nameOfBel(tb)) + " is occupied by locked cell " + q(bound->name.str(ctx)) + " [" +
                    strengthName(bound->belStrength) + "]: unlock it first";
@@ -540,6 +556,9 @@ std::string addMoveCells(EditBatch &b, const std::vector<IdString> &cells, int d
         for (CellInfo *c : group) {
             if (c->bel == BelId())
                 return q(c->name.str(ctx)) + " is not placed";
+            std::string fixed = cellFixedReason(ctx, c);
+            if (!fixed.empty())
+                return fixed;
             moving.insert(c->name);
         }
         roots.push_back(group.front());
