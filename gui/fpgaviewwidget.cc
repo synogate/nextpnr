@@ -27,6 +27,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImageWriter>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWidget>
 
@@ -57,6 +58,7 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     colors_.hidden = QColor("#606060");
     colors_.inactive = QColor("#303030");
     colors_.active = QColor("#f0f0f0");
+    colors_.routing = QColor("#686868");
     colors_.selected = QColor("#ff6600");
     colors_.hovered = QColor("#906030");
     colors_.highlight[0] = QColor("#6495ed");
@@ -272,7 +274,10 @@ void FPGAViewWidget::renderDecal(LineShaderData &out, PickQuadTree::BoundingBox 
     // elements of its decal (the background, such as unused connections inside a bel).
     auto graphics = ctx_->getDecalGraphics(decal.decal);
     bool active = std::any_of(graphics.begin(), graphics.end(),
-                              [](const GraphicElement &el) { return el.style == GraphicElement::STYLE_ACTIVE; });
+                              [](const GraphicElement &el) {
+                                  return el.style == GraphicElement::STYLE_ACTIVE ||
+                                         el.style == GraphicElement::STYLE_ROUTING;
+                              });
     std::vector<GraphicElement> heads;
     for (auto &el : graphics)
         arrowHead(graphics, el, heads);
@@ -290,8 +295,10 @@ int FPGAViewWidget::archStyle(GraphicElement::style_t style)
         return 0;
     case GraphicElement::STYLE_INACTIVE:
         return 1;
-    case GraphicElement::STYLE_ACTIVE:
+    case GraphicElement::STYLE_ROUTING:
         return 2;
+    case GraphicElement::STYLE_ACTIVE:
+        return 3;
     default:
         return -1;
     }
@@ -491,7 +498,7 @@ void FPGAViewWidget::paintGL()
     float scale = 1.0f / thick1Px; // pixels per coordinate unit
     if (scale >= lodScale_[VIEW_LEVEL])
         requestView();
-    const QColor *archColors[ARCH_STYLES] = {&colors_.frame, &colors_.inactive, &colors_.active};
+    const QColor *archColors[ARCH_STYLES] = {&colors_.frame, &colors_.inactive, &colors_.routing, &colors_.active};
     for (int style = 0; style < ARCH_STYLES; style++)
         for (int layer = 0; layer < ARCH_LAYERS; layer++)
             for (int range = 0; range < LOD_RANGES; range++)
@@ -537,6 +544,7 @@ void FPGAViewWidget::paintGL()
 
     // Render ImGui
     QtImGui::newFrame();
+    drawOverlays();
     QMutexLocker lock(&rendererArgsLock_);
     if (!(rendererArgs_->hoveredDecal == DecalXY()) && rendererArgs_->hintText.size() > 0) {
         ImGui::SetNextWindowPos(ImVec2(rendererArgs_->x, rendererArgs_->y));
@@ -571,11 +579,13 @@ void FPGAViewWidget::renderLines(void)
     std::vector<std::pair<DecalXY, GroupId>> groupDecals;
     std::vector<std::pair<DecalXY, BoundingBox>> detailDecals;
     bool decalsChanged = false;
+    // Drawing a decal can read the netlist (an architecture draws a used bel by its cell's
+    // configuration): hold the Context while rendering, so that what changes the netlist under the
+    // lock waits for it.
+    std::unique_lock<std::mutex> lock_ui(ctx_->ui_mutex);
+    std::lock_guard<std::mutex> lock(ctx_->mutex);
     {
-        // Take the UI/Normal mutex on the Context, copy over all we need as
-        // fast as we can.
-        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
-        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        // Take the UI mutex only to copy over all we need as fast as we can.
 
         // For now, collapse any decal changes into change of all decals.
         // TODO(q3k): fix this
@@ -640,6 +650,7 @@ void FPGAViewWidget::renderLines(void)
             detailDecals = ctx_->getDetailDecals();
         }
     }
+    lock_ui.unlock();
 
     // Arguments from the main UI thread on what we should render.
     std::vector<DecalXY> selectedDecals;
@@ -844,6 +855,7 @@ void FPGAViewWidget::renderLines(void)
         }
     }
 
+    bool zoomSelected = false;
     {
         QMutexLocker lock(&rendererArgsLock_);
 
@@ -851,6 +863,16 @@ void FPGAViewWidget::renderLines(void)
             zoomOutbound();
             rendererArgs_->zoomOutbound = false;
         }
+        // Only once no change of the selection is pending: then bbSelected is the selection's
+        if (rendererArgs_->zoomSelected && !rendererArgs_->changed) {
+            rendererArgs_->zoomSelected = false;
+            zoomSelected = true;
+        }
+    }
+    if (zoomSelected) {
+        QMutexLocker lock(&rendererDataLock_);
+        if (rendererData_->bbSelected.x0() != std::numeric_limits<float>::infinity())
+            zoomToBB(rendererData_->bbSelected, 0.5f, true);
     }
 }
 
@@ -974,6 +996,11 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
     if (btn_right || btn_mid || (btn_left && shift)) {
         lastDragPos_ = event->pos();
     }
+    if (picking_ && btn_left && !shift) {
+        auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+        Q_EMIT picked(PICK_PRESS, world.x(), world.y());
+        return;
+    }
     if (btn_left && !shift) {
         auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
         auto closestOr = pickElement(world.x(), world.y());
@@ -1023,7 +1050,93 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (picking_) {
+        auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+        Q_EMIT picked(btn_left ? PICK_DRAG : PICK_MOVE, world.x(), world.y());
+        update();
+        return;
+    }
+
+    hoverAt(EVENT_POS(event).x(), EVENT_POS(event).y());
+    update();
+}
+
+void FPGAViewWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!picking_ || event->button() != Qt::LeftButton)
+        return;
     auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
+    Q_EMIT picked(PICK_RELEASE, world.x(), world.y());
+}
+
+void FPGAViewWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (picking_ && event->key() == Qt::Key_Escape) {
+        setPicking(false);
+        Q_EMIT pickCanceled();
+        return;
+    }
+    QOpenGLWidget::keyPressEvent(event);
+}
+
+void FPGAViewWidget::setPicking(bool on)
+{
+    picking_ = on;
+    if (on) {
+        setCursor(Qt::CrossCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setFocus();
+        // (nothing hovered while picking)
+        QMutexLocker locked(&rendererArgsLock_);
+        rendererArgs_->hoveredDecal = DecalXY();
+        rendererArgs_->hintText = "";
+        rendererArgs_->changed = true;
+    } else
+        unsetCursor();
+    pokeRenderer();
+    update();
+}
+
+void FPGAViewWidget::setOverlays(std::vector<Overlay> overlays)
+{
+    overlays_ = std::move(overlays);
+    update();
+}
+
+void FPGAViewWidget::drawOverlays()
+{
+    if (overlays_.empty())
+        return;
+    // World to screen: the view maps the plane linearly
+    QVector4D a = mouseToWorldCoordinates(0, 0), b = mouseToWorldCoordinates(width(), height());
+    if (a.x() == b.x() || a.y() == b.y())
+        return;
+    auto screen = [&](float x, float y) {
+        return ImVec2((x - a.x()) / (b.x() - a.x()) * width(), (y - a.y()) / (b.y() - a.y()) * height());
+    };
+    ImDrawList *list = ImGui::GetOverlayDrawList();
+    for (auto &o : overlays_) {
+        ImVec2 p0 = screen(o.x0, o.y0), p1 = screen(o.x1, o.y1);
+        ImVec2 min(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), max(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+        if (max.x < 0 || max.y < 0 || min.x > width() || min.y > height())
+            continue;
+        QColor c = o.color;
+        if (o.fill)
+            list->AddRectFilled(min, max, IM_COL32(c.red(), c.green(), c.blue(), c.alpha()));
+        else
+            list->AddRect(min, max, IM_COL32(c.red(), c.green(), c.blue(), c.alpha()), 0.0f, 0, 2.0f);
+        if (!o.label.isEmpty() && max.x - min.x > 20) {
+            QByteArray text = o.label.toUtf8();
+            list->AddText(ImVec2(min.x + 4, min.y + 3), IM_COL32(c.red(), c.green(), c.blue(), 255),
+                          text.constData());
+        }
+    }
+}
+
+// The element under the mouse at (x, y), with its hint, as hovered
+void FPGAViewWidget::hoverAt(int x, int y)
+{
+    auto world = mouseToWorldCoordinates(x, y);
     auto closestOr = pickElement(world.x(), world.y());
     // No elements? No decal.
     if (!closestOr) {
@@ -1041,8 +1154,8 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
         QMutexLocker locked(&rendererArgsLock_);
         rendererArgs_->hoveredDecal = closest.decal(ctx_);
         rendererArgs_->changed = true;
-        rendererArgs_->x = EVENT_POS(event).x();
-        rendererArgs_->y = EVENT_POS(event).y();
+        rendererArgs_->x = x;
+        rendererArgs_->y = y;
         if (closest.type == ElementType::BEL) {
             rendererArgs_->hintText = std::string("BEL\n") + ctx_->getBelName(closest.bel).str(ctx_);
             CellInfo *cell = ctx_->getBoundBelCell(closest.bel);
@@ -1065,7 +1178,6 @@ void FPGAViewWidget::mouseMoveEvent(QMouseEvent *event)
 
         pokeRenderer();
     }
-    update();
 }
 
 // Invert the projection matrix to calculate screen/mouse to world/grid
@@ -1115,8 +1227,11 @@ void FPGAViewWidget::wheelEvent(QWheelEvent *event)
 
     QPoint degree = event->angleDelta() / 8;
 
-    if (!degree.isNull())
+    if (!degree.isNull()) {
         zoom(degree.y());
+        // what is under the mouse now
+        hoverAt(event->position().x(), event->position().y());
+    }
 }
 
 void FPGAViewWidget::zoom(int level)
@@ -1165,14 +1280,29 @@ void FPGAViewWidget::zoomToBB(const PickQuadTree::BoundingBox &bb, float margin,
         clampZoom();
 }
 
+QRectF FPGAViewWidget::viewArea()
+{
+    auto r = visibleRect();
+    return QRectF(QPointF(r.x0(), r.y0()), QPointF(r.x1(), r.y1()));
+}
+
+void FPGAViewWidget::zoomToArea(float x0, float y0, float x1, float y1)
+{
+    PickQuadTree::BoundingBox bb(x0, y0, x1, y1);
+    bb.fixup();
+    zoomToBB(bb, 0, true);
+    update();
+}
+
 void FPGAViewWidget::zoomSelected()
 {
+    // The renderer zooms at the end of its next pass: a selection that has just changed is drawn
+    // only then, and the zoom is to its bounding box
     {
-        QMutexLocker lock(&rendererDataLock_);
-        if (rendererData_->bbSelected.x0() != std::numeric_limits<float>::infinity())
-            zoomToBB(rendererData_->bbSelected, 0.5f, true);
+        QMutexLocker lock(&rendererArgsLock_);
+        rendererArgs_->zoomSelected = true;
     }
-    update();
+    pokeRenderer();
 }
 
 void FPGAViewWidget::zoomOutbound()

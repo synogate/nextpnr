@@ -22,6 +22,7 @@
 
 #include <QMutex>
 #include <QThread>
+#include <functional>
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -38,11 +39,13 @@ class Worker : public QObject
     void pack();
     void place(bool timing_driven);
     void route();
+    void run(std::function<bool()> step);
   Q_SIGNALS:
     void log(const std::string &text);
     void pack_finished(bool status);
     void place_finished(bool status);
     void route_finished(bool status);
+    void run_finished(bool status);
     void taskCanceled();
     void taskStarted();
     void taskPaused();
@@ -73,12 +76,15 @@ class TaskManager : public QObject
     void pack();
     void place(bool timing_driven);
     void route();
+    // A further step of an architecture's flow, run like the ones above
+    void run(std::function<bool()> step);
 
     // redirected signals
     void log(const std::string &text);
     void pack_finished(bool status);
     void place_finished(bool status);
     void route_finished(bool status);
+    void run_finished(bool status);
     void taskCanceled();
     void taskStarted();
     void taskPaused();

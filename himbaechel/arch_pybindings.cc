@@ -23,6 +23,8 @@
 #include "nextpnr.h"
 #include "pybindings.h"
 
+#include <algorithm>
+
 NEXTPNR_NAMESPACE_BEGIN
 
 void arch_wrap_python(py::module &m)
@@ -59,6 +61,52 @@ void arch_wrap_python(py::module &m)
     typedef const std::vector<BelBucketId> &BelBucketRange;
     typedef const std::vector<BelId> &BelRangeForBelBucket;
 #include "arch_pybindings_shared.h"
+
+    // Clusters (cell.cluster and the root's constr_children in C++)
+    auto find_cell = [](Context &c, const std::string &name) {
+        auto found = c.cells.find(c.id(name));
+        if (found == c.cells.end())
+            throw std::runtime_error("no cell " + name);
+        return found->second.get();
+    };
+    ctx_cls.def(
+            "getCellCluster",
+            [find_cell](Context &c, const std::string &name) -> py::object {
+                CellInfo *cell = find_cell(c, name);
+                if (cell->cluster == ClusterId())
+                    return py::none();
+                return py::str(cell->cluster.str(&c));
+            },
+            "The name of the cluster (its root cell) the cell is in, or None");
+    ctx_cls.def(
+            "getClusterChildren",
+            [find_cell](Context &c, const std::string &name) {
+                py::list list;
+                for (CellInfo *child : find_cell(c, name)->constr_children)
+                    list.append(py::make_tuple(child->name.str(&c), child->constr_x, child->constr_y, child->constr_z,
+                                               child->constr_abs_z));
+                return list;
+            },
+            "The children of a cluster root: (name, dx, dy, dz, abs_z) each");
+    ctx_cls.def(
+            "removeFromCluster",
+            [find_cell](Context &c, const std::string &name) {
+                CellInfo *cell = find_cell(c, name);
+                if (cell->cluster == ClusterId())
+                    throw std::runtime_error(name + " is in no cluster");
+                CellInfo *root = c.getClusterRootCell(cell->cluster);
+                if (root == cell && !cell->constr_children.empty())
+                    throw std::runtime_error(name + " is the root of its cluster; take its children out first");
+                if (cell->bel != BelId())
+                    throw std::runtime_error(name + " is placed; unbind it first");
+                auto &children = root->constr_children;
+                children.erase(std::remove(children.begin(), children.end(), cell), children.end());
+                cell->cluster = ClusterId();
+                cell->constr_x = cell->constr_y = cell->constr_z = 0;
+                cell->constr_abs_z = false;
+                c.assignArchInfo();
+            },
+            "Takes a cell out of its cluster, e.g. to remove it (a root only once it has no children)");
 
     WRAP_RANGE(m, Bel, conv_to_str<BelId>);
     WRAP_RANGE(m, Wire, conv_to_str<WireId>);

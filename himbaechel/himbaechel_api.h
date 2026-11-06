@@ -66,6 +66,8 @@ struct HimbaechelAPI
     virtual void init(Context *ctx);
     // Called after context is initialized, but before any commands are executed
     virtual void setupArchContext() {}
+    // The GUI changed the options in ctx->args.options; they take effect from the next step on
+    virtual void optionsChanged() {}
     // If constids are being used, this is used to set them up early
     // then it is responsible for loading the db blob with arch->load_chipdb()
     virtual void init_database(Arch *arch) = 0;
@@ -138,6 +140,8 @@ struct HimbaechelAPI
     virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const { return {}; }
     virtual void drawDetail(std::vector<GraphicElement> &g, DecalId decal) {}
     virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const { return {}; }
+    virtual bool guiSelectsNet(WireId wire) const { return false; }
+    virtual bool guiSelectsNet(PipId pip) const { return false; }
     virtual float getGuiColumnX(int x) const { return x; }
     virtual std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const { return {}; }
     virtual std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const { return {}; }
@@ -163,6 +167,40 @@ struct HimbaechelAPI
     virtual void postPlace() {};
     virtual void preRoute() {};
     virtual void postRoute() {};
+    // A postRoute that improves the routing before finishing it splits into these two, so that the GUI
+    // can run the improvement on demand (Arch::defer_route_finish)
+    virtual bool hasRouteRepair() const { return false; }
+    virtual void repairRoute() {};
+    virtual void finishRoute() {};
+    // Called at the end of Arch::assignArchInfo, e.g. after a placed and routed design was loaded
+    virtual void assignArchInfo() {};
+
+    // Partitions, for the GUI: a design implemented on its own and imported into another one as a
+    // finished block (in place of a blackbox instance), set up by options read when packing
+    virtual bool hasPartitions() const { return false; }
+    // The instances of the loaded design a partition can be imported into
+    virtual std::vector<IdString> getPartitionInstances() const { return {}; }
+    // What a partition file holds: the tiles of its cells and the area it covers (tile coordinates, as
+    // the offset moves them); false with the reason in error if it can not be read
+    struct PartitionFootprint
+    {
+        std::string error;
+        bool routed = false;
+        int cells = 0;
+        std::vector<Loc> tiles;
+        BoundingBox area{-1, -1, -1, -1};
+        std::vector<std::string> ports;
+    };
+    virtual bool readPartitionFootprint(const std::string &filename, PartitionFootprint &footprint) const
+    {
+        footprint.error = "partitions are not supported";
+        return false;
+    }
+    // Why the partition can not be moved by (dx, dy), or empty
+    virtual std::string partitionMoveProblem(const PartitionFootprint &footprint, int dx, int dy) const
+    {
+        return "partitions are not supported";
+    }
 
     // For custom placer configuration
     virtual void configurePlacerHeap(PlacerHeapCfg &cfg) {};

@@ -53,6 +53,10 @@ struct GateMateImpl : HimbaechelAPI
     void init_database(Arch *arch) override;
 
     void init(Context *ctx) override;
+    void optionsChanged() override;
+    // The options from args.options (read_options), and what they need prepared (prepare_options)
+    void read_options(const ArchArgs &args);
+    void prepare_options();
 
     void pack() override;
 
@@ -60,6 +64,10 @@ struct GateMateImpl : HimbaechelAPI
     void postPlace() override;
     void preRoute() override;
     void postRoute() override;
+    bool hasRouteRepair() const override { return true; }
+    void repairRoute() override;
+    void finishRoute() override;
+    void assignArchInfo() override;
 
     virtual std::string getDefaultRouter() const override { return "router2"; };
 
@@ -164,6 +172,9 @@ struct GateMateImpl : HimbaechelAPI
     float sb_y_cost = 0, sb_ydiag_cost = 0;
     // Delay tables for the router (estimateDelay) and the placer (predictDelay), see lookahead.h
     GateMateLookahead lookahead;
+    // The radius and pip options the tables were built with
+    std::string lookahead_key;
+    int lookahead_radius = 0;
     bool table_route = false, table_place = false;
     // The closed-form model for them instead (--vopt lookahead=model, place-delay=model), see distance.h
     GateMateDistance distance;
@@ -200,6 +211,11 @@ struct GateMateImpl : HimbaechelAPI
     void drawDetail(std::vector<GraphicElement> &g, DecalId decal) override;
     std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override;
     float getGuiColumnX(int x) const override;
+    // Partitions for the GUI (partition.cc)
+    bool hasPartitions() const override { return true; }
+    std::vector<IdString> getPartitionInstances() const override;
+    bool readPartitionFootprint(const std::string &filename, PartitionFootprint &footprint) const override;
+    std::string partitionMoveProblem(const PartitionFootprint &footprint, int dx, int dy) const override;
     std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override;
     std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const override;
     std::vector<std::pair<IdString, std::string>> getPipAttrs(PipId pip) const override;
@@ -217,6 +233,9 @@ struct GateMateImpl : HimbaechelAPI
     float gui_track(WireId node, int channel, float track) const;
     // Whether a pip from this wire arriving from another tile is used
     bool gui_arrival_used(int tile, int index) const;
+    // A used global clock: clicking its trunk or a pip from it selects the net
+    bool guiSelectsNet(WireId wire) const override;
+    bool guiSelectsNet(PipId pip) const override;
     bool fixed_pip(PipId pip) const;
     // Where the GUI draws a tile wire, and where the drawing of a pip starts (at its source, or for
     // a source arriving from another tile, at its driver) and ends; for checking the drawings
@@ -228,6 +247,10 @@ struct GateMateImpl : HimbaechelAPI
     void draw_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip, bool assigned) const;
     void draw_route_from_driver(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire,
                                 const PlacedAnchor &to, bool assigned) const;
+    void configured_cpe_paths(std::vector<GraphicElement> &g, int tile, int start, float x, float y) const;
+    void configured_from(std::vector<GraphicElement> &g, WireId tile_wire) const;
+    void mult_cpe_outputs(std::vector<GraphicElement> &g, GraphicElement::style_t style, BelId bel, float x,
+                          float y) const;
 
     bool getClusterPlacement(ClusterId cluster, BelId root_bel,
                              std::vector<std::pair<CellInfo *, BelId>> &placement) const override;
@@ -257,6 +280,8 @@ struct GateMateImpl : HimbaechelAPI
     const GateMateTileExtraDataPOD *tile_extra_data(int tile) const;
     const GateMateBelExtraDataPOD *bel_extra_data(BelId bel) const;
     const GateMatePipExtraDataPOD *pip_extra_data(PipId pip) const;
+    // Whether a placed carry logic cell (CPE_CPLINES) is set to pass its input on to the output
+    bool cplines_connects(const CellInfo *cell, IdString fromPort, IdString toPort) const;
 
     int get_dff_config(CellInfo *dff) const;
     int get_ram_config(CellInfo *ram) const;
@@ -317,6 +342,8 @@ struct GateMateImpl : HimbaechelAPI
     // The IOs a partition's CCF (that of the design importing it) names; only their CPEs are kept free then
     pool<int> partition_ccf_tiles;
     void find_partition_area();
+    // --vopt partition-region: the area for the scopes the CCF does not floorplan
+    void add_partition_region(const std::string &spec);
     void find_partition_free_nets();
     // With partition_open the design may place cells in the free tiles of the partitions' areas too
     bool partition_open = false;
@@ -344,6 +371,9 @@ struct GateMateImpl : HimbaechelAPI
     dict<std::pair<int, int>, float> gui_lanes_;
     dict<std::pair<WireId, int>, float> gui_tracks_;
     pool<std::pair<int, int>> gui_arrivals_;
+    // The trunks of the used global clocks, as lines, by the tile wire driving them; their nodes
+    dict<std::pair<int, int>, std::vector<std::array<float, 4>>> gui_trunks_;
+    pool<WireId> gui_global_nodes_;
 
     bool getChildPlacement(const BaseClusterInfo *cluster, Loc root_loc,
                            std::vector<std::pair<CellInfo *, BelId>> &placement) const;

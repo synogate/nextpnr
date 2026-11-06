@@ -106,6 +106,29 @@ void PythonTab::newContext(Context *ctx)
     console->displayString(version);
 }
 
+std::string PythonTab::run(const std::string &code, bool &error)
+{
+    if (!initialized) {
+        error = true;
+        return "There is no design yet.\n";
+    }
+    QString shown;
+    QStringList lines = QString::fromStdString(code).split('\n');
+    while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
+        lines.removeLast();
+    for (int i = 0; i < lines.size(); i++)
+        shown += (i == 0 ? PROMPT : MULTILINE_PROMPT) + lines[i] + "\n";
+    console->displayString(shown);
+
+    int errorCode = 0;
+    std::string traceback;
+    std::string res = pyinterpreter_execute_block(code, &errorCode, &traceback);
+    error = errorCode != 0;
+    // What it printed, then the error in its own colour
+    console->displayResult(res, false, traceback);
+    return res + traceback;
+}
+
 void PythonTab::showContextMenu(const QPoint &pt) { contextMenu->exec(mapToGlobal(pt)); }
 
 void PythonTab::clearBuffer() { console->clear(); }

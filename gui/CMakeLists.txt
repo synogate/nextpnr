@@ -14,6 +14,11 @@ set(GUI_SOURCES
     line_editor.h
     lineshader.cc
     lineshader.h
+    mcpserver.cc
+    mcpserver.h
+    mcptools.cc
+    pnroptions.cc
+    pnroptions.h
     pyconsole.cc
     pyconsole.h
     pythontab.cc
@@ -21,6 +26,8 @@ set(GUI_SOURCES
     quadtree.h
     textshader.cc
     textshader.h
+    timingwidget.cc
+    timingwidget.h
     treemodel.cc
     treemodel.h
     worker.cc
@@ -28,6 +35,13 @@ set(GUI_SOURCES
     ${family}/mainwindow.cc
     ${family}/mainwindow.h
 )
+
+if (family STREQUAL "himbaechel")
+    list(APPEND GUI_SOURCES
+        himbaechel/partitionwidget.cc
+        himbaechel/partitionwidget.h
+    )
+endif()
 
 qt6_add_resources(GUI_QT_RESOURCES
 	base.qrc
@@ -63,6 +77,12 @@ if (Qt6_FOUND)
 else()
     target_link_libraries(nextpnr-${target}-gui PUBLIC Qt5::Widgets)
     target_link_libraries(nextpnr-${target}-gui PRIVATE Qt5::OpenGL)
+endif()
+
+if (WIN32)
+    # Boost.Asio (the MCP server)
+    target_compile_definitions(nextpnr-${target}-gui PRIVATE _WIN32_WINNT=0x0601)
+    target_link_libraries(nextpnr-${target}-gui PUBLIC ws2_32 mswsock)
 endif()
 
 target_link_libraries(nextpnr-${target}-gui PRIVATE

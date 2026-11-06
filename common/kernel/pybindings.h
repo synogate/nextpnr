@@ -22,6 +22,7 @@
 #define COMMON_PYBINDINGS_H
 
 #include <Python.h>
+#include <fstream>
 #include <iostream>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
@@ -30,6 +31,7 @@
 #include "pycontainers.h"
 #include "pywrappers.h"
 
+#include "jsonwrite.h"
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN

@@ -22,6 +22,7 @@
 #define HIMBAECHEL_ARCH_H
 
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <atomic>
 #include <iostream>
 
 #include "base_arch.h"
@@ -792,6 +793,8 @@ struct Arch : BaseArch<ArchRanges>
         return uarch->getDetailPips(decal, x, y);
     }
     float getGuiColumnX(int x) const override { return uarch->getGuiColumnX(x); }
+    bool guiSelectsNet(WireId wire) const override { return uarch->guiSelectsNet(wire); }
+    bool guiSelectsNet(PipId pip) const override { return uarch->guiSelectsNet(pip); }
     std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override
     {
         return uarch->getBelAttrs(bel);
@@ -820,6 +823,21 @@ struct Arch : BaseArch<ArchRanges>
     bool pack() override;
     bool place() override;
     bool route() override;
+
+    // Set by the GUI: route() leaves out a uarch's repairs and the finishing of the routing, run by
+    // repairRoute() as often as wanted and by finishRoute()
+    bool defer_route_finish = false;
+    bool route_finish_pending = false;
+    bool repairRoute();
+    bool finishRoute();
+    // Called by a uarch's repairs after each round. In repairRoute(), which holds the Context, this
+    // lets the GUI look at the design: when it asks for the Context (repair_ui_wants), the repair
+    // waits here without it (repair_waiting) until the GUI is done.
+    void routeRepairProgress();
+    bool repair_locked = false;
+    std::atomic<bool> repair_progress{false};
+    std::atomic<bool> repair_ui_wants{false};
+    std::atomic<bool> repair_waiting{false};
 
     static const std::string defaultPlacer;
     static const std::vector<std::string> availablePlacers;

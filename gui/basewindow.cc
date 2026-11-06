@@ -26,10 +26,13 @@
 #include <QImageWriter>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QSettings>
 #include <QSplitter>
+#include <QStyle>
 #include <fstream>
 #include "designwidget.h"
 #include "fpgaviewwidget.h"
+#include "timingwidget.h"
 #include "json_frontend.h"
 #include "jsonwrite.h"
 #include "log.h"
@@ -42,7 +45,7 @@ static void initBasenameResource() { Q_INIT_RESOURCE(base); }
 NEXTPNR_NAMESPACE_BEGIN
 
 BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler *handler, QWidget *parent)
-        : QMainWindow(parent), handler(handler), ctx(std::move(context)), timing_driven(false)
+        : QMainWindow(parent), handler(handler), ctx(std::move(context)), seed(0)
 {
     initBasenameResource();
     qRegisterMetaType<std::string>();
@@ -51,6 +54,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     setObjectName("BaseMainWindow");
     resize(1024, 768);
+    restoreGeometry(QSettings("YosysHQ", "nextpnr").value("mainwindow/geometry").toByteArray());
 
     task = new TaskManager();
 
@@ -62,6 +66,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     QSplitter *splitter_h = new QSplitter(Qt::Horizontal, centralWidget);
     QSplitter *splitter_v = new QSplitter(Qt::Vertical, splitter_h);
+    splitter_h->setObjectName("splitter_h");
+    splitter_v->setObjectName("splitter_v");
     splitter_h->addWidget(splitter_v);
 
     gridLayout->addWidget(splitter_h, 0, 0, 1, 1);
@@ -69,8 +75,12 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     setCentralWidget(centralWidget);
 
     designview = new DesignWidget();
-    designview->setMinimumWidth(300);
-    splitter_h->addWidget(designview);
+    timingview = new TimingWidget();
+    rightTabWidget = new QTabWidget();
+    rightTabWidget->setMinimumWidth(300);
+    rightTabWidget->addTab(designview, "Design");
+    rightTabWidget->addTab(timingview, "Paths");
+    splitter_h->addWidget(rightTabWidget);
 
     tabWidget = new QTabWidget();
 
@@ -96,12 +106,27 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(task, &TaskManager::taskCanceled, this, &BaseMainWindow::taskCanceled);
     connect(task, &TaskManager::taskStarted, this, &BaseMainWindow::taskStarted);
     connect(task, &TaskManager::taskPaused, this, &BaseMainWindow::taskPaused);
+    // Whether a task runs (for the MCP server): after the handlers above, which log how it went
+    connect(task, &TaskManager::taskStarted, this, [this]() {
+        taskRunning = true;
+        tasksStarted++;
+    });
+    for (auto finished : {&TaskManager::pack_finished, &TaskManager::place_finished, &TaskManager::route_finished,
+                          &TaskManager::run_finished})
+        connect(
+                task, finished, this,
+                [this](bool status) { mcpTaskEnded(status ? "The step succeeded." : "The step failed.", status); },
+                Qt::QueuedConnection);
+    connect(
+            task, &TaskManager::taskCanceled, this, [this]() { mcpTaskEnded("The step was canceled.", false); },
+            Qt::QueuedConnection);
 
     // Events for context change
     connect(this, &BaseMainWindow::contextChanged, task, &TaskManager::contextChanged);
     connect(this, &BaseMainWindow::contextChanged, console, &PythonTab::newContext);
     connect(this, &BaseMainWindow::contextChanged, fpgaView, &FPGAViewWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, designview, &DesignWidget::newContext);
+    connect(this, &BaseMainWindow::contextChanged, timingview, &TimingWidget::newContext);
 
     // Catch close tab events
     connect(centralTabWidget, &QTabWidget::tabCloseRequested, this, &BaseMainWindow::closeTab);
@@ -111,6 +136,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(designview, &DesignWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
     connect(designview, &DesignWidget::highlight, fpgaView, &FPGAViewWidget::onHighlightGroupChanged);
     connect(designview, &DesignWidget::hover, fpgaView, &FPGAViewWidget::onHoverItemChanged);
+    connect(timingview, &TimingWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
+    connect(timingview, &TimingWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
 
     // Click event on device view
     connect(fpgaView, &FPGAViewWidget::clickedBel, designview, &DesignWidget::onClickedBel);
@@ -119,15 +146,36 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
+    connect(this, &BaseMainWindow::updateTreeView, timingview, &TimingWidget::designChanged);
 
     createMenusAndBars();
+
+    QSettings settings("YosysHQ", "nextpnr");
+    for (auto splitter : findChildren<QSplitter *>())
+        if (!splitter->objectName().isEmpty())
+            splitter->restoreState(settings.value("mainwindow/" + splitter->objectName()).toByteArray());
 }
 
 BaseMainWindow::~BaseMainWindow() { delete task; }
 
+void BaseMainWindow::closeEvent(QCloseEvent *event)
+{
+    QSettings settings("YosysHQ", "nextpnr");
+    settings.setValue("mainwindow/geometry", saveGeometry());
+    for (auto splitter : findChildren<QSplitter *>())
+        if (!splitter->objectName().isEmpty())
+            settings.setValue("mainwindow/" + splitter->objectName(), splitter->saveState());
+    QMainWindow::closeEvent(event);
+}
+
 void BaseMainWindow::closeTab(int index) { delete centralTabWidget->widget(index); }
 
-void BaseMainWindow::writeInfo(std::string text) { console->info(text); }
+void BaseMainWindow::writeInfo(std::string text)
+{
+    if (mcpTaskReply && mcpTaskLog.size() < (1 << 20))
+        mcpTaskLog += text;
+    console->info(text);
+}
 
 void BaseMainWindow::about()
 {
@@ -175,7 +223,7 @@ void BaseMainWindow::createMenusAndBars()
     actionPack->setIcon(QIcon(":/icons/resources/pack.png"));
     actionPack->setStatusTip("Pack current design");
     actionPack->setEnabled(false);
-    connect(actionPack, &QAction::triggered, task, &TaskManager::pack);
+    connect(actionPack, &QAction::triggered, this, &BaseMainWindow::pack);
 
     actionPlace = new QAction("Place", this);
     actionPlace->setIcon(QIcon(":/icons/resources/place.png"));
@@ -189,11 +237,26 @@ void BaseMainWindow::createMenusAndBars()
     actionRoute->setEnabled(false);
     connect(actionRoute, &QAction::triggered, task, &TaskManager::route);
 
+    actionOptions = new QAction("Options", this);
+    actionOptions->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    actionOptions->setStatusTip("Options of packing, placing and routing");
+    connect(actionOptions, &QAction::triggered, this, &BaseMainWindow::options);
+
     actionExecutePy = new QAction("Execute Python", this);
     actionExecutePy->setIcon(QIcon(":/icons/resources/py.png"));
     actionExecutePy->setStatusTip("Execute Python script");
     actionExecutePy->setEnabled(true);
     connect(actionExecutePy, &QAction::triggered, this, &BaseMainWindow::execute_python);
+
+    actionMcp = new QAction("MCP Server", this);
+    // Grey plug when stopped, green when running
+    QIcon mcpIcon(":/icons/resources/mcp.png");
+    mcpIcon.addFile(":/icons/resources/mcp_on.png", QSize(), QIcon::Normal, QIcon::On);
+    actionMcp->setIcon(mcpIcon);
+    actionMcp->setStatusTip("Let an assistant such as Claude Code work in the GUI (on 127.0.0.1)");
+    actionMcp->setToolTip("Start the MCP server (for an assistant such as Claude Code)");
+    actionMcp->setCheckable(true);
+    connect(actionMcp, &QAction::toggled, this, &BaseMainWindow::toggleMcpServer);
 
     // Worker control toolbar actions
     actionPlay = new QAction("Play", this);
@@ -299,11 +362,14 @@ void BaseMainWindow::createMenusAndBars()
     menuFile->addAction(actionExit);
 
     // Add Design menu actions
+    menuDesign->addAction(actionOptions);
+    menuDesign->addSeparator();
     menuDesign->addAction(actionPack);
     menuDesign->addAction(actionPlace);
     menuDesign->addAction(actionRoute);
     menuDesign->addSeparator();
     menuDesign->addAction(actionExecutePy);
+    menuDesign->addAction(actionMcp);
 
     // Add Help menu actions
     menuHelp->addAction(actionAbout);
@@ -315,10 +381,13 @@ void BaseMainWindow::createMenusAndBars()
     mainActionBar->addAction(actionLoadJSON);
     mainActionBar->addAction(actionSaveJSON);
     mainActionBar->addSeparator();
+    mainActionBar->addAction(actionOptions);
     mainActionBar->addAction(actionPack);
     mainActionBar->addAction(actionPlace);
     mainActionBar->addAction(actionRoute);
     mainActionBar->addAction(actionExecutePy);
+    mainActionBar->addSeparator();
+    mainActionBar->addAction(actionMcp);
 
     // Add worker control toolbar
     QToolBar *workerControlToolBar = new QToolBar("Worker");
@@ -388,14 +457,24 @@ void BaseMainWindow::open_json()
 void BaseMainWindow::save_json()
 {
     QString fileName = QFileDialog::getSaveFileName(this, QString("Save JSON"), QString(), QString("*.json"));
-    if (!fileName.isEmpty()) {
-        std::string fn = fileName.toStdString();
-        std::ofstream f(fn);
-        if (write_json_file(f, fn, ctx.get()))
-            log("Saving JSON successful.\n");
-        else
-            log("Saving JSON failed.\n");
-    }
+    if (!fileName.isEmpty())
+        writeJson(fileName.toStdString());
+}
+
+bool BaseMainWindow::writeJson(const std::string &filename)
+{
+    beforeSave();
+    std::string fn = filename;
+    std::ofstream f(fn);
+    bool ok = f && write_json_file(f, fn, ctx.get());
+    log(ok ? "Saving JSON successful.\n" : "Saving JSON failed.\n");
+    return ok;
+}
+
+bool BaseMainWindow::setArchOption(const std::string &, const QJsonValue &, QString &error)
+{
+    error = "This architecture has no --vopt options.";
+    return false;
 }
 
 void BaseMainWindow::screenshot()
@@ -510,7 +589,183 @@ void BaseMainWindow::taskPaused()
     actionStop->setEnabled(true);
 }
 
-void BaseMainWindow::place() { Q_EMIT task->place(timing_driven); }
+void BaseMainWindow::pack()
+{
+    if (beforePack())
+        Q_EMIT task->pack();
+}
+
+void BaseMainWindow::place()
+{
+    if (seed != 0)
+        ctx->rngseed(seed);
+    Q_EMIT task->place(ctx->setting<bool>("timing_driven", true));
+}
+
+PnrStep BaseMainWindow::nextStep()
+{
+    if (!ctx->settings.count(ctx->id("pack")))
+        return PnrStep::Pack;
+    if (!ctx->settings.count(ctx->id("place")))
+        return PnrStep::Place;
+    if (!ctx->settings.count(ctx->id("route")))
+        return PnrStep::Route;
+    return PnrStep::Finish;
+}
+
+std::vector<PnrOption> BaseMainWindow::pnrOptions()
+{
+    Context *c = ctx.get();
+    // The value of a setting, without storing the default as Context::setting does
+    auto read = [c](const char *key, QVariant def) {
+        auto found = c->settings.find(c->id(key));
+        if (found == c->settings.end())
+            return def;
+        if (!found->second.is_string)
+            return QVariant(qlonglong(found->second.as_int64()));
+        return QVariant(QString::fromStdString(found->second.as_string()));
+    };
+    auto option = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
+                      PnrOption::Kind kind, QVariant def) {
+        PnrOption o{step, group, label, help, kind, def};
+        o.key = key;
+        o.get = [read, key, def] { return read(key, def); };
+        o.set = [c, key, kind](const QVariant &v) {
+            if (kind == PnrOption::Int)
+                c->settings[c->id(key)] = std::to_string(v.toInt());
+            else if (kind == PnrOption::Float)
+                c->settings[c->id(key)] = std::to_string(v.toDouble());
+            else
+                c->settings[c->id(key)] = v.toString().toStdString();
+        };
+        return o;
+    };
+    auto number = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
+                      PnrOption::Kind kind, double def, double min, double max, double singleStep = 1) {
+        PnrOption o = option(step, group, label, help, key, kind, def);
+        o.min = min;
+        o.max = max;
+        o.singleStep = singleStep;
+        return o;
+    };
+    // Unset unless given (at 0): the pass picks its default
+    auto optional = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
+                        const char *special, double max, double singleStep) {
+        PnrOption o = number(step, group, label, help, key, PnrOption::Float, 0, 0, max, singleStep);
+        o.special = special;
+        o.set = [c, key](const QVariant &v) {
+            if (v.toDouble() == 0)
+                c->settings.erase(c->id(key));
+            else
+                c->settings[c->id(key)] = std::to_string(v.toDouble());
+        };
+        return o;
+    };
+    // A flag stays out of the settings when off: some passes only ask whether it is there
+    auto flag = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key) {
+        PnrOption o{step, group, label, help, PnrOption::Flag, false};
+        o.key = key;
+        o.get = [c, key] { return QVariant(c->settings.count(c->id(key)) > 0); };
+        o.set = [c, key](const QVariant &v) {
+            if (v.toBool())
+                c->settings[c->id(key)] = true;
+            else
+                c->settings.erase(c->id(key));
+        };
+        return o;
+    };
+    auto choice = [&](PnrStep step, const char *group, const char *label, const char *help, const char *key,
+                      const std::vector<std::string> &choices, const std::string &def) {
+        PnrOption o = option(step, group, label, help, key, PnrOption::Choice, QString::fromStdString(def));
+        for (auto &name : choices)
+            o.choices << QString::fromStdString(name);
+        return o;
+    };
+
+    const PnrStep general = PnrStep::General, place = PnrStep::Place, route = PnrStep::Route;
+    std::vector<PnrOption> options;
+
+    PnrOption freq = number(general, "Timing", "Target frequency", "MHz, for clocks without a constraint",
+                            "target_freq", PnrOption::Float, 12, 0.1, 2000);
+    freq.get = [read] { return read("target_freq", 12e6).toDouble() / 1e6; };
+    freq.key = "target_freq";
+    freq.set = [c](const QVariant &v) { c->settings[c->id("target_freq")] = std::to_string(v.toDouble() * 1e6); };
+    options.push_back(freq);
+    options.push_back(flag(general, "Timing", "Allow failing timing", "Not meeting a constraint is no error",
+                           "timing/allowFail"));
+    options.push_back(flag(general, "Timing", "Ignore loops", "Combinational loops are left out of the analysis",
+                           "timing/ignoreLoops"));
+    options.push_back(flag(general, "Timing", "Ignore clock relations",
+                           "Paths between different clocks are not checked", "timing/ignoreRelClk"));
+    options.push_back(number(general, "Run", "Threads", "For the passes that run in parallel", "threads",
+                             PnrOption::Int, 8, 1, 256));
+
+    options.push_back(choice(place, "Placer", "Placer", "heap: analytic, sa: annealing, static: electrostatic",
+                             "placer", Arch::availablePlacers, Arch::defaultPlacer));
+    PnrOption tmdriv{place, "Placer", "Timing driven", "Weigh the critical connections", PnrOption::Flag, true};
+    tmdriv.key = "timing_driven";
+    tmdriv.get = [read] { return read("timing_driven", true).toBool(); };
+    tmdriv.set = [c](const QVariant &v) { c->settings[c->id("timing_driven")] = std::to_string(v.toBool()); };
+    options.push_back(tmdriv);
+    PnrOption seed_option{place, "Placer", "Seed", "Restarts the random numbers before placing", PnrOption::Int, 0};
+    seed_option.max = 1 << 30;
+    seed_option.special = "unchanged";
+    seed_option.key = "seed";
+    seed_option.get = [this] { return seed; };
+    seed_option.set = [this](const QVariant &v) { seed = v.toInt(); };
+    options.push_back(seed_option);
+
+    options.push_back(number(place, "Heap placer", "Alpha", "Pull towards the spread-out positions",
+                             "placerHeap/alpha", PnrOption::Float, 0.1, 0, 10, 0.05));
+    options.push_back(number(place, "Heap placer", "Beta", "Share of the timing weight kept per iteration",
+                             "placerHeap/beta", PnrOption::Float, 0.9, 0, 1, 0.05));
+    options.push_back(number(place, "Heap placer", "Criticality exponent", "Higher favours the most critical",
+                             "placerHeap/criticalityExponent", PnrOption::Int, 2, 0, 20));
+    options.push_back(number(place, "Heap placer", "Timing weight", "Weight of the critical connections",
+                             "placerHeap/timingWeight", PnrOption::Int, 10, 0, 1000));
+    options.push_back(number(place, "Heap placer", "Placement timeout", "Divides the tries per cell in legalising",
+                             "placerHeap/cellPlacementTimeout", PnrOption::Int, 8, 1, 1000));
+    options.push_back(flag(place, "Heap placer", "No control sets", "Ignore which cells share clock and enable",
+                           "placerHeap/noCtrlSet"));
+    options.push_back(flag(place, "Heap placer", "Parallel refinement", "Experimental parallel annealing afterwards",
+                           "placerHeap/parallelRefine"));
+
+    options.push_back(number(place, "Annealing placer", "Constraint weight", "Weight of relative placement",
+                             "placer1/constraintWeight", PnrOption::Float, 10, 0, 1000));
+    options.push_back(number(place, "Annealing placer", "Start temperature", "Higher moves more at the start",
+                             "placer1/startTemp", PnrOption::Float, 1, 0, 100, 0.1));
+    options.push_back(number(place, "Annealing placer", "Density weight", "Penalty on crowded pins, 0: off",
+                             "placer1/densityWeight", PnrOption::Float, 0, 0, 100, 0.1));
+    options.push_back(number(place, "Annealing placer", "Density pins", "Pins per tile the penalty starts above",
+                             "placer1/densityPins", PnrOption::Float, 8, 0, 100));
+    options.push_back(number(place, "Annealing placer", "Density bin", "Tiles per side of the bins counted",
+                             "placer1/densityBin", PnrOption::Int, 4, 1, 64));
+
+    options.push_back(choice(route, "Router", "Router", "router1: classic, router2: negotiated congestion",
+                             "router", Arch::availableRouters, Arch::defaultRouter));
+    options.push_back(flag(route, "Router", "Timing-driven rip-up", "Also rip up critical nets", "router/tmg_ripup"));
+    options.push_back(flag(route, "Router", "Alternative weights", "Other congestion weights (router2)",
+                           "router2/alt-weights"));
+    options.push_back(optional(route, "Router", "Estimate weight", "Weight of the delay estimate in the search",
+                               "router2/estimateWeight", "default", 10, 0.05));
+    options.push_back(optional(route, "Router", "Critical estimate weight",
+                               "The same for the most critical connections", "router2/criticalEstimateWeight",
+                               "as the others", 10, 0.05));
+    return options;
+}
+
+void BaseMainWindow::options()
+{
+    PnrOptionsDialog dialog(pnrOptions(), nextStep(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    auto changed = dialog.apply();
+    if (changed.empty())
+        return;
+    optionsChanged();
+    for (auto &line : changed)
+        log("Option %s\n", line.c_str());
+}
 
 void BaseMainWindow::disableActions()
 {
@@ -518,6 +773,7 @@ void BaseMainWindow::disableActions()
     actionPack->setEnabled(false);
     actionPlace->setEnabled(false);
     actionRoute->setEnabled(false);
+    actionOptions->setEnabled(false);
 
     actionExecutePy->setEnabled(true);
 
@@ -536,6 +792,7 @@ void BaseMainWindow::updateActions()
         actionPlace->setEnabled(true);
     } else if (ctx->settings.find(ctx->id("route")) == ctx->settings.end())
         actionRoute->setEnabled(true);
+    actionOptions->setEnabled(true);
 
     onUpdateActions();
 }

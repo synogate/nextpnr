@@ -31,5 +31,7 @@
         <file>resources/camera.png</file>
         <file>resources/film.png</file>
         <file>resources/save_svg.png</file>
+        <file>resources/mcp.png</file>
+        <file>resources/mcp_on.png</file>
     </qresource>
 </RCC>

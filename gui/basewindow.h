@@ -22,8 +22,10 @@
 
 #include "command.h"
 #include "nextpnr.h"
+#include "pnroptions.h"
 #include "worker.h"
 
+#include <QJsonValue>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -31,6 +33,7 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QToolBar>
+#include "mcpserver.h"
 
 Q_DECLARE_METATYPE(std::string)
 Q_DECLARE_METATYPE(NEXTPNR_NAMESPACE_PREFIX DecalXY)
@@ -39,6 +42,7 @@ NEXTPNR_NAMESPACE_BEGIN
 
 class PythonTab;
 class DesignWidget;
+class TimingWidget;
 class FPGAViewWidget;
 
 class BaseMainWindow : public QMainWindow
@@ -52,14 +56,31 @@ class BaseMainWindow : public QMainWindow
     void updateActions();
 
     void notifyChangeContext();
+    // Starts the MCP server (see mcpserver.h) on that port; false if it cannot listen there
+    bool startMcpServer(int port);
 
   protected:
+    void closeEvent(QCloseEvent *event) override;
     void createMenusAndBars();
     void disableActions();
     void enableDisableDecals();
 
     virtual void onDisableActions() {};
     virtual void onUpdateActions() {};
+    // Before packing, e.g. to set options; false keeps it from packing
+    virtual bool beforePack() { return true; }
+    // The options of the place and route flow the options dialog shows, and the next step to run
+    virtual std::vector<PnrOption> pnrOptions();
+    virtual PnrStep nextStep();
+    // After options changed
+    virtual void optionsChanged() {}
+    // Sets an option of the architecture as --vopt does (null: unset it); false, with the reason in
+    // error, if it cannot
+    virtual bool setArchOption(const std::string &key, const QJsonValue &value, QString &error);
+    // Before the design is saved, e.g. to finish the routing
+    virtual void beforeSave() {}
+    // Saves the design to a JSON file, logging how it went
+    bool writeJson(const std::string &filename);
 
   protected Q_SLOTS:
     void writeInfo(std::string text);
@@ -69,7 +90,9 @@ class BaseMainWindow : public QMainWindow
 
     void open_json();
     void save_json();
+    void pack();
     void place();
+    void options();
 
     void execute_python();
 
@@ -87,16 +110,34 @@ class BaseMainWindow : public QMainWindow
 
     void about();
 
+    void toggleMcpServer(bool on);
+
   Q_SIGNALS:
     void contextChanged(Context *ctx);
     void updateTreeView();
+
+  private:
+    // The tools of the MCP server (mcptools.cc)
+    void mcpCall(const QString &name, const QJsonObject &args, McpServer::Reply reply);
+    void mcpTool(const QString &name, const QJsonObject &args, McpServer::Reply reply);
+    void mcpTaskEnded(const char *outcome, bool ok);
 
   protected:
     // state variables
     CommandHandler *handler;
     std::unique_ptr<Context> ctx;
     TaskManager *task;
-    bool timing_driven;
+    // The seed the options dialog set last, 0 for none
+    int seed;
+    // Whether a task (pack, place, route, ...) runs, and how many started
+    bool taskRunning = false;
+    int tasksStarted = 0;
+
+    McpServer *mcp = nullptr;
+    int mcpPort = 4747;
+    // The run_step tool waits for the task it started, collecting its log
+    McpServer::Reply mcpTaskReply;
+    std::string mcpTaskLog;
     std::string currentProj;
 
     // main widgets
@@ -104,6 +145,8 @@ class BaseMainWindow : public QMainWindow
     QTabWidget *centralTabWidget;
     PythonTab *console;
     DesignWidget *designview;
+    TimingWidget *timingview;
+    QTabWidget *rightTabWidget;
     FPGAViewWidget *fpgaView;
 
     // Menus, bars and actions
@@ -120,8 +163,10 @@ class BaseMainWindow : public QMainWindow
     QAction *actionPack;
     QAction *actionPlace;
     QAction *actionRoute;
+    QAction *actionOptions;
 
     QAction *actionExecutePy;
+    QAction *actionMcp;
 
     QAction *actionPlay;
     QAction *actionPause;

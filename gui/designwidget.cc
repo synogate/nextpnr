@@ -210,6 +210,7 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
     vbox2->addWidget(propertyEditor);
 
     QSplitter *splitter = new QSplitter(Qt::Vertical);
+    splitter->setObjectName("splitter_design");
     splitter->addWidget(topWidget);
     splitter->addWidget(btmWidget);
 
@@ -534,8 +535,13 @@ void DesignWidget::onClickedBel(BelId bel, bool keep)
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
 }
 
+static NetInfo *bound_net(Context *ctx, WireId wire) { return ctx->getBoundWireNet(wire); }
+static NetInfo *bound_net(Context *ctx, PipId pip) { return ctx->getBoundPipNet(pip); }
+
 void DesignWidget::onClickedWire(WireId wire, bool keep)
 {
+    if (clickedNet(wire, keep))
+        return;
     boost::optional<TreeModel::Item *> item;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
@@ -558,6 +564,8 @@ void DesignWidget::onClickedWire(WireId wire, bool keep)
 
 void DesignWidget::onClickedPip(PipId pip, bool keep)
 {
+    if (clickedNet(pip, keep))
+        return;
     boost::optional<TreeModel::Item *> item;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
@@ -577,6 +585,35 @@ void DesignWidget::onClickedPip(PipId pip, bool keep)
         tabWidget->setCurrentIndex(index);
     selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::PIP)->indexFromNode(*item),
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
+}
+
+// For a wire or pip whose click selects its net (see guiSelectsNet): select the net, as a click in
+// the net list does
+template <typename T> bool DesignWidget::clickedNet(T element, bool keep)
+{
+    boost::optional<TreeModel::Item *> item;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+
+        if (!ctx->guiSelectsNet(element))
+            return false;
+        NetInfo *net = bound_net(ctx, element);
+        if (net == nullptr)
+            return false;
+        item = getTreeByElementType(ElementType::NET)->nodeForId(IdStringList(net->name));
+        if (!item)
+            return false;
+        Q_EMIT selected(getDecals(ElementType::NET, IdStringList(net->name)), keep);
+    }
+    int index = getIndexByElementType(ElementType::NET);
+    if (!keep)
+        clearAllSelectionModels();
+    if (tabWidget->currentIndex() != index)
+        tabWidget->setCurrentIndex(index);
+    selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::NET)->indexFromNode(*item),
+                                           keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
+    return true;
 }
 
 void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QItemSelection &)
@@ -767,8 +804,17 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
         else
             addProperty(driverItem, QtType::QString, "Cell", "", ElementType::CELL);
 
+        // (a large net, such as a clock, has thousands of users and wires: only the first ones are
+        // listed, as for a wire's pips, since the property browser gets very slow with so many)
         QtProperty *usersItem = addSubGroup(topItem, "Users");
+        int counter = 0;
         for (auto &item : net->users) {
+            if (counter++ == MAX_LISTED) {
+                addProperty(usersItem, QtType::QString, "Warning",
+                            QString("%1 more users not listed").arg(int(net->users.entries()) - MAX_LISTED),
+                            ElementType::NONE);
+                break;
+            }
             QtProperty *portItem = addSubGroup(usersItem, item.port.c_str(ctx));
 
             addProperty(portItem, QtType::QString, "Port", item.port.c_str(ctx));
@@ -780,12 +826,22 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
 
         QtProperty *attrsItem = addSubGroup(topItem, "Attributes");
         for (auto &item : net->attrs) {
-            addProperty(attrsItem, QtType::QString, item.first.c_str(ctx),
-                        item.second.is_string ? item.second.as_string().c_str() : item.second.to_string().c_str());
+            // (such as the ROUTING of a loaded design, which can be megabytes)
+            std::string value = item.second.is_string ? item.second.as_string() : item.second.to_string();
+            if (value.size() > MAX_VALUE_LENGTH)
+                value = value.substr(0, MAX_VALUE_LENGTH) + "... (" + std::to_string(value.size()) + " characters)";
+            addProperty(attrsItem, QtType::QString, item.first.c_str(ctx), value.c_str());
         }
 
         QtProperty *wiresItem = addSubGroup(topItem, "Wires");
+        counter = 0;
         for (auto &item : net->wires) {
+            if (counter++ == MAX_LISTED) {
+                addProperty(wiresItem, QtType::QString, "Warning",
+                            QString("%1 more wires not listed").arg(int(net->wires.size()) - MAX_LISTED),
+                            ElementType::NONE);
+                break;
+            }
             auto name = ctx->nameOfWire(item.first);
 
             QtProperty *wireItem = addSubGroup(wiresItem, name);
@@ -897,6 +953,11 @@ void DesignWidget::updateHighlightGroup(QList<TreeModel::Item *> items, int grou
         } else
             highlightSelected.insert(item, group);
     }
+    emitHighlights();
+}
+
+void DesignWidget::emitHighlights()
+{
     std::vector<DecalXY> decals[8];
 
     for (auto it : highlightSelected.toStdMap()) {
@@ -1073,4 +1134,120 @@ void DesignWidget::onHoverPropertyChanged(QtBrowserItem *item)
     }
     Q_EMIT hover(DecalXY());
 }
+QString DesignWidget::elementTypeName(ElementType type)
+{
+    switch (type) {
+    case ElementType::BEL:
+        return "bel";
+    case ElementType::WIRE:
+        return "wire";
+    case ElementType::PIP:
+        return "pip";
+    case ElementType::NET:
+        return "net";
+    case ElementType::CELL:
+        return "cell";
+    default:
+        return "";
+    }
+}
+
+ElementType DesignWidget::elementTypeByName(QString type)
+{
+    for (auto t : {ElementType::BEL, ElementType::WIRE, ElementType::PIP, ElementType::NET, ElementType::CELL})
+        if (type.toLower() == elementTypeName(t))
+            return t;
+    return ElementType::NONE;
+}
+
+boost::optional<TreeModel::Item *> DesignWidget::findElement(const Element &element)
+{
+    TreeModel::Model *tree = getTreeByElementType(element.type);
+    if (ctx == nullptr || tree == nullptr)
+        return boost::none;
+    // (a net or cell name is one IdString, even with a slash in it)
+    bool single = element.type == ElementType::NET || element.type == ElementType::CELL;
+    try {
+        return tree->nodeForId(single ? IdStringList(ctx->id(element.name)) : IdStringList::parse(ctx, element.name));
+    } catch (const std::exception &) {
+        // (a name the Arch does not know)
+        return boost::none;
+    }
+}
+
+std::vector<DesignWidget::Element> DesignWidget::selectedElements()
+{
+    std::vector<Element> elements;
+    if (ctx == nullptr)
+        return elements;
+    for (int i = 0; i <= getIndexByElementType(ElementType::NET); i++)
+        for (auto index : selectionModel[i]->selectedIndexes()) {
+            TreeModel::Item *item = treeModel[i]->nodeFromIndex(index);
+            if (item->type() != ElementType::NONE)
+                elements.push_back({item->type(), item->id().str(ctx)});
+        }
+    return elements;
+}
+
+void DesignWidget::selectElements(const std::vector<Element> &elements, std::vector<std::string> &missing)
+{
+    std::vector<std::pair<int, QModelIndex>> found;
+    for (auto &element : elements) {
+        auto item = findElement(element);
+        if (!item) {
+            missing.push_back(element.name);
+            continue;
+        }
+        int num = getIndexByElementType(element.type);
+        found.push_back({num, treeModel[num]->indexFromNode(*item)});
+    }
+    if (found.size() <= 1) {
+        // as a click
+        clearAllSelectionModels();
+        if (found.empty())
+            return;
+        tabWidget->setCurrentIndex(found[0].first);
+        selectionModel[found[0].first]->setCurrentIndex(found[0].second, QItemSelectionModel::ClearAndSelect);
+        return;
+    }
+    // Several, maybe in several trees: selected without the trees knowing (each would clear the
+    // others), then shown all together, as a selection with Control does
+    int trees = getIndexByElementType(ElementType::NET);
+    for (int i = 0; i <= trees; i++)
+        selectionModel[i]->blockSignals(true);
+    clearAllSelectionModels();
+    for (auto &f : found)
+        selectionModel[f.first]->select(f.second, QItemSelectionModel::Select);
+    for (int i = 0; i <= trees; i++) {
+        selectionModel[i]->blockSignals(false);
+        treeView[i]->viewport()->update();
+    }
+    tabWidget->setCurrentIndex(found[0].first);
+    clearProperties();
+    std::vector<DecalXY> decals;
+    for (auto &f : found) {
+        TreeModel::Item *item = treeModel[f.first]->nodeFromIndex(f.second);
+        std::vector<DecalXY> d = getDecals(item->type(), item->id());
+        std::move(d.begin(), d.end(), std::back_inserter(decals));
+    }
+    Q_EMIT selected(decals, false);
+}
+
+void DesignWidget::highlightElements(const std::vector<Element> &elements, int group, bool clear,
+                                     std::vector<std::string> &missing)
+{
+    if (clear)
+        highlightSelected.clear();
+    for (auto &element : elements) {
+        auto item = findElement(element);
+        if (!item)
+            missing.push_back(element.name);
+        else if (group < 0)
+            highlightSelected.remove(*item);
+        else
+            highlightSelected[*item] = group;
+    }
+    emitHighlights();
+}
+
 NEXTPNR_NAMESPACE_END

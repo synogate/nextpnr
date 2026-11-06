@@ -58,7 +58,24 @@ class DesignWidget : public QWidget
     explicit DesignWidget(QWidget *parent = 0);
     ~DesignWidget();
 
+    // An element of the trees, named as the Python bindings name it (for the MCP server)
+    struct Element
+    {
+        ElementType type;
+        std::string name;
+    };
+    std::vector<Element> selectedElements();
+    // Selects these, as clicks in the trees would; the names of those not found go to missing
+    void selectElements(const std::vector<Element> &elements, std::vector<std::string> &missing);
+    // Highlights these in a group (0 to 7), or takes them out of their group (-1); clear: all of
+    // them first
+    void highlightElements(const std::vector<Element> &elements, int group, bool clear,
+                           std::vector<std::string> &missing);
+    static QString elementTypeName(ElementType type);
+    static ElementType elementTypeByName(QString type);
+
   private:
+    template <typename T> bool clickedNet(T element, bool keep);
     void clearProperties();
     QtProperty *addTopLevelProperty(const QString &id);
     QtProperty *addSubGroup(QtProperty *topItem, const QString &name);
@@ -73,6 +90,8 @@ class DesignWidget : public QWidget
     void addToHistory(int tab, QModelIndex item);
     std::vector<DecalXY> getDecals(ElementType type, IdStringList value);
     void updateHighlightGroup(QList<TreeModel::Item *> item, int group);
+    void emitHighlights();
+    boost::optional<TreeModel::Item *> findElement(const Element &element);
     void clearAllSelectionModels();
   Q_SIGNALS:
     void selected(std::vector<DecalXY> decal, bool keep);
@@ -97,6 +116,11 @@ class DesignWidget : public QWidget
     void onClickedPip(PipId pip, bool keep);
 
   private:
+    // How many of a large net's users and wires the properties list, and how long an attribute's
+    // value may be there (the property browser gets very slow with thousands of entries)
+    static constexpr int MAX_LISTED = 100;
+    static constexpr size_t MAX_VALUE_LENGTH = 200;
+
     Context *ctx;
 
     QTabWidget *tabWidget;

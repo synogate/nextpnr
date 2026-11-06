@@ -427,6 +427,16 @@ Attrs GateMateImpl::getBelAttrs(BelId bel) const
         describe_ff(ctx, cell, type == id_CPE_FF_U, tile, w);
     else if (type == id_CPE_CPLINES)
         describe_cplines(ctx, tile, w);
+    else if (type == id_CPE_COMP) {
+        // The comparator is a LUT2 (L30) behind L20, whose output is inverted: INIT_L30 is the
+        // inverse of what it computes. Its output goes only into the carry logic.
+        int init = param(cell, id_INIT_L30, 0);
+        w.add("Function", std::string(lut2_function(~init & 15)) + "  (INIT_L30 " + binary(init, 4) +
+                                  ", output inverted)");
+        w.add("A", with_net("COMB1, from L20", net_on(ctx, tile, "CPE.COMBIN1_int")));
+        w.add("B", with_net("COMB2, from L10", net_on(ctx, tile, "CPE.COMBIN2_int")));
+        w.add("Output", with_net("COMPOUT, into the carry logic", net_on(ctx, tile, "CPE.COMPOUT_int")));
+    }
     else if (type.in(id_CPE_RAMIO_U, id_CPE_RAMIO_L)) {
         bool upper = type == id_CPE_RAMIO_U;
         if (param(cell, id_C_RAM_O, 0))
@@ -546,6 +556,9 @@ void GateMateImpl::update_gui_labels()
             if (mode.compare(0, 4, "CPE_") == 0)
                 mode = mode.substr(4);
             l.push_back(mode == "L2T4" ? "LUT" : mode);
+        } else if (type == id_CPE_COMP) {
+            // what it computes: its output is inverted (see getBelAttrs)
+            l.push_back(lut2_short(~param(ci, id_INIT_L30, 0) & 15));
         } else if (type == id_GPIO) {
             l.push_back(ci->name.str(ctx));
         } else if (type.in(id_CPE_RAMIO_U, id_CPE_RAMIO_L)) {

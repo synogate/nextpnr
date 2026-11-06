@@ -759,6 +759,15 @@ void GateMateImpl::pack()
         log_error("The design was packed already (a placed and routed JSON?), which can not be packed again. To reuse "
                   "a placed and routed design, implement it with --vopt as-partition and import it into another "
                   "design with --vopt partition (docs/partitions.md).\n");
+    // A LUT3 or LUT4 does not fit the CPE's tree of LUT2s in general; yosys maps to the trees with -luttree
+    for (auto &cell : ctx->cells)
+        if (cell.second->type.in(id_CC_LUT3, id_CC_LUT4))
+            log_error("Cell '%s' is a %s, which is not supported; synthesize with 'synth_gatemate -luttree'.\n",
+                      cell.first.c_str(ctx), cell.second->type.c_str(ctx));
+    // (read here, not with the other options, as the GUI sets these before packing)
+    partition_unrouted = args.options.count("partition-unrouted") > 0;
+    as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
+    partition_open = args.options.count("partition-open") > 0;
     GateMatePacker packer(ctx, this);
     import_partitions();
     if (as_partition)
@@ -767,6 +776,8 @@ void GateMateImpl::pack()
     if (args.options.count("ccf")) {
         parse_ccf(args.options["ccf"].as<std::string>());
     }
+    if (as_partition && args.options.count("partition-region"))
+        add_partition_region(args.options["partition-region"].as<std::string>());
 
     if (args.options.count("strategy")) {
         std::string val = args.options["strategy"].as<std::string>();

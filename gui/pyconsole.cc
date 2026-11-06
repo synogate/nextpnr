@@ -45,14 +45,18 @@ void PythonConsole::parseEvent(const ParseMessage &message)
     std::string res;
     if (message.message.size())
         res = pyinterpreter_execute(message.message, &errorCode);
-    if (errorCode) {
-        setTextColor(ERROR_COLOR);
-    } else {
-        setTextColor(OUTPUT_COLOR);
-    }
+    displayResult(res, errorCode != 0);
+}
 
+void PythonConsole::displayResult(const std::string &res, bool error, const std::string &traceback)
+{
+    setTextColor(error ? ERROR_COLOR : OUTPUT_COLOR);
     if (res.size()) {
         append(res.c_str());
+    }
+    if (traceback.size()) {
+        setTextColor(ERROR_COLOR);
+        append(traceback.c_str());
     }
     setTextColor(NORMAL_COLOR);
     append("");

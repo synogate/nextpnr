@@ -156,6 +156,14 @@ bool Application::notify(QObject *receiver, QEvent *event)
     } catch (log_execution_error_exception) {
         QMetaObject::invokeMethod(this, &Application::show_pass_error, Qt::QueuedConnection);
         return true;
+    } catch (const std::exception &e) {
+        // An error in what an event did (a lookup of a name that is not there, say): in the log, and
+        // the GUI goes on, rather than ending with all the work in it
+        log_nonfatal_error("Internal error: %s\n", e.what());
+        return true;
+    } catch (...) {
+        log_nonfatal_error("Internal error: unknown exception\n");
+        return true;
     }
 }
 

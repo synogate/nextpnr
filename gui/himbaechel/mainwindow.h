@@ -20,9 +20,12 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <QTimer>
 #include "../basewindow.h"
 
 NEXTPNR_NAMESPACE_BEGIN
+
+class PartitionWidget;
 
 class MainWindow : public BaseMainWindow
 {
@@ -35,9 +38,30 @@ class MainWindow : public BaseMainWindow
   public:
     void createMenu();
 
+  protected:
+    void onDisableActions() override;
+    void onUpdateActions() override;
+    bool beforePack() override;
+    std::vector<PnrOption> pnrOptions() override;
+    PnrStep nextStep() override;
+    void optionsChanged() override;
+    bool setArchOption(const std::string &key, const QJsonValue &value, QString &error) override;
+    void beforeSave() override;
+
   protected Q_SLOTS:
     void new_proj() override;
     void newContext(Context *ctx);
+    void repair_route();
+    void finish_route();
+    void run_finished(bool status);
+    void repair_progress();
+
+  private:
+    QAction *actionRepair;
+    QTimer *repairTimer;
+    QAction *actionFinish;
+    PartitionWidget *partitionview;
+    std::string running;
 };
 
 NEXTPNR_NAMESPACE_END

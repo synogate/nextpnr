@@ -62,6 +62,9 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("partition-unrouted",
                            "with as-partition: write the partition placed only, after placing (run with --no-route); "
                            "the design importing it routes its nets");
+    specific.add_options()("partition-region", po::value<std::string>(),
+                           "with as-partition: X0,Y0,X1,Y1 (bel coordinates) is the partition's area, for the cells "
+                           "not floorplanned by the CCF");
     specific.add_options()("partition", po::value<std::vector<std::string>>(),
                            "<inst>:<file>[@dx,dy][,key=value..]: replace the blackbox instance <inst> with the placed "
                            "(and routed) partition from <file> (written with as-partition), moved by dx, dy tiles; "
@@ -258,6 +261,23 @@ void GateMateImpl::init_database(Arch *arch)
                                                : fpga_mode == 3 ? "SPEED"
                                                                 : "");
     arch->set_speed_grade(speed_grade);
+    read_options(args);
+}
+
+void GateMateImpl::read_options(const ArchArgs &args)
+{
+    // Unset options are back at their defaults
+    route_repair = -1;
+    place_repair = -1;
+    repair_margin = 0;
+    net_repair = 0;
+    route_runs = 0;
+    replicate_fanout = 0;
+    route_learn_mode = "max";
+    route_learn_step = 0.25;
+    lut_swap_rounds = 0;
+    swap_pairs = swap_halves = true;
+    sb_y_cost = sb_ydiag_cost = 0;
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
@@ -328,9 +348,10 @@ void GateMateImpl::init_database(Arch *arch)
         sb_ydiag_cost = args.options["sb-ydiag-cost"].as<float>();
 }
 
-void GateMateImpl::init(Context *ctx)
+void GateMateImpl::prepare_options()
 {
-    HimbaechelAPI::init(ctx);
+    learnt_net_crit.clear();
+    learnt_scale = false;
     if (ctx->args.options.count("place-crit-in")) {
         std::string filename = ctx->args.options["place-crit-in"].as<std::string>();
         std::ifstream in(filename);
@@ -358,7 +379,14 @@ void GateMateImpl::init(Context *ctx)
         std::string key = stringf("%s %s %d%d%d%d r%d%s", ctx->chip_info->name.get(),
                                   IdString(ctx->speed_grade->name).c_str(ctx), use_cp_for_clk, use_cp_for_cpe,
                                   use_bridges, use_cpout, radius, near_only ? " near" : "");
-        lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key, near_only);
+        // Build again only if the options it depends on changed (optionsChanged reads them again)
+        if (key != lookahead_key || radius != lookahead_radius) {
+            lookahead = GateMateLookahead();
+            lookahead.build(ctx, radius, [this](PipId pip) { return pip_allowed_by_options(pip); }, key,
+                            near_only);
+            lookahead_key = key;
+            lookahead_radius = radius;
+        }
         if (options.count("hybrid-missing")) {
             std::string value = options["hybrid-missing"].as<std::string>();
             if (value != "unreachable" && value != "model")
@@ -384,6 +412,7 @@ void GateMateImpl::init(Context *ctx)
         evaluate_estimates(ctx, lookahead, distance, avail, options["eval-estimate"].as<int>(), dump, map);
         exit(0);
     }
+    scarce_pip_cost.clear();
     if (sb_y_cost > 0 || sb_ydiag_cost > 0) {
         // Every switch box plane has four Y outputs, each driving a whole node, and a small switch
         // box has only one diagonal mux per plane, through which all plane changes and diagonal hops
@@ -401,6 +430,19 @@ void GateMateImpl::init(Context *ctx)
             }
         }
     }
+}
+
+void GateMateImpl::optionsChanged()
+{
+    read_options(ctx->args);
+    prepare_options();
+}
+
+void GateMateImpl::init(Context *ctx)
+{
+    HimbaechelAPI::init(ctx);
+    prepare_options();
+    auto &options = ctx->args.options;
     if (options.count("place-density-weight"))
         ctx->settings[ctx->id("placer1/densityWeight")] = std::to_string(options["place-density-weight"].as<float>());
     if (options.count("place-density-pins"))
@@ -681,6 +723,9 @@ void GateMateImpl::check_regions()
         log_error("A placement region is too small for its cells, see the utilisation above.\n");
 }
 
+// (also after a placed and routed design was loaded, and after routing, see postRoute)
+void GateMateImpl::assignArchInfo() { update_gui_labels(); }
+
 void GateMateImpl::postPlace()
 {
     release_partitions();
@@ -751,7 +796,6 @@ void GateMateImpl::postPlace()
         pip_mask[cell.second.get()->bel.tile] = mask;
         pip_data[cell.second.get()->bel.tile] = data;
     }
-    update_gui_labels();
     if (partition_unrouted) {
         // The partition is complete once placed: as after routing (postRoute), but with no routing kept
         detach_partition_ports();
@@ -759,6 +803,7 @@ void GateMateImpl::postPlace()
         ctx->settings[ctx->id("partition-unrouted")] = 1;
         timing_analysis(ctx, false, false, false, false, true);
     }
+    update_gui_labels();
 }
 void GateMateImpl::configureRouter2(Router2Cfg &cfg)
 {
@@ -807,6 +852,10 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
     if (!pip_allowed_by_options(pip))
         return false;
     const auto &extra_data = *pip_extra_data(pip);
+    // The masks and used CPEs are set up by postPlace: not yet, or not at all for a design loaded
+    // placed and routed (as when the GUI shows a pip of one)
+    if (pip.tile >= int(pip_mask.size()))
+        return true;
     if (extra_data.type == PipExtra::PIP_EXTRA_MUX && (extra_data.block != 0)) {
         if (pip_mask[pip.tile] & extra_data.block) {
             return false;
@@ -1053,6 +1102,12 @@ void GateMateImpl::reassign_cplines(NetInfo *ni, const dict<WireId, PipMap> &net
 
 void GateMateImpl::postRoute()
 {
+    repairRoute();
+    finishRoute();
+}
+
+void GateMateImpl::repairRoute()
+{
     release_partition_routing();
     if (route_runs > 0)
         route_learning(route_runs);
@@ -1089,6 +1144,10 @@ void GateMateImpl::postRoute()
                 out << net.first.str(ctx) << "\t" << crit << "\n";
         }
     }
+}
+
+void GateMateImpl::finishRoute()
+{
     if (as_partition) {
         // A partition stays as routed: what follows turns bridges and CP lines into cells and the LUT inputs
         // into the CPE inputs the routing reaches, which needs the routing of the ports, done on import
@@ -1455,7 +1514,6 @@ void GateMateImpl::postRoute()
         }
     }
     ctx->assignArchInfo();
-    update_gui_labels();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {

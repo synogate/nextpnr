@@ -41,6 +41,8 @@ class PythonConsole : public QTextEdit, public ParseListener
     PythonConsole(QWidget *parent = 0);
 
     void displayString(QString text);
+    // Shows the output of Python code, in the colour for errors if it failed, then a traceback in that colour
+    void displayResult(const std::string &res, bool error, const std::string &traceback = std::string());
     void moveCursorToEnd();
     virtual void parseEvent(const ParseMessage &message);
     void execute_python(std::string filename);
