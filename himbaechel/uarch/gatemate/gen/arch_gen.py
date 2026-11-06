@@ -247,7 +247,12 @@ RESOURCE_NAMES = {
     1 << 11: "C_PY2_I",
     1 << 12: "C_HORIZ",
     1 << 13: "C_C_P",
+    # Virtual (no configuration bit of their own): the subtree swaps of the LUT trees. Their pips carry the
+    # group, so the router keeps one value per half, but not the resource mask the CP lines are known by.
+    1 << 14: "LUT2_10X",
+    1 << 15: "LUT2_11X",
 }
+VIRTUAL_RESOURCES = {1 << 14, 1 << 15}
 
 def main():
     # Range needs to be +1, but we are adding +2 more to coordinates, since 
@@ -346,7 +351,8 @@ def main():
                     group = RESOURCE_NAMES.get(mux.resource, "UNKNOWN")
                     group_index = tt._group2idx[tt.strs.id(group)]
                     tt.add_pip_to_group(pp, group)
-                pp.extra_data = PipExtraData(PIP_EXTRA_MUX, ch.strs.id(mux.name), mux.bits, mux.value, mux_flags, plane, mux.block, mux.resource, group_index)
+                resource = 0 if mux.resource in VIRTUAL_RESOURCES else mux.resource
+                pp.extra_data = PipExtraData(PIP_EXTRA_MUX, ch.strs.id(mux.name), mux.bits, mux.value, mux_flags, plane, mux.block, resource, group_index)
         if type_name in new_wires:
             for wire in sorted(new_wires[type_name]):
                 delay = wire_delay[wire]

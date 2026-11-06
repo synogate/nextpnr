@@ -116,6 +116,8 @@ struct Router2
         // Historical congestion cost
         dict<int, int> value_count;
         float hist_cong_cost = 1.0;
+        // Historical cost of each value, grown by its uses while the resource is in conflict
+        dict<int, float> value_hist;
     };
 
     Context *ctx;
@@ -550,11 +552,39 @@ struct Router2
                         ((std::abs(pl.x - nd.cx) + std::abs(pl.y - nd.cy)) / float(nd.hpwl));
         }
 
-        auto resource_key = wire_to_resource.find(wire);
-        if (resource_key != wire_to_resource.end()) {
-            auto &rd = flat_resources.at(resource_key->second);
+        // The resource the pip sets, else the one of the wire. (The backward search passes the pip's source
+        // wire: by the wire alone, the resource pips next to the sinks were never charged there.)
+        int resource_idx = -1, value = -1;
+        GroupId pip_resource = pip != PipId() ? ctx->getResourceKeyForPip(pip) : GroupId();
+        if (pip_resource != GroupId()) {
+            resource_idx = resource_to_idx.at(pip_resource);
+            value = ctx->getResourceValueForPip(pip);
+        } else {
+            auto resource_key = wire_to_resource.find(wire);
+            if (resource_key != wire_to_resource.end())
+                resource_idx = resource_key->second;
+        }
+        if (resource_idx >= 0) {
+            auto &rd = flat_resources.at(resource_idx);
             resource_hist_cost = 1.0f + crit_weight * (rd.hist_cong_cost - 1.0f);
-            resource_present_cost = 1.0f + rd.value_count.size() * curr_cong_weight * crit_weight;
+            // In conflict with the uses of another value than the one this pip sets: charged by those uses
+            // (the users of one value pay less to join the others than to stay), plus the number of values
+            // in use (what all of them pay, to leave the resource where they can). By the number of values
+            // alone, all its users pay the same whichever value they take, and nothing leads them to agree.
+            int other_uses = 0;
+            for (auto &vc : rd.value_count)
+                if (vc.first != value)
+                    other_uses += vc.second;
+            if (other_uses > 0)
+                other_uses += rd.value_count.size();
+            resource_present_cost = 1.0f + other_uses * curr_cong_weight * crit_weight;
+            // The values held in conflict longest cost more: where the users of one value cannot leave it, the
+            // others, though as many, turn to it
+            if (value >= 0) {
+                auto vh = rd.value_hist.find(value);
+                if (vh != rd.value_hist.end())
+                    resource_hist_cost += crit_weight * vh->second;
+            }
         }
 
         return base_cost * hist_cost * present_cost / (1 + (source_uses * crit_weight)) + bias_cost +
@@ -1505,6 +1535,10 @@ struct Router2
                         if (curr_cong_weight > 0)
                             rd.hist_cong_cost =
                                     std::min(1e9, rd.hist_cong_cost + (rd.value_count.size() - 1) * hist_cong_weight);
+                        if (curr_cong_weight > 0)
+                            for (auto &vc : rd.value_count)
+                                rd.value_hist[vc.first] =
+                                        std::min(1e9f, float(rd.value_hist[vc.first] + vc.second * hist_cong_weight));
                         already_updated_resources.insert(r.first);
                         ++overused_resources;
                     }

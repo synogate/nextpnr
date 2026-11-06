@@ -2516,6 +2516,8 @@ X(LUT2_02)
 X(LUT2_03)
 X(LUT2_10)
 X(LUT2_11)
+X(LUT2_10X)
+X(LUT2_11X)
 
 // Timing
 X(timing_ADDF2x_IN5_8_comb2)

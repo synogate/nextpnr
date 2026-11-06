@@ -93,6 +93,9 @@ struct GateMateImpl : HimbaechelAPI
     // them; returns how many were swapped (lut_swap.cc)
     int swap_lut_inputs(bool all = false);
     bool lut_swap = false;
+    // The router may swap the subtrees of LUT trees (virtual LUT2_10X/LUT2_11X), where tree_swap_allowed
+    bool lut_tree_swap = true;
+    bool tree_swap_allowed(PipId pip) const;
     bool timing_opt_after_place = false;
     // After routing, up to `rounds` rounds of swapping the input pairs of LUT trees on critical paths,
     // each kept only if it improves Fmax (`test_undo`: try any trees, and undo every round); returns

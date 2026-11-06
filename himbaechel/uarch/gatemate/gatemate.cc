@@ -174,6 +174,8 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("timing-opt", "after placement, move LUT trees on critical paths (nextpnr's timing_opt)");
     // TEMPORARY: +1.5% at most, see docs/timing_experiments.md; goes unless it pays off after the timing fixes
     specific.add_options()("lut-input-swap", "before routing, swap the input pairs of LUT trees to save plane changes");
+    specific.add_options()("no-lut-tree-swap", "the router keeps the subtrees of the LUT trees in place "
+                                               "(the virtual LUT2_10X/LUT2_11X selects)");
     specific.add_options()(
             "lut-swap-rounds", po::value<int>(),
             "after routing, rounds of swapping LUT input pairs or CPE halves on critical paths (default 0)");
@@ -310,6 +312,7 @@ void GateMateImpl::read_options(const ArchArgs &args)
     model_route = route_estimate == "model" || route_estimate == "hybrid";
     model_place = place_estimate == "model" || place_estimate == "hybrid";
     lut_swap = args.options.count("lut-input-swap") > 0;
+    lut_tree_swap = args.options.count("no-lut-tree-swap") == 0;
     timing_opt_after_place = args.options.count("timing-opt") > 0;
     report_crit_routing = args.options.count("report-crit-routing") > 0;
     if (args.options.count("route-repair"))
@@ -921,6 +924,9 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
             }
         }
     }
+    if (extra_data.type == PipExtra::PIP_EXTRA_MUX && extra_data.value == 1 && extra_data.group_index != 0 &&
+        IdString(extra_data.name).in(id_LUT2_10X, id_LUT2_11X) && !tree_swap_allowed(pip))
+        return false;
     if (extra_data.type != PipExtra::PIP_EXTRA_MUX || (extra_data.flags & MUX_ROUTING) == 0)
         return true;
     if (used_cpes[pip.tile])
@@ -934,6 +940,35 @@ bool GateMateImpl::design_routed_before() const
     // the routing reaches. The pin names do not tell (the packer gives a 4:1 multiplexer's data and many adders
     // IN1..IN4 too), the "route" setting does: Arch::route sets it after postRoute, and it is saved with the design.
     return ctx->settings.count(ctx->id("route")) > 0;
+}
+
+// A half's two subtrees can trade places (the virtual LUT2_10X/LUT2_11X select at 1, postRoute moves the
+// tables) only under a LUT tree that L10 alone combines: CPE_L2T4 with no input but the LUT2s' and COMBIN,
+// and nothing out but OUT. The other cells in a CPE give the first-level LUTs roles of their own (MX4,
+// adders, multipliers, carries).
+bool GateMateImpl::tree_swap_allowed(PipId pip) const
+{
+    if (!lut_tree_swap)
+        return false;
+    int z = IdString(pip_extra_data(pip)->name) == id_LUT2_10X ? CPE_LT_U_Z : CPE_LT_L_Z;
+    const auto &bels = chip_tile_info(ctx->chip_info, pip.tile).bels;
+    for (size_t i = 0; i < bels.size(); i++) {
+        if (bels[i].z != z)
+            continue;
+        const CellInfo *ci = ctx->getBoundBelCell(BelId(pip.tile, i));
+        if (!ci || ci->type != id_CPE_L2T4)
+            return false;
+        for (auto &port : ci->ports) {
+            if (!port.second.net)
+                continue;
+            if (port.second.type == PORT_IN ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10,
+                                                             id_D1_10, id_COMBIN)
+                                            : port.first != id_OUT)
+                return false;
+        }
+        return true;
+    }
+    return false;
 }
 
 void GateMateImpl::preRoute()
@@ -1400,8 +1435,8 @@ void GateMateImpl::finishRoute()
         if (cell->getPort(port)) {
             NetInfo *net = cell->getPort(port);
             WireId src = ctx->getBelPinWire(cell->bel, port);
-            // In current chip db real CPE input is max 4 pips away
-            for (int i = 0; i < 4; i++) {
+            // In current chip db real CPE input is max 5 pips away (pin, subtree swap, LUT2 input swap, TI, IN)
+            for (int i = 0; i < 6; i++) {
                 if (net->wires.count(src)) {
                     auto &p = net->wires.at(src);
                     src = ctx->getPipSrcWire(p.pip);
@@ -1424,6 +1459,7 @@ void GateMateImpl::finishRoute()
     };
 
     log_info("Update configuration based on routing..\n");
+    int tree_swaps = 0;
     for (auto &cell : ctx->cells) {
         if (cell.second->type.in(id_CPE_L2T4)) {
             cfg.clear();
@@ -1439,24 +1475,56 @@ void GateMateImpl::finishRoute()
             check_input(cell.second.get(), id_D1_01, false);
             check_input(cell.second.get(), id_D0_10, false);
             check_input(cell.second.get(), id_D1_10, false);
-            if (cfg.count(id_LUT2_11) || cfg.count(id_LUT2_10)) {
+            CellInfo *ci = cell.second.get();
+            bool lower = ctx->getBelLocation(ci->bel).z == CPE_LT_L_Z;
+            // The selects of the half: the input swaps of the physical first-level LUT2s (L00/L01, in the
+            // lower half L02/L03) and the swap of the two subtrees
+            const IdString lut_mux[2] = {lower ? id_LUT2_02 : id_LUT2_00, lower ? id_LUT2_03 : id_LUT2_01};
+            auto set = [&](IdString mux) { return cfg.count(mux) && cfg.at(mux) == 1; };
+            // The subtrees swapped: logical first-level LUT t sits at physical LUT t ^ x
+            int x = set(lower ? id_LUT2_11X : id_LUT2_10X) ? 1 : 0;
+            tree_swaps += x;
+            const IdString tree_ports[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
+            bool tree[2];
+            for (int t = 0; t < 2; t++)
+                tree[t] = ci->getPort(tree_ports[t][0]) || ci->getPort(tree_ports[t][1]);
+            // The tables of the physical first-level LUTs; L10's physical inputs are physical L00 then L01
+            int first[2];
+            first[x] = l00;
+            first[x ^ 1] = l01;
+            for (int t = 0; t < 2; t++)
+                if (tree[t] && set(lut_mux[t ^ x]))
+                    first[t ^ x] = swap_lut2_inputs(first[t ^ x]);
+            if (ci->getPort(id_D0_10) || ci->getPort(id_D1_10)) {
                 // A LUT2 alone in the half computes l10 from D0_10 (a) and D1_10 (b). Each input reaches the
-                // half through a first-level LUT j (L00/L02: 0, L01/L03: 1) at its physical input p (IN1/3/5/7:
-                // 0, TI2/4/6/8: 1); read both from the routing. Both through the same LUT: that LUT computes
-                // and L10 passes it on. Otherwise each passes its input on and L10 computes.
+                // half through a physical first-level LUT j (L00/L02: 0, L01/L03: 1) at its physical input p
+                // (IN1/3/5/7: 0, TI2/4/6/8: 1); read both from the routing. Both through the same LUT: that LUT
+                // computes and L10 passes it on. Otherwise each passes its input on and L10 computes.
+                // The LUT is the one of the last LUT2 input wire on the way: the physical P*_0j_int behind the
+                // subtree swap, or in a chip database without it the logical D*_0j_int, which is the physical.
+                auto lut_input_wire = [](const std::string &s, char kind) {
+                    // CPE.D0_01_int, CPE.P1_02_int, ...
+                    return s.size() == 13 && s.compare(0, 4, "CPE.") == 0 && s[4] == kind && isdigit(s[5]) &&
+                           s[6] == '_' && s[7] == '0' && isdigit(s[8]) && s.compare(9, 4, "_int") == 0;
+                };
                 auto trace = [&](IdString port, int &j, int &p) {
                     j = p = -1;
-                    NetInfo *net = cell.second->getPort(port);
+                    NetInfo *net = ci->getPort(port);
                     if (!net)
                         return;
-                    WireId w = ctx->getBelPinWire(cell.second->bel, port);
-                    for (int step = 0; step < 2 && net->wires.count(w) && net->wires.at(w).pip != PipId(); step++) {
+                    WireId w = ctx->getBelPinWire(ci->bel, port);
+                    int lut = -1;
+                    for (int step = 0; step < 6 && net->wires.count(w) && net->wires.at(w).pip != PipId(); step++) {
                         PipId pip = net->wires.at(w).pip;
-                        std::string src = ctx->getPipName(pip)[2].str(ctx); // CPE.D0_01_int, CPE.TI4_int, ...
-                        if (step == 0 && src.size() > 8 && src.compare(0, 5, "CPE.D") == 0)
-                            j = (src[8] - '0') & 1;
-                        if (step == 1)
+                        std::string src = ctx->getPipName(pip)[2].str(ctx);
+                        if (lut_input_wire(src, 'D') || lut_input_wire(src, 'P')) {
+                            lut = (src[8] - '0') & 1;
+                        } else if (lut >= 0) {
+                            // The physical input of that LUT
+                            j = lut;
                             p = src.compare(0, 6, "CPE.TI") == 0 ? 1 : 0;
+                            return;
+                        }
                         w = ctx->getPipSrcWire(pip);
                     }
                 };
@@ -1464,60 +1532,32 @@ void GateMateImpl::finishRoute()
                 trace(id_D0_10, ja, pa);
                 trace(id_D1_10, jb, pb);
                 auto pass = [](int p) { return p == 1 ? 0b1100 : 0b1010; }; // LUT_D1 : LUT_D0
-                int *first[2] = {&l00, &l01};
                 if (ja >= 0 && ja == jb) {
                     NPNR_ASSERT(pa != pb);
-                    *first[ja] = pa == 0 ? l10 : swap_lut2_inputs(l10);
+                    first[ja] = pa == 0 ? l10 : swap_lut2_inputs(l10);
                     l10 = pass(ja);
                 } else {
                     if (ja >= 0)
-                        *first[ja] = pass(pa);
+                        first[ja] = pass(pa);
                     if (jb >= 0)
-                        *first[jb] = pass(pb);
-                    // L10's physical inputs are L00 then L01: swapped where a comes through L01 or b through L00
+                        first[jb] = pass(pb);
+                    // Swapped where a comes through L01 or b through L00 (the subtree a first-level LUT
+                    // computing beside, from place-repair's fusing, sits where the other one is not)
                     if (ja == 1 || jb == 0)
                         l10 = swap_lut2_inputs(l10);
                 }
-                // A first-level LUT computing on its own inputs (place-repair's fusing) where the other passes D0_10
-                // or D1_10 on: its inputs swap like a tree's
-                const IdString tree_ports[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
-                const IdString tree_mux[2] = {cfg.count(id_LUT2_11) ? id_LUT2_02 : id_LUT2_00,
-                                              cfg.count(id_LUT2_11) ? id_LUT2_03 : id_LUT2_01};
-                for (int t = 0; t < 2; t++) {
-                    if (!cell.second->getPort(tree_ports[t][0]) && !cell.second->getPort(tree_ports[t][1]))
-                        continue;
-                    NPNR_ASSERT(ja != t && jb != t);
-                    if (cfg.count(tree_mux[t]) && cfg.at(tree_mux[t]) == 1)
-                        *first[t] = swap_lut2_inputs(*first[t]);
-                    for (IdString port : tree_ports[t])
-                        if (cell.second->getPort(port))
-                            cell.second->renamePort(port, port_mapping[port]);
-                }
-                cell.second->params[id_INIT_L00] = Property(l00, 4);
-                cell.second->params[id_INIT_L01] = Property(l01, 4);
-                cell.second->params[id_INIT_L10] = Property(l10, 4);
-
-                cell.second->renamePort(id_D0_10, port_mapping[id_D0_10]);
-                cell.second->renamePort(id_D1_10, port_mapping[id_D1_10]);
-            } else {
-                if (cfg.count(id_LUT2_00) && cfg.at(id_LUT2_00) == 1)
-                    l00 = swap_lut2_inputs(l00);
-                if (cfg.count(id_LUT2_01) && cfg.at(id_LUT2_01) == 1)
-                    l01 = swap_lut2_inputs(l01);
-                if (cfg.count(id_LUT2_02) && cfg.at(id_LUT2_02) == 1)
-                    l00 = swap_lut2_inputs(l00);
-                if (cfg.count(id_LUT2_03) && cfg.at(id_LUT2_03) == 1)
-                    l01 = swap_lut2_inputs(l01);
-
-                cell.second->params[id_INIT_L00] = Property(l00, 4);
-                cell.second->params[id_INIT_L01] = Property(l01, 4);
-                cell.second->params[id_INIT_L10] = Property(l10, 4);
-
-                cell.second->renamePort(id_D0_00, port_mapping[id_D0_00]);
-                cell.second->renamePort(id_D1_00, port_mapping[id_D1_00]);
-                cell.second->renamePort(id_D0_01, port_mapping[id_D0_01]);
-                cell.second->renamePort(id_D1_01, port_mapping[id_D1_01]);
+                for (int t = 0; t < 2; t++)
+                    NPNR_ASSERT(!tree[t] || (ja != (t ^ x) && jb != (t ^ x)));
+            } else if (x) {
+                l10 = swap_lut2_inputs(l10);
             }
+            cell.second->params[id_INIT_L00] = Property(first[0], 4);
+            cell.second->params[id_INIT_L01] = Property(first[1], 4);
+            cell.second->params[id_INIT_L10] = Property(l10, 4);
+
+            for (IdString port : {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10})
+                if (ci->getPort(port) && port_mapping.count(port))
+                    ci->renamePort(port, port_mapping.at(port));
             if (cfg.count(id_C_I1) && cfg.at(id_C_I1) == 1)
                 cell.second->params[id_C_I1] = Property(1, 1);
             if (cfg.count(id_C_I2) && cfg.at(id_C_I2) == 1)
@@ -1615,6 +1655,8 @@ void GateMateImpl::finishRoute()
             }
         }
     }
+    if (tree_swaps > 0)
+        log_info("    %d LUT trees routed with their subtrees swapped.\n", tree_swaps);
     ctx->assignArchInfo();
 
     const ArchArgs &args = ctx->args;
@@ -1759,7 +1801,8 @@ GroupId GateMateImpl::getResourceKeyForPip(PipId pip) const
 int GateMateImpl::getResourceValueForPip(PipId pip) const
 {
     const auto &extra_data = *pip_extra_data(pip);
-    if (extra_data.type != PipExtra::PIP_EXTRA_MUX || extra_data.resource == 0)
+    // (the virtual resources, the subtree swaps, have a group but no resource mask)
+    if (extra_data.type != PipExtra::PIP_EXTRA_MUX || extra_data.group_index == 0)
         return 0;
     return extra_data.value;
 }

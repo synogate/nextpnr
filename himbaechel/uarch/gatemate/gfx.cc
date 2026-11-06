@@ -320,6 +320,10 @@ Anchor cpe_anchor(const std::string &n)
         return cpe(TI_X1, row(9));
     if (n == "EN_int")
         return cpe(TI_X1, row(10));
+    if (n.size() == 9 && n[0] == 'P' && n[2] == '_' && ends_with(n, "_int") && isdigit(n[1])) {
+        // Physical first-level LUT2 inputs P{0,1}_{lut}_int: where the logical ones D{0,1}_{lut}_int are
+        return cpe(L1_X0, row(2 * (n[4] - '0') + 1 + (n[1] - '0')));
+    }
     if (n.size() >= 7 && n[0] == 'D' && n[2] == '_' && ends_with(n, "_int") && isdigit(n[1])) {
         // LUT2 inputs D{0,1}_{lut}_int
         int d = n[1] - '0';
@@ -876,8 +880,16 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         path({Pt{L1_X1, m}, Pt{L2_X0, m}});
         return;
     }
-    // A first-level LUT2 input: straight in, in the source's row (each input has its own row)
-    if (lut_input(dn)) {
+    // The virtual subtree swap (P*_0n_int to D*_0n_int): the physical input goes into its LUT2 (postRoute moves
+    // the tables to where the signals are), so only a short hook into the box and back to its edge at the logical
+    // input's row
+    if (lut_input(dn) && sn.size() == 9 && sn[0] == 'P') {
+        path({S, Pt{L1_X0 + 0.004f, S.y}, Pt{L1_X0, D.y + 0.004f}});
+        return;
+    }
+    // A first-level LUT2 input (logical D or physical P): straight in, in the source's row (each input has its
+    // own row)
+    if (lut_input(dn) || (dn.size() == 9 && dn[0] == 'P' && ends_with(dn, "_int"))) {
         path({S, Pt{L1_X0, S.y}});
         return;
     }

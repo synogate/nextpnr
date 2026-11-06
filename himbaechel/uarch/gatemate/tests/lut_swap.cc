@@ -21,6 +21,7 @@
 // the function is tested with the fuzzer's netlists (swapped_lut_inputs_match_reference).
 
 #include <random>
+#include <regex>
 #include "router2.h"
 #include "testing.h"
 
@@ -77,4 +78,63 @@ TEST_F(GateMateTest, undone_lut_swaps_restore_cells_and_routing)
                 ADD_FAILURE() << entry.first << ": " << entry.second << " -> "
                               << (after.count(entry.first) ? after.at(entry.first) : "(gone)");
     EXPECT_EQ(differences, 0);
+}
+
+namespace {
+// The number the log reports for `pattern`'s first group, summed over its lines
+int logged_count(const std::string &log, const std::string &pattern)
+{
+    std::regex re(pattern);
+    int sum = 0;
+    for (auto it = std::sregex_iterator(log.begin(), log.end(), re); it != std::sregex_iterator(); ++it)
+        sum += std::stoi((*it)[1]);
+    return sum;
+}
+} // namespace
+
+// The router may swap the two subtrees of a half (the virtual LUT2_10X/LUT2_11X selects): postRoute
+// moves the first-level tables and swaps L10's inputs. Registered random LUT trees and LUT2s (alone in
+// a half, through the first level to L10), routed, must compute the same, with some trees swapped, and
+// none with --no-lut-tree-swap or a chip database without the swap.
+TEST_F(GateMateTest, routed_subtree_swaps_match_reference)
+{
+    auto build = [&] {
+        std::mt19937 rng(5);
+        NetInfo *clk = global_clock("clk");
+        std::vector<NetInfo *> signals;
+        for (int i = 0; i < 12; i++)
+            signals.push_back(dff(stringf("in_ff%d", i), input(stringf("in%d", i)), clk)->getPort(id_Q));
+        for (int n = 0; n < 60; n++) {
+            auto pick = [&]() { return signals.at(rng() % signals.size()); };
+            NetInfo *y = n % 3 == 2 ? lut2(stringf("l%d", n), rng() & 0xf, pick(), pick())
+                                    : l2t4(stringf("t%d", n), rng() & 0xf, rng() & 0xf, rng() & 0xf, pick(), pick(),
+                                           pick(), pick());
+            signals.push_back(dff(stringf("ff%d", n), y, clk)->getPort(id_Q));
+        }
+        for (int i = 0; i < 12; i++)
+            output(stringf("out%d", i), signals.at(signals.size() - 1 - i));
+    };
+    for (bool swap : {true, false}) {
+        SCOPED_TRACE(swap ? "subtree swaps" : "--no-lut-tree-swap");
+        // (no bridges and CP lines: the reference model has none)
+        std::vector<std::string> opts = {"--allow-unconstrained", "--no-bridges", "--no-cpe-cp"};
+        if (!swap)
+            opts.push_back("--no-lut-tree-swap");
+        init_context("CCGM1A1", opts);
+        LogCapture info(LogLevel::INFO_MSG);
+        EXPECT_TRUE(implementation_matches_reference(build, 100, 1, nullptr, [&] { ctx->route(); }));
+        int swapped = logged_count(info.str(), "(\\d+) LUT trees routed with their subtrees swapped");
+        // (a chip database from before the virtual subtree swap has none: the function must still match)
+        bool in_chipdb = false;
+        for (BelId bel : ctx->getBels())
+            if (ctx->getBelType(bel) == id_CPE_LT_U) {
+                in_chipdb = ctx->getWireByName(IdStringList::concat(ctx->getBelName(bel)[0],
+                                                                    ctx->id("CPE.P0_00_int"))) != WireId();
+                break;
+            }
+        if (swap && in_chipdb)
+            EXPECT_GT(swapped, 0);
+        else
+            EXPECT_EQ(swapped, 0);
+    }
 }
