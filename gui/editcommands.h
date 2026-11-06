@@ -275,6 +275,7 @@ QString describePlaceCell(Context *ctx, IdString cell, BelId bel);
 
 // Rip-up (see netstatus.h for the arc model). The binding of the net's source wire is kept, as
 // after routing (the routers bind it themselves when missing, and rip up only what is not locked).
+// Locked routing (a wire bound above STRENGTH_STRONG, see "Lock routing") is refused: unlock first.
 // Remove all routing of a net: every wire except the source wire.
 std::string addUnrouteNet(EditBatch &b, IdString net);
 // Remove the routing serving only the arc to `sink` (a sink wire of the net): from the sink wire
@@ -282,6 +283,11 @@ std::string addUnrouteNet(EditBatch &b, IdString net);
 std::string addUnrouteArc(EditBatch &b, IdString net, WireId sink);
 // Remove a bound pip, its destination wire and everything of the net downstream of it.
 std::string addRemovePip(EditBatch &b, PipId pip);
+
+// Before writing the design (File > Save JSON): store the current placement and routing in the
+// attributes the JSON carries (archInfoToAttributes, which only the placer / router call), and drop
+// the stale placement attributes of cells unplaced by hand. The caller holds the context lock.
+void prepareDesignForWrite(Context *ctx);
 
 // A set of commands applied as one unit (one undo entry). Only constructed by EditStack::run.
 class EditBatch
@@ -293,6 +299,8 @@ class EditBatch
     std::string add(std::unique_ptr<EditCommand> cmd);
     bool empty() const { return cmds.empty(); }
     size_t size() const { return cmds.size(); }
+    // Revert (newest first) and drop the commands added after the first n
+    void rollbackTo(size_t n);
 
   private:
     friend class EditStack;

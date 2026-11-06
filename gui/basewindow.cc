@@ -42,6 +42,7 @@
 #include "log.h"
 #include "mainwindow.h"
 #include "pythontab.h"
+#include "routedock.h"
 #include "version.h"
 
 static void initBasenameResource() { Q_INIT_RESOURCE(base); }
@@ -146,6 +147,12 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     fpgaView->setEditStack(editStack);
     connect(editStack, &EditStack::designChanged, designview, &DesignWidget::refreshAfterEdit);
     connect(editStack, &EditStack::stateChanged, this, &BaseMainWindow::editStateChanged);
+
+    // Route mode candidates as lists (shown when route mode starts)
+    routeDock = new RouteDock(fpgaView, editStack, this);
+    addDockWidget(Qt::RightDockWidgetArea, routeDock);
+    routeDock->hide();
+    connect(editStack, &EditStack::designChanged, routeDock, &RouteDock::scheduleRefresh);
 
     // Catch close tab events
     connect(centralTabWidget, &QTabWidget::tabCloseRequested, this, &BaseMainWindow::closeTab);
@@ -483,6 +490,10 @@ void BaseMainWindow::createMenusAndBars()
 
     // Add View menu actions
     menuView->addAction(actionShowUnrouted);
+    QAction *actionRouteDock = routeDock->toggleViewAction();
+    actionRouteDock->setText("Route candidates");
+    actionRouteDock->setStatusTip("Show the route mode candidates (head, downhill pips, session pips, arcs) as lists");
+    menuView->addAction(actionRouteDock);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);
@@ -647,7 +658,14 @@ bool BaseMainWindow::writeJson(const std::string &filename)
     beforeSave();
     std::string fn = filename;
     std::ofstream f(fn);
-    bool ok = f && write_json_file(f, fn, ctx.get());
+    bool ok = bool(f);
+    if (ok) {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        // Manual edits since the last place / route
+        prepareDesignForWrite(ctx.get());
+        ok = write_json_file(f, fn, ctx.get());
+    }
     log(ok ? "Saving JSON successful.\n" : "Saving JSON failed.\n");
     return ok;
 }

@@ -1,0 +1,152 @@
+# Phase 3c: route dock (candidates, session pips, arcs), waypoint routing (dock "Route to", Ctrl+click,
+# arc double-click), Route arc / Route rest of net, Lock / Unlock routing; the result is checked in Python
+# (tree connected, every sink wire of the router's routing reached) and saved as JSON.
+# design: counter_pnr
+resize 1600 1000
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; nw=lambda: len(ctx.nets[N].wires); T0={str(w):m.pip for w,m in ctx.nets[N].wires}; print(len(T0), T0)
+# (the router's routing continues below the sink pin wire X77Y116/CPE.IN8_int into the CPE; the check needs the sink pin wire)
+py S=[w for w in T0 if not T0[w]][0]; L0=["X77Y116/CPE.IN8_int"]; print("source", S, "sinks", L0, [w for w in T0 if not any(p and ctx.getPipSrcWire(p)==w for p in T0.values())])
+py tree=lambda: {str(w):m.pip for w,m in ctx.nets[N].wires}
+py ok=lambda: (lambda T: all(w==S or (T[w] and ctx.getPipSrcWire(T[w]) in T and ctx.getPipDstWire(T[w])==w and ctx.getBoundWireNet(w).name==N) for w in T) and all(l in T for l in L0))(tree())
+py for u in ctx.nets[N].users: print("user", u.cell.name, u.port, u.cell.bel)
+assert_py ok()
+key E
+# --- rip the net up, start route mode: the dock shows the head and its candidates
+zoombel X77Y116/CPE_LT_L 1.2
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+menu Unroute net
+wait 300
+assert_py nw() <= 1
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+key R
+wait 400
+dock cands
+dock sinks
+zoomwire X78Y116/CPE.COMBOUT1_int 0.6
+wait 300
+shot 01_dock.png
+# --- bind the first pip from the dock (the source wire has no graphics in the view)
+dock cands X78Y116/CPE.OUT1_int
+wait 200
+assert_py nw() == 2
+assert_status from X78Y116/CPE.OUT1_int
+dock steps
+# --- waypoint by name: the shortest free path from the head to the input mux of the sink CPE
+settext routeTarget X77Y116/IM.P08.Y
+button Route to
+wait 300
+status
+# (X77Y116/IM.P08.Y is an alias of the node X76Y115/IM.P08.D5_n)
+assert_status Route $auto$alumacc.cc:512:replace_alu$26.Y[0] to X76Y115/IM.P08.D5_n: 5 pips
+assert_status from X76Y115/IM.P08.D5_n
+py print(nw(), sorted(tree()))
+dock steps
+zoombel X77Y116/CPE_LT_L 1.2
+wait 300
+shot 02_waypoint.png
+# --- the path is one undo entry: Backspace takes it back as a whole
+focus view
+key Backspace
+wait 300
+assert_py nw() == 2
+assert_status from X78Y116/CPE.OUT1_int
+# --- Ctrl+click on the sink's bel: routes from the head to the sink wire (arc routed)
+clickbel X77Y116/CPE_LT_L left ctrl
+wait 300
+status
+assert_status arc to
+assert_py ok()
+zoombel X77Y116/CPE_LT_L 0.6
+wait 300
+shot 03_ctrl_click_sink.png
+# --- lock the routing (dock button): drawn thick, Backspace and Remove pip refuse
+button Lock
+wait 300
+assert_py all(int(m.strength) == 6 for w,m in ctx.nets[N].wires)
+focus view
+key Backspace
+wait 200
+assert_status cannot take back
+assert_py ok()
+zoombel X78Y116/CPE_LT_L 1.6
+wait 300
+shot 04_locked.png
+key Esc
+zoombel X77Y116/CPE_LT_L 1.2
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+assert_menu Unlock routing of
+menu Remove pip
+wait 300
+assert_status locked
+assert_py ok()
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+menu Unlock routing of
+wait 300
+assert_py not any(int(m.strength) > 2 for w,m in ctx.nets[N].wires)
+# --- Route arc from the route mode menu: unroute the arc, then route it again from the source
+clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+menu Unroute arc
+wait 300
+assert_py not ok()
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+key R
+wait 300
+click 300 200 right
+assert_menu Route rest of net
+menu Route arc to
+wait 300
+status
+assert_status Route arc
+assert_py ok()
+key Esc
+# --- Route rest of net from the dock after a full rip-up (one undo entry)
+zoombel X77Y116/CPE_LT_L 0.6
+clickpip X77Y116/CPE.IN8_int/CPE.IN8 right
+menu Unroute net
+wait 300
+assert_py nw() <= 1
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+key R
+wait 300
+button Route rest
+wait 500
+status
+assert_status arcs routed
+assert_py ok()
+dock sinks
+shot 05_route_rest.png
+key Ctrl+Z
+wait 300
+assert_py nw() <= 1
+key Ctrl+Y
+wait 300
+assert_py ok()
+key Esc
+# --- a net with 17 sinks (a bridge net: its source wire is driven by a pip of another net): Unroute net,
+# then Route rest of net from the wire menu routes all arcs as one undo entry
+py import re; B="$abc$348$iopadmap$rst$bridge0$muxout"; TB={str(w):m.pip for w,m in ctx.nets[B].wires}; LB=[w for w in TB if re.search(r"CPE\.IN\d+_int$", w)]; print(len(TB), "sinks", len(LB), LB)
+# (one root: the source wire, driven by a pip of the CP-line net; every other wire driven from a wire of the net)
+py okb=lambda: (lambda T: all(ctx.getBoundWireNet(w).name==B for w in T) and sum(1 for w in T if not T[w] or ctx.getPipSrcWire(T[w]) not in T) == 1 and all(l in T for l in LB))({str(w):m.pip for w,m in ctx.nets[B].wires})
+assert_py okb()
+zoombel X77Y128/CPE_LT_L 0.6
+clickpip X77Y128/CPE.IN5_int/CPE.IN5 right
+menu Unroute net
+wait 300
+assert_py not okb()
+py print(len(ctx.nets[B].wires))
+zoombel X79Y127/CPE_LT_L 0.6
+selectnet $abc$348$iopadmap$rst$bridge0$muxout
+key R
+wait 300
+route
+button Route rest
+wait 500
+status
+assert_status 17 arcs routed (17/17 arcs routed, 0 conflicts)
+assert_py okb()
+py print(len(ctx.nets[B].wires), "wires (router:", len(TB), ")")
+key Esc
+zoombel X78Y126/CPE_LT_L 3
+wait 300
+shot 06_bridge_net_routed.png
+savejson routed_3c.json

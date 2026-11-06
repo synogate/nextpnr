@@ -4,6 +4,8 @@ set(CMAKE_AUTOMOC ON)
 set(GUI_SOURCES
     application.cc
     application.h
+    autoroute.cc
+    autoroute.h
     basewindow.cc
     basewindow.h
     designwidget.cc
@@ -31,6 +33,8 @@ set(GUI_SOURCES
     pyconsole.h
     pythontab.cc
     pythontab.h
+    routedock.cc
+    routedock.h
     quadtree.h
     textshader.cc
     textshader.h

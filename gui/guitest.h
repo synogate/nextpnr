@@ -80,6 +80,15 @@
  *                              boxes in order, e.g. dialog 2 -1 for "Move selection by")
  *   dialog_cancel              reject the open dialog
  *   check <text> on|off        set a checkable button (e.g. a checkbox) starting with text
+ *   savejson <file.json>       write the design as JSON (like File > Save), e.g. to check it without the
+ *                              GUI afterwards
+ *   button <text>              click the visible push button whose text starts with text (fails if
+ *                              it is disabled)
+ *   settext <objectName> <text> set the text of a line edit (e.g. routeTarget in the route dock)
+ *   dock cands|steps|sinks [text]
+ *                              route dock lists: without text, log the rows; with text, activate
+ *                              the row with a column starting with text (cands / sinks: like a
+ *                              double-click) or click the session pip row containing text (steps)
  *   status                     print the status bar texts (message, last message, selection,
  *                              placement)
  *   assert_status <substring>  one of these texts contains substring

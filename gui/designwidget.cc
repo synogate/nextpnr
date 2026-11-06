@@ -35,6 +35,7 @@
 #include <QSplitter>
 #include <QToolBar>
 #include <QTreeWidgetItem>
+#include "autoroute.h"
 #include "editcommands.h"
 #include "elementinfo.h"
 #include "netstatus.h"
@@ -1918,6 +1919,7 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
                     if (arcs.size() > max_arcs)
                         sub->addAction(QString("... %1 more").arg(arcs.size() - max_arcs))->setEnabled(false);
                 }
+                addAutoRouteActions(menu, editStack, net);
             }
         }
     }

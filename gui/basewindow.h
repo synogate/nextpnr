@@ -46,6 +46,7 @@ class EditStack;
 class DesignWidget;
 class TimingWidget;
 class FPGAViewWidget;
+class RouteDock;
 
 class BaseMainWindow : public QMainWindow
 {
@@ -157,6 +158,7 @@ class BaseMainWindow : public QMainWindow
     TimingWidget *timingview;
     QTabWidget *rightTabWidget;
     FPGAViewWidget *fpgaView;
+    RouteDock *routeDock;
 
     // Menus, bars and actions
     QMenuBar *menuBar;

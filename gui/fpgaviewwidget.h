@@ -106,6 +106,23 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     IdString armedCell() const { return armedCell_; }
     IdString routingNet() const { return routeNet_; }
     WireId routingHead() const { return routeHead_; }
+    Context *getContext() const { return ctx_; }
+
+    // Route mode candidates: the pips downhill of the head, by class (free, used by another net,
+    // unavailable)
+    static constexpr int ROUTE_OK = 0, ROUTE_OTHER = 1, ROUTE_UNAVAIL = 2, ROUTE_DST = 3, ROUTE_HEAD = 4;
+    struct RouteCand
+    {
+        PipId pip;
+        WireId dst;
+        int cls = ROUTE_UNAVAIL;
+        bool bound = false; // already a pip of the net: a click only moves the head
+        std::string why;    // for ROUTE_OTHER / ROUTE_UNAVAIL
+        float delay = 0;    // ns
+    };
+    const std::vector<RouteCand> &routeCandidates() const { return routeCands_; }
+    // The pips bound in this route session, in order
+    std::vector<PipId> routeSessionPips() const;
 
   protected:
     // Qt callbacks.
@@ -182,6 +199,15 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     // the net moves the head there. Backspace takes back the last pip of this session, Esc ends.
     void startRouting(IdString net, WireId from);
     void stopRouting();
+    // Route mode: bind a candidate pip downhill of the head (as a click on it does)
+    void routeThroughPip(PipId pip);
+    // Route mode: move the head to a wire of the net
+    void setRouteHead(WireId wire);
+    // Route mode (Ctrl+click): bind the shortest free path from the head to a wire (one undo
+    // entry, see autoroute.h) and move the head there; "" or the reason (also in the status bar)
+    std::string routeToWire(WireId target);
+    // Backspace: take back the last step of this session (refused if that routing is locked now)
+    void routeBack();
     // Esc: cancel placement or end routing
     void cancelInteraction();
   Q_SIGNALS:
@@ -198,6 +224,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void nudgeRequested(int dx, int dy);
     // Select a net in the Nets tree (after rip-up from the context menu)
     void showNetRequested(IdString net);
+    // Route mode started / ended, or its head, candidates or session pips changed
+    void routeStateChanged();
 
   private:
     std::vector<Overlay> overlays_;
@@ -403,32 +431,25 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
     // Net view and ratsnest: decal sets (routing tree, source wire, routed sink wires, sink wires of
     // arcs not routed) and line sets (ratsnest of the net, of all nets)
-    static constexpr int NET_TREE = 0, NET_SOURCE = 1, NET_SINK = 2, NET_SINK_BAD = 3, NET_DECAL_SETS = 4;
+    // (and the locked part of the tree, drawn thick)
+    static constexpr int NET_TREE = 0, NET_SOURCE = 1, NET_SINK = 2, NET_SINK_BAD = 3, NET_LOCKED = 4,
+                         NET_DECAL_SETS = 5;
     static constexpr int NET_RATSNEST = 0, ALL_RATSNEST = 1, NET_LINE_SETS = 2;
     static constexpr int NET_SLOTS = NET_DECAL_SETS + NET_LINE_SETS;
     static constexpr int MAX_RATSNEST = 20000;
     static int netSlot(int i) { return overlaySlot(OVERLAY_SLOTS) + i; }
 
-    // Route mode (see startRouting): candidate pips by class, their destination wires (faint), the head
-    static constexpr int ROUTE_OK = 0, ROUTE_OTHER = 1, ROUTE_UNAVAIL = 2, ROUTE_DST = 3, ROUTE_HEAD = 4;
+    // Route mode overlay slots (see ROUTE_OK ...)
     static constexpr int ROUTE_SLOTS = 5;
     static int routeSlot(int i) { return netSlot(NET_SLOTS) + i; }
-    struct RouteCand
-    {
-        PipId pip;
-        WireId dst;
-        int cls = ROUTE_UNAVAIL;
-        bool bound = false; // already a pip of the net: a click only moves the head
-        std::string why;    // for ROUTE_OTHER / ROUTE_UNAVAIL
-        float delay = 0;    // ns
-    };
     IdString routeNet_;
     WireId routeHead_;
     std::vector<RouteCand> routeCands_;
-    // Pips bound in this session, with the head before and the undo stack index after binding
+    // Pips bound in this session (one click, or one path found by Ctrl+click), with the head before
+    // and the undo stack index after binding
     struct RouteStep
     {
-        PipId pip;
+        std::vector<PipId> pips;
         WireId prevHead;
         int undoIndex;
     };
@@ -443,9 +464,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     WireId routeTreeWire(const std::vector<PickedElement> &cands);
     // Bind the candidate's pip (or follow it if bound) and move the head; "" or the reason
     std::string routeThrough(int index);
-    void setRouteHead(WireId wire);
-    // Backspace: take back the last pip of this session
-    void routeBack();
+    // Ctrl+click: the wire to route to for the elements under the cursor (the first unrouted sink
+    // wire of the net on a bel here, else the hovered / first wire, else the destination of a pip)
+    WireId routeTarget(const std::vector<PickedElement> &cands);
     // After an edit / undo: drop the steps undone, keep the head on the net
     void syncRouteState();
     std::string routeCandText(const RouteCand &c);

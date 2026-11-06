@@ -660,6 +660,13 @@ namespace {
 
 std::string unbindWires(EditBatch &b, const std::vector<WireId> &wires)
 {
+    Context *ctx = b.getContext();
+    for (WireId w : wires) {
+        NetInfo *ni = ctx->getBoundWireNet(w);
+        if (ni != nullptr && ni->wires.count(w) && ni->wires.at(w).strength > STRENGTH_STRONG)
+            return "the routing of net " + q(ni->name.str(ctx)) + " at " + q(ctx->nameOfWire(w)) +
+                   " is locked (" + strengthName(ni->wires.at(w).strength) + "): unlock its routing first";
+    }
     for (WireId w : wires) {
         std::string err = b.add(std::make_unique<UnbindWireCmd>(w));
         if (!err.empty())
@@ -712,6 +719,18 @@ std::string addRemovePip(EditBatch &b, PipId pip)
     return unbindWires(b, NetStatus::subtree(down, dst));
 }
 
+void prepareDesignForWrite(Context *ctx)
+{
+    ctx->archInfoToAttributes();
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->bel == BelId()) {
+            ci->attrs.erase(ctx->id("NEXTPNR_BEL"));
+            ci->attrs.erase(ctx->id("BEL_STRENGTH"));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EditBatch
 
@@ -728,6 +747,14 @@ std::string EditBatch::add(std::unique_ptr<EditCommand> cmd)
     }
     cmds.push_back(std::move(cmd));
     return {};
+}
+
+void EditBatch::rollbackTo(size_t n)
+{
+    while (cmds.size() > n) {
+        cmds.back()->revert(ctx);
+        cmds.pop_back();
+    }
 }
 
 // ---------------------------------------------------------------------------

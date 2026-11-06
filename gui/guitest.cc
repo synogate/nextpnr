@@ -26,6 +26,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMessageBox>
@@ -37,6 +39,8 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeView>
+#include <QTreeWidget>
+#include <fstream>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -57,6 +61,7 @@
 #include "designwidget.h"
 #include "editcommands.h"
 #include "fpgaviewwidget.h"
+#include "jsonwrite.h"
 #include "pyinterpreter.h"
 #include "pythontab.h"
 
@@ -1052,6 +1057,102 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         }
         error_ = "no checkable button '" + want + "'";
         return false;
+    }
+    if (cmd == "savejson") {
+        if (!need(1))
+            return false;
+        Context *ctx = win_->getContext();
+        QFileInfo fi(rest); // relative to the working directory (the test's output directory)
+        std::string fn = fi.absoluteFilePath().toStdString();
+        std::ofstream f(fn);
+        bool ok;
+        {
+            std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+            std::lock_guard<std::mutex> lock(ctx->mutex);
+            prepareDesignForWrite(ctx);
+            ok = f && write_json_file(f, fn, ctx);
+        }
+        if (!ok) {
+            error_ = "cannot write " + fi.absoluteFilePath();
+            return false;
+        }
+        log("  saved " + fi.absoluteFilePath());
+        return true;
+    }
+    if (cmd == "button") {
+        if (!need(1))
+            return false;
+        for (QAbstractButton *b : win_->findChildren<QAbstractButton *>()) {
+            if (b->isCheckable() || !b->isVisible() || !plain(b->text()).startsWith(rest, Qt::CaseInsensitive))
+                continue;
+            if (!b->isEnabled()) {
+                error_ = "button '" + plain(b->text()) + "' is disabled";
+                return false;
+            }
+            log("  click '" + plain(b->text()) + "'");
+            b->click();
+            return true;
+        }
+        error_ = "no visible button '" + rest + "'";
+        return false;
+    }
+    if (cmd == "settext") {
+        if (!need(2))
+            return false;
+        QLineEdit *e = win_->findChild<QLineEdit *>(w.at(1));
+        if (e == nullptr) {
+            error_ = "no line edit " + w.at(1);
+            return false;
+        }
+        e->setText(QStringList(w.mid(2)).join(' '));
+        return true;
+    }
+    if (cmd == "dock") {
+        if (!need(1))
+            return false;
+        static const QMap<QString, QString> names{
+                {"cands", "routeCandidates"}, {"steps", "routeSteps"}, {"sinks", "routeSinks"}};
+        QString obj = names.value(w.at(1).toLower(), w.at(1));
+        QString want = QStringList(w.mid(2)).join(' ');
+        if (QTreeWidget *t = win_->findChild<QTreeWidget *>(obj)) {
+            for (int i = 0; i < t->topLevelItemCount(); i++) {
+                QTreeWidgetItem *item = t->topLevelItem(i);
+                QStringList cols;
+                bool hit = false;
+                for (int c = 0; c < t->columnCount(); c++) {
+                    cols << item->text(c);
+                    hit |= !want.isEmpty() && item->text(c).startsWith(want);
+                }
+                if (want.isEmpty()) {
+                    log("  " + cols.join(" | "));
+                } else if (hit) {
+                    log("  activate: " + cols.join(" | "));
+                    t->setCurrentItem(item);
+                    Q_EMIT t->itemActivated(item, 0);
+                    return true;
+                }
+            }
+        } else if (QListWidget *l = win_->findChild<QListWidget *>(obj)) {
+            for (int i = 0; i < l->count(); i++) {
+                QListWidgetItem *item = l->item(i);
+                if (want.isEmpty()) {
+                    log("  " + item->text());
+                } else if (item->text().contains(want)) {
+                    log("  click: " + item->text());
+                    l->setCurrentItem(item);
+                    Q_EMIT l->itemClicked(item);
+                    return true;
+                }
+            }
+        } else {
+            error_ = "no dock list " + obj;
+            return false;
+        }
+        if (!want.isEmpty()) {
+            error_ = "no row '" + want + "' in " + obj;
+            return false;
+        }
+        return true;
     }
     if (cmd == "status") {
         QStringList t = statusTexts();
