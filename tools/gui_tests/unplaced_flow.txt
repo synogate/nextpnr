@@ -1,0 +1,54 @@
+# Unplaced design: Pack in the GUI, then place cells by hand (LUT, register, a cluster), Next unplaced.
+# design: counter_synth
+resize 1400 1000
+action Pack
+waitidle
+py un=lambda: sum(1 for n, c in ctx.cells if c.bel is None); U0=un(); print("unplaced after pack:", U0)
+assert_py U0 > 50
+py L="$abc$348$auto$blifparse.cc:397:parse_blif$384"; F="$auto$ff.cc:337:slice$106"; A="$auto$alumacc.cc:512:replace_alu$26.slice[1].addf_i"; at=lambda n: str(ctx.cells[n].bel)
+py print(at(L), at(F), at(A))
+key E
+check Unplaced only on
+# --- a LUT by click: packed with its register into a cluster (2 cells), placed together
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Placing cluster $abc$348$auto$blifparse.cc:397:parse_blif$384 (2 cells)
+zoombel X40Y60/CPE_LT_L 1.2
+hoverbel X40Y60/CPE_LT_L
+wait 300
+shot 01_armed_unplaced.png
+clickbel X40Y60/CPE_LT_L
+wait 200
+assert_status Place cluster $abc$348$auto$blifparse.cc:397:parse_blif$384 at X40Y60/CPE_LT_L
+py print(at(L), at(F), un())
+assert_py at(L) == "X40Y60/CPE_LT_L" and at(F).startswith("X40Y60/") and un() == U0 - 2
+# --- the register is part of the cluster: selecting it arms the cluster root
+selectcell $auto$ff.cc:337:slice$106
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$384
+key Esc
+shot 02_lut_ff_placed.png
+# --- the adder chain: a cluster, placed as a whole from its root
+selectcell $auto$alumacc.cc:512:replace_alu$26.slice[1].addf_i
+assert_status Placing cluster $auto$alumacc.cc:512:replace_alu$26.slice[1].addf_i (33 cells)
+status
+py print([n for n, c in ctx.cells if c.bel is None and "replace_alu" in n][:6])
+zoombel X44Y60/CPE_LT_L 1.2
+hoverbel X44Y60/CPE_LT_L
+wait 300
+status
+shot 03_cluster_armed.png
+clickbel X44Y60/CPE_LT_L
+wait 300
+status
+py print(at(A), un())
+assert_py ctx.cells[A].bel is not None
+shot 04_cluster_placed.png
+key Ctrl+Z
+assert_py ctx.cells[A].bel is None
+key Ctrl+Y
+assert_py ctx.cells[A].bel is not None
+# --- Next unplaced arms some other unplaced cell
+key Esc
+key N
+status
+assert_status Placing
+shot 05_next_unplaced.png

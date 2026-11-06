@@ -4,11 +4,12 @@
 
 .DESCRIPTION
   Each script names its design in a line "# design: <name>":
-    dff_pnr      prjpeppercorn-test-cases/035-dff-ffobf/dff-ffobf_olimex_pnr.json (placed and routed; all
-                 cells FIXED by the packer)
-    dff_synth    035-dff-ffobf/dff-ffobf.json with -o ccf=olimex.ccf (not packed; Pack in the GUI)
-    counter_pnr  008-counter synthesized with yosys and placed and routed without the GUI (placer cells
-                 WEAK, IO cells FIXED); built once into <OutDir>/designs
+    dff_pnr       prjpeppercorn-test-cases/035-dff-ffobf/dff-ffobf_olimex_pnr.json (placed and routed; all
+                  cells FIXED by the packer)
+    dff_synth     035-dff-ffobf/dff-ffobf.json with -o ccf=olimex.ccf (not packed; Pack in the GUI)
+    counter_pnr   008-counter synthesized with yosys and placed and routed without the GUI (placer cells
+                  WEAK, IO cells FIXED); built once into <OutDir>/designs
+    counter_synth the synthesized 008-counter with its CCF (not packed; Pack in the GUI)
   Results: <OutDir>/<script>/ (guitest.log, PNGs). Prints one line per script and returns the number of
   failed scripts.
 
@@ -19,7 +20,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$Cases = "C:\Users\mio\source\prjpeppercorn-test-cases",
-    [string]$Yosys = "yosys",
+    [string]$Yosys = "",
     [string]$Only = "",
     [int]$TimeoutSec = 240
 )
@@ -28,29 +29,35 @@ $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
 $root = Split-Path -Parent (Split-Path -Parent $here)
 $exe = Join-Path $root "build\Release\nextpnr-himbaechel.exe"
+if ($Yosys -eq "") {
+    $Yosys = if (Test-Path "C:\oss-cad-suite\bin\yosys.exe") { "C:\oss-cad-suite\bin\yosys.exe" } else { "yosys" }
+}
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $designs = Join-Path $OutDir "designs"
 New-Item -ItemType Directory -Force $designs | Out-Null
 
 function Get-Design([string]$name) {
+    $counterCcf = "-o ccf=$Cases\008-counter\olimex.ccf"
     switch ($name) {
         "dff_pnr" { return @{ Json = "$Cases\035-dff-ffobf\dff-ffobf_olimex_pnr.json"; Extra = "" } }
         "dff_synth" {
             return @{ Json = "$Cases\035-dff-ffobf\dff-ffobf.json"; Extra = "-o ccf=$Cases\035-dff-ffobf\olimex.ccf" }
         }
-        "counter_pnr" {
+        { $_ -in "counter_pnr", "counter_synth" } {
             $synth = Join-Path $designs "counter.json"
             $pnr = Join-Path $designs "counter_pnr.json"
             if (-not (Test-Path $synth)) {
                 Push-Location $designs
                 & $Yosys -ql synth.log -p "read_verilog -sv $Cases\008-counter\top.v; synth_gatemate -luttree -top top -json counter.json"
                 Pop-Location
+                if (-not (Test-Path $synth)) { throw "could not synthesize $synth (see $designs\synth.log)" }
             }
+            if ($name -eq "counter_synth") { return @{ Json = $synth; Extra = $counterCcf } }
             if (-not (Test-Path $pnr)) {
                 # without --gui no window opens; run it on the hidden desktop anyway (no console either)
                 & (Join-Path $root "tools\hidden_desktop.ps1") -Exe $exe -WorkDir $designs `
-                    -Arguments "--device CCGM1A1 --json `"$synth`" -o ccf=$Cases\008-counter\olimex.ccf --write `"$pnr`"" `
+                    -Arguments "--device CCGM1A1 --json `"$synth`" $counterCcf --write `"$pnr`"" `
                     -Stdout (Join-Path $designs "pnr.log") -Stderr (Join-Path $designs "pnr_err.log") -TimeoutSec 600 | Out-Null
                 if (-not (Test-Path $pnr)) { throw "could not build $pnr (see $designs\pnr.log)" }
             }
