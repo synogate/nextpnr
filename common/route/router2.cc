@@ -98,6 +98,10 @@ struct Router2
         // This wire has to be used for this net
         int reserved_net = -1;
         static constexpr int RESERVED_UNAVAILABLE = -2;
+        // Arbitration of a lasting conflict: the net the wire was given to (others pay a penalty), and for how
+        // many iterations in a row the wire has been overused
+        int arb_net = -1;
+        int overuse_streak = 0;
         // The notional location of the wire, to guarantee thread safety
         int16_t x = 0, y = 0;
         // Visit data
@@ -129,6 +133,8 @@ struct Router2
     std::vector<PerNetData> nets;
 
     bool timing_driven, timing_driven_ripup;
+    // Cost factor (x criticality x delay) of starting a search from the net's existing routing
+    float tree_seed_cost = 0;
     TimingAnalyser tmg;
 
     void setup_nets()
@@ -472,6 +478,11 @@ struct Router2
         auto &wd = wire_data(wire);
         auto &nd = nets.at(net->udata);
         float base_cost = cfg.get_base_cost(ctx, wire, pip, crit_weight);
+        // Given to another net by arbitration: a flat penalty, not scaled by the history and present congestion
+        // factors like base_cost. Scaled, it grows with curr_cong_weight without bound and makes the wire unusable
+        // for good, even long after the conflict that led to the arbitration has gone (the loser routed around it,
+        // and the conflict it moved to may never be arbitrated): a livelock.
+        float arb_cost = (wd.arb_net >= 0 && wd.arb_net != net->udata) ? arb_penalty : 0.0f;
         int overuse = wd.curr_cong;
         float hist_cost = 1.0f + crit_weight * (wd.hist_cong_cost - 1.0f);
         float bias_cost = 0;
@@ -497,7 +508,7 @@ struct Router2
         }
 
         return base_cost * hist_cost * present_cost / (1 + (source_uses * crit_weight)) + bias_cost +
-               base_cost * resource_hist_cost * resource_present_cost / (1 + crit_weight);
+               base_cost * resource_hist_cost * resource_present_cost / (1 + crit_weight) + arb_cost;
     }
 
     float get_togo_cost(NetInfo *net, store_index<PortRef> user, int wire, WireId src_sink, bool bwd, float crit_weight)
@@ -866,10 +877,17 @@ struct Router2
                 WireScore base_score;
                 base_score.delay = 0;
                 base_score.cost = 0;
+                // Branching off the net's existing routing is not free for a critical arc: the signal has
+                // already spent the tree's delay to get there
+                if (tree_seed_cost > 0 && wire != src_wire && crit > 0) {
+                    float d = ctx->getDelayNS(tree_delay(nd, wire));
+                    base_score.delay = d;
+                    base_score.cost = tree_seed_cost * crit * d;
+                }
                 int wire_idx = wire_to_idx.at(wire);
                 base_score.togo_cost = get_togo_cost(net, i, wire_idx, dst_wire, false, crit_weight);
                 t.fwd_queue.push(QueuedWire(wire_idx, base_score));
-                set_visited_fwd(t, wire_idx, PipId(), 0.0);
+                set_visited_fwd(t, wire_idx, PipId(), base_score.cost);
             };
             auto &dst_data = flat_wires.at(dst_wire_idx);
             // Look for nearby existing routing
@@ -1260,6 +1278,75 @@ struct Router2
     std::vector<int> route_queue;
     std::set<int> failed_nets;
 
+    // Conflict arbitration: a wire overused by the same few nets for arb_after iterations in a row goes to the net
+    // whose arc through it is the most critical; the others pay arb_penalty for it from then on. Negotiation by
+    // history cost alone can make such a wire too expensive for all of them.
+    int arb_after = 0;
+    float arb_penalty = 100.0f, arb_min_crit = 0.5f;
+    int arb_count = 0, arb_revoked = 0;
+    pool<WireId> streak_wires;
+
+    float arc_crit_through(int net_idx, WireId wire)
+    {
+        NetInfo *ni = nets_by_udata.at(net_idx);
+        auto &nd = nets.at(net_idx);
+        float best = -1;
+        for (auto usr : ni->users.enumerate()) {
+            for (auto &ad : nd.arcs.at(usr.index.idx())) {
+                WireId cursor = ad.sink_wire;
+                for (int guard = 0; guard < 100000 && cursor != WireId(); guard++) {
+                    if (cursor == wire) {
+                        best = std::max(best, get_arc_crit(ni, usr.index));
+                        break;
+                    }
+                    auto fnd = nd.wires.find(cursor);
+                    if (cursor == nd.src_wire || fnd == nd.wires.end() || fnd->second.first == PipId())
+                        break;
+                    cursor = ctx->getPipSrcWire(fnd->second.first);
+                }
+            }
+        }
+        return best;
+    }
+
+    void arbitrate(const dict<WireId, std::vector<int>> &overused_by)
+    {
+        for (auto w : streak_wires)
+            if (!overused_by.count(w))
+                wire_data(w).overuse_streak = 0;
+        streak_wires.clear();
+        for (auto &ov : overused_by) {
+            streak_wires.insert(ov.first);
+            auto &wd = wire_data(ov.first);
+            ++wd.overuse_streak;
+            if (wd.arb_net >= 0 && wd.overuse_streak >= 3 * arb_after + 5) {
+                // The arbitration did not resolve the conflict (the loser has no other way): hand the wire back
+                // to plain negotiation for good, or the router can stall here
+                wd.arb_net = -2;
+                ++arb_revoked;
+                continue;
+            }
+            if (wd.overuse_streak < arb_after || wd.arb_net != -1 || ov.second.size() > 3)
+                continue;
+            int winner = -1;
+            float best = -1;
+            for (int n : ov.second) {
+                float c = arc_crit_through(n, ov.first);
+                if (c > best) {
+                    best = c;
+                    winner = n;
+                }
+            }
+            if (winner < 0 || best < arb_min_crit)
+                continue;
+            wd.arb_net = winner;
+            if (arb_count++ < 20)
+                log_info("    arbitration: %s goes to %s (crit %.3f, %d nets, overused %d iterations)\n",
+                         ctx->nameOfWire(ov.first), ctx->nameOf(nets_by_udata.at(winner)), best,
+                         int(ov.second.size()), wd.overuse_streak);
+        }
+    }
+
     void update_congestion()
     {
         total_wire_overuse = 0;
@@ -1271,12 +1358,15 @@ struct Router2
         failed_nets.clear();
         pool<WireId> already_updated_wires;
         pool<GroupId> already_updated_resources;
+        dict<WireId, std::vector<int>> overused_by;
         for (size_t i = 0; i < nets.size(); i++) {
             auto &nd = nets.at(i);
             for (const auto &w : nd.wires) {
                 ++total_wire_use;
                 auto &wd = wire_data(w.first);
                 if (wd.curr_cong > 1) {
+                    if (arb_after > 0)
+                        overused_by[w.first].push_back(int(i));
                     if (already_updated_wires.count(w.first)) {
                         ++total_wire_overuse;
                     } else {
@@ -1306,6 +1396,8 @@ struct Router2
                 }
             }
         }
+        if (arb_after > 0)
+            arbitrate(overused_by);
         for (int n : failed_nets) {
             auto &net_data = nets.at(n);
             ++net_data.fail_count;
@@ -1694,6 +1786,24 @@ struct Router2
                 route_net(tcs.at(N), fail, false);
     }
 
+    // Delay of the net's existing routing from its source to wire (0 if the wire is not reached from the source)
+    delay_t tree_delay(const PerNetData &nd, WireId wire)
+    {
+        delay_t delay = 0;
+        WireId cursor = wire;
+        for (int guard = 0; guard < 100000; guard++) {
+            delay += ctx->getWireDelay(cursor).maxDelay();
+            if (cursor == nd.src_wire)
+                return delay;
+            auto fnd = nd.wires.find(cursor);
+            if (fnd == nd.wires.end() || fnd->second.first == PipId())
+                return 0;
+            delay += ctx->getPipDelay(fnd->second.first).maxDelay();
+            cursor = ctx->getPipSrcWire(fnd->second.first);
+        }
+        return 0;
+    }
+
     delay_t get_route_delay(int net, store_index<PortRef> usr_idx, int phys_idx)
     {
         auto &nd = nets.at(net);
@@ -1761,6 +1871,12 @@ struct Router2
             timing_driven_ripup = timing_driven && ctx->setting<bool>("router/tmg_ripup");
         else
             timing_driven_ripup = false;
+        tree_seed_cost = ctx->setting<float>("router2/treeSeedCost", 0.0f);
+        arb_after = ctx->setting<int>("router2/arbitrateAfter", 0);
+        arb_penalty = ctx->setting<float>("router2/arbitratePenalty", arb_penalty);
+        arb_min_crit = ctx->setting<float>("router2/arbitrateMinCrit", arb_min_crit);
+        if (tree_seed_cost > 0)
+            log_info("router2: branching off existing routing costs %.2f x crit x tree delay\n", tree_seed_cost);
         log_info("Running main router loop...\n");
         if (timing_driven)
             tmg.run(true);
@@ -1879,6 +1995,8 @@ struct Router2
 
         log_info("Checksum: 0x%08x\n", ctx->checksum());
         log_info("Router2 time %.02fs\n", std::chrono::duration<float>(rend - rstart).count());
+        if (arb_after > 0)
+            log_info("Router2 arbitrated %d wires (%d revoked)\n", arb_count, arb_revoked);
 
         timing_analysis(ctx, true /* slack_histogram */, true /* print_fmax */, true /* print_path */,
                         true /* warn_on_failure */, true /* update_results */);

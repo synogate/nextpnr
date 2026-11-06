@@ -396,6 +396,11 @@ po::options_description CommandHandler::getGeneralOptions()
     general.add_options()("router2-tmg-ripup",
                           "enable experimental timing-driven ripup in router (deprecated; use --tmg-ripup instead)");
 
+    general.add_options()("setting", po::value<std::vector<std::string>>(),
+                          "set a context setting, key=value (e.g. router2/arbitrateAfter=3); may be repeated");
+    general.add_options()("router2-tree-seed-cost", po::value<float>(),
+                          "cost factor (x criticality x delay) of branching off a net's existing routing in router2");
+
     general.add_options()("router2-alt-weights", "use alternate router2 weights");
 
     general.add_options()("report", po::value<std::string>(),
@@ -527,6 +532,18 @@ void CommandHandler::setupContext(Context *ctx)
         ctx->settings[ctx->id("router2/heatmap")] = vm["router2-heatmap"].as<std::string>();
     if (vm.count("tmg-ripup") || vm.count("router2-tmg-ripup"))
         ctx->settings[ctx->id("router/tmg_ripup")] = true;
+
+    if (vm.count("router2-tree-seed-cost"))
+        ctx->settings[ctx->id("router2/treeSeedCost")] = std::to_string(vm["router2-tree-seed-cost"].as<float>());
+
+    if (vm.count("setting")) {
+        for (auto &kv : vm["setting"].as<std::vector<std::string>>()) {
+            auto eq = kv.find('=');
+            if (eq == std::string::npos)
+                log_error("--setting expects key=value, got '%s'\n", kv.c_str());
+            ctx->settings[ctx->id(kv.substr(0, eq))] = kv.substr(eq + 1);
+        }
+    }
 
     if (vm.count("router2-alt-weights"))
         ctx->settings[ctx->id("router2/alt-weights")] = true;
