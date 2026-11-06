@@ -27,6 +27,7 @@
 #include <regex>
 #include "known_bugs.h"
 #include "testing.h"
+#include "uarch/gatemate/pack.h"
 
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
 #include "himbaechel_constids.h"
@@ -43,6 +44,31 @@ std::array<int, 4> fuse_counts(const std::string &log)
                                       "(\\d+) LUTs fused")))
         return {-1, -1, -1, -1};
     return {std::stoi(m[1]), std::stoi(m[2]), std::stoi(m[3]), std::stoi(m[4])};
+}
+
+// After packing, the CPEs of 5-input LUTs (a lower half taking COMBIN from the upper half of its
+// cluster): how many upper halves compute a LUT, and how many only pass the fifth input on
+// (L10 = D0, nothing else connected)
+std::pair<int, int> l2t5_upper_halves(Context *ctx)
+{
+    int computing = 0, passing = 0;
+    for (auto &cell : ctx->cells) {
+        CellInfo *lower = cell.second.get();
+        NetInfo *combin = lower->getPort(id_COMBIN);
+        if (lower->type != id_CPE_L2T4 || lower->cluster != lower->name || lower->constr_z != CPE_LT_L_Z || !combin)
+            continue;
+        CellInfo *upper = combin->driver.cell;
+        if (!upper || upper->type != id_CPE_L2T4 || upper->cluster != lower->name || upper->constr_z != CPE_LT_U_Z)
+            continue;
+        bool only_d0 = true;
+        for (auto &port : upper->ports)
+            only_d0 &= port.second.type != PORT_IN || !port.second.net || port.first == id_D0_10;
+        if (only_d0 && int_or_default(upper->params, id_INIT_L10, 0) == LUT_D0)
+            passing++;
+        else
+            computing++;
+    }
+    return {computing, passing};
 }
 } // namespace
 
@@ -132,10 +158,10 @@ TEST_F(GateMateFuseTest, inverter_into_a_multiplexer4_and_an_adder_stays)
 }
 
 // The upper half of a 5-input LUT's CPE, otherwise passing the fifth input on, computes the LUT
-// feeding that input
+// feeding that input (pack_cpe puts it there, or else fuse_l2t5_inputs)
 TEST_F(GateMateFuseTest, lut_feeding_a_5_input_lut_goes_into_its_upper_half)
 {
-    LogCapture info(LogLevel::INFO_MSG);
+    std::pair<int, int> halves;
     EXPECT_TRUE(implementation_matches_reference(
             [&] {
                 std::mt19937 rng(7);
@@ -165,11 +191,9 @@ TEST_F(GateMateFuseTest, lut_feeding_a_5_input_lut_goes_into_its_upper_half)
                     output(stringf("o%d", n), lut->getPort(id_O));
                 }
             },
-            300, 1));
-    std::smatch m;
-    std::string log = info.str();
-    ASSERT_TRUE(std::regex_search(log, m, std::regex("(\\d+) 5-input LUTs took")));
-    EXPECT_EQ(std::stoi(m[1]), 16);
+            300, 1, [&] { halves = l2t5_upper_halves(ctx); }));
+    EXPECT_EQ(halves.first, 16);
+    EXPECT_EQ(halves.second, 0);
 }
 
 // --vopt enable-to-lut: a register's enable goes into its LUT (D = EN ? D : Q) where that LUT would
@@ -241,6 +265,7 @@ TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
 {
     init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=2"});
     LogCapture info(LogLevel::INFO_MSG);
+    std::pair<int, int> halves;
     EXPECT_TRUE(implementation_matches_reference(
             [&] {
                 std::mt19937 rng(13);
@@ -271,12 +296,13 @@ TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
                         output(stringf("f%d", n), first);
                 }
             },
-            300, 1));
+            300, 1, [&] { halves = l2t5_upper_halves(ctx); }));
     std::smatch m;
     std::string log = info.str();
     ASSERT_TRUE(std::regex_search(log, m, std::regex("Merged (\\d+) pairs of LUT levels")));
     int merged = std::stoi(m[1]);
     EXPECT_GT(merged, 8);
-    ASSERT_TRUE(std::regex_search(log, m, std::regex("(\\d+) 5-input LUTs took")));
-    EXPECT_EQ(std::stoi(m[1]), merged);
+    // each with the first LUT in the upper half
+    EXPECT_EQ(halves.first, merged);
+    EXPECT_EQ(halves.second, 0);
 }
