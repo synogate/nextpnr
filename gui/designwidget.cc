@@ -717,6 +717,13 @@ void DesignWidget::showCell(IdString cell)
         std::lock_guard<std::mutex> lock(ctx->mutex);
         item = getTreeByElementType(ElementType::CELL)->nodeForId(IdStringList(cell));
     }
+    if (!item && unplacedOnly->isChecked() && ctx->cells.count(cell)) {
+        // A placed cell, hidden by the filter: show all cells
+        unplacedOnly->setChecked(false);
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        item = getTreeByElementType(ElementType::CELL)->nodeForId(IdStringList(cell));
+    }
     if (!item)
         return;
     int index = getIndexByElementType(ElementType::CELL);

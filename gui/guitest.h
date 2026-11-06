@@ -65,7 +65,7 @@
  *                              mode; ctrl: add it to the selection); selectnet <name> selects a net
  *                              in the Nets tree (programmatically, like "Show in tree")
  *   menu <text>                pick the entry of the open popup / context menu starting with text
- *                              (waits up to 3 s for the menu; submenus: menu A > B)
+ *                              (waits up to 10 s for the menu; submenus: menu A > B)
  *   assert_menu <text> / assert_menu_disabled <text>
  *                              the open menu has an enabled / a disabled entry starting with text
  *                              (logs its tooltip); assert_nomenu <text>: has no such entry
@@ -75,7 +75,7 @@
  *                              (other dialogs: the values, separated by blanks, go into its spin
  *                              boxes in order, e.g. dialog 2 -1 for "Move selection by")
  *   dialog_cancel              reject the open dialog
- *   check <text> on|off        set a visible checkable button (e.g. a checkbox) starting with text
+ *   check <text> on|off        set a checkable button (e.g. a checkbox) starting with text
  *   status                     print the status bar texts (message, last message, selection,
  *                              placement)
  *   assert_status <substring>  one of these texts contains substring

@@ -154,6 +154,7 @@ class IdList : public Item
     static std::vector<QString> alphaNumSplit(const QString &str);
 
     // getById finds a child for the given IdString.
+    // (none if it is not in the list, e.g. a placed cell while the Cells tree shows unplaced ones only)
     virtual boost::optional<Item *> getById(IdStringList id) override
     {
         auto found = managed_.find(id);
@@ -231,6 +232,7 @@ template <typename ElementT> class ElementList : public Item
     virtual void fetchMore() override { fetchMore(100); }
 
     // getById finds a child for the given IdString.
+    // (none if it is not in the list, e.g. a placed cell while the Cells tree shows unplaced ones only)
     virtual boost::optional<Item *> getById(IdStringList id) override
     {
         // Search requires us to load all our elements...
@@ -326,6 +328,7 @@ template <typename ElementT> class ElementXYRoot : public Item
     }
 
     // getById finds a child for the given IdString.
+    // (none if it is not in the list, e.g. a placed cell while the Cells tree shows unplaced ones only)
     virtual boost::optional<Item *> getById(IdStringList id) override
     {
         // For now, scan linearly all ElementLists.

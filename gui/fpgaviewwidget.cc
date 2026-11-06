@@ -1592,6 +1592,9 @@ bool FPGAViewWidget::event(QEvent *event)
             editStack_ != nullptr && editStack_->editMode()) {
             int dx = ke->key() == Qt::Key_Left ? -1 : ke->key() == Qt::Key_Right ? 1 : 0;
             int dy = ke->key() == Qt::Key_Up ? -1 : ke->key() == Qt::Key_Down ? 1 : 0;
+            // Up moves up on the screen: towards larger grid y if the view draws y upwards (GateMate)
+            if (mouseToWorldCoordinates(0, 0).y() > mouseToWorldCoordinates(0, height()).y())
+                dy = -dy;
             Q_EMIT nudgeRequested(dx, dy);
             return true;
         }

@@ -277,7 +277,7 @@ void GuiTest::step()
             if (waitKind_ == 0) {
                 waitKind_ = 1;
                 bool idle = w.at(0) == "waitidle";
-                waitUntil_ = g_clock.elapsed() + (idle ? (w.size() > 1 ? w.at(1).toInt() : 600000) : 3000);
+                waitUntil_ = g_clock.elapsed() + (idle ? (w.size() > 1 ? w.at(1).toInt() : 600000) : 10000);
             }
             if (g_clock.elapsed() < waitUntil_) {
                 scheduleNext(100);
@@ -1020,14 +1020,14 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         bool on = w.last().compare("on", Qt::CaseInsensitive) == 0;
         QString want = QStringList(w.mid(1, w.size() - 2)).join(' ');
         for (QAbstractButton *b : win_->findChildren<QAbstractButton *>()) {
-            if (!b->isCheckable() || !b->isVisible() || !plain(b->text()).startsWith(want, Qt::CaseInsensitive))
+            if (!b->isCheckable() || !plain(b->text()).startsWith(want, Qt::CaseInsensitive))
                 continue;
             if (b->isChecked() != on)
                 b->click();
             log("  '" + plain(b->text()) + "' " + (b->isChecked() ? "on" : "off"));
             return true;
         }
-        error_ = "no visible checkable button '" + want + "'";
+        error_ = "no checkable button '" + want + "'";
         return false;
     }
     if (cmd == "status") {

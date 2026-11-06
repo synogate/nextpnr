@@ -1,0 +1,81 @@
+# Phase 2b: drag & drop + undo, "Unplaced only" filter, Next unplaced (N), Move selection by dialog
+# (legal / illegal offsets), arrow-key nudging.
+# design: counter_pnr
+resize 1400 1000
+zoombel X77Y116/CPE_LT_L 1.2
+py L1="$abc$348$auto$blifparse.cc:397:parse_blif$384"; L2="$abc$348$auto$blifparse.cc:397:parse_blif$381"; at=lambda n: str(ctx.cells[n].bel)
+key E
+# --- drag to a free bel, undo, redo
+dragbel X77Y116/CPE_LT_L X76Y116/CPE_LT_L
+wait 200
+assert_py at(L1) == "X76Y116/CPE_LT_L"
+key Ctrl+Z
+assert_py at(L1) == "X77Y116/CPE_LT_L"
+key Ctrl+Y
+assert_py at(L1) == "X76Y116/CPE_LT_L"
+key Ctrl+Z
+# --- drag onto an occupied bel swaps
+dragbel X77Y116/CPE_LT_L X77Y117/CPE_LT_L
+wait 200
+assert_status Swap
+assert_py at(L1) == "X77Y117/CPE_LT_L" and at(L2) == "X77Y116/CPE_LT_L"
+shot 01_drag_swap.png
+key Ctrl+Z
+assert_py at(L1) == "X77Y116/CPE_LT_L" and at(L2) == "X77Y117/CPE_LT_L"
+# --- unplace via the bel menu, "Unplaced only", N arms it, click places it
+key Esc
+clickbel X77Y116/CPE_LT_L right
+menu Unplace
+wait 200
+assert_py ctx.cells[L1].bel is None
+check Unplaced only on
+wait 300
+shot 02_unplaced_only.png
+key N
+assert_status Placing $abc$348$auto$blifparse.cc:397:parse_blif$384
+zoombel X77Y116/CPE_LT_L 1.2
+clickbel X76Y116/CPE_LT_L
+wait 200
+assert_status Place $abc$348$auto$blifparse.cc:397:parse_blif$384 at X76Y116/CPE_LT_L
+assert_py at(L1) == "X76Y116/CPE_LT_L"
+key N
+assert_status All cells are placed
+shot 03_placed_again.png
+check Unplaced only off
+key Ctrl+Z
+key Ctrl+Z
+assert_py at(L1) == "X77Y116/CPE_LT_L"
+# --- Move selection by: two cells, legal offset (-1, 0), then an illegal one (onto cells not moved)
+key Esc
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$381 ctrl
+assert_nostatus Moving
+key M
+dialog -1 0
+wait 300
+status
+assert_py at(L1) == "X76Y116/CPE_LT_L" and at(L2) == "X76Y117/CPE_LT_L"
+shot 04_moved_by.png
+key M
+dialog 3 0
+wait 300
+status
+assert_status not moved
+assert_py at(L1) == "X76Y116/CPE_LT_L" and at(L2) == "X76Y117/CPE_LT_L"
+key M
+dialog_cancel
+# --- arrow keys nudge the selection by the smallest legal step (Up: up on the screen = larger y)
+focus view
+key Up
+wait 300
+status
+py print(at(L1), at(L2))
+assert_py at(L1) == "X76Y117/CPE_LT_L" and at(L2) == "X76Y118/CPE_LT_L"
+key Ctrl+Z
+assert_py at(L1) == "X76Y116/CPE_LT_L"
+key Right
+wait 300
+status
+py print(at(L1), at(L2))
+assert_py at(L1) == "X77Y116/CPE_LT_L" and at(L2) == "X77Y117/CPE_LT_L"
+shot 05_nudged.png
