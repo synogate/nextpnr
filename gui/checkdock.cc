@@ -182,6 +182,10 @@ void CheckDock::refresh()
                                 .arg(arc.cell.c_str(ctx))
                                 .arg(arc.port.c_str(ctx))
                                 .arg(ctx->nameOf(ctx->getBoundWireNet(arc.sink))));
+            pool<WireId> arc_sinks;
+            for (auto &arc : st.arcs)
+                if (arc.sink != WireId())
+                    arc_sinks.insert(arc.sink);
             for (auto &w : ni->wires) {
                 NetInfo *bound = ctx->getBoundWireNet(w.first);
                 if (bound != ni) {
@@ -200,7 +204,9 @@ void CheckDock::refresh()
                     add(CAT_CONFLICT, KIND_PIP, ctx->nameOfPip(pip), ctx->nameOfPip(pip),
                         QString("pip of %1 %2").arg(name).arg(why));
                 }
-                if (w.first != st.source && !ni->wires.count(ctx->getPipSrcWire(pip)))
+                // (routing below a sink wire whose arc is unrouted waits for the arc, see NetStatus::belowSinkWires)
+                if (w.first != st.source && !ni->wires.count(ctx->getPipSrcWire(pip)) &&
+                    !arc_sinks.count(ctx->getPipSrcWire(pip)))
                     add(CAT_DANGLING, KIND_WIRE, ctx->nameOfWire(w.first), ctx->nameOfWire(w.first),
                         QString("of %1: driven from %2, which is not part of the net")
                                 .arg(name)
@@ -228,9 +234,9 @@ void CheckDock::refresh()
                     WireId cursor = w.first;
                     for (size_t limit = ni->wires.size() + 1; limit > 0 && !ok; limit--) {
                         auto fnd = ni->wires.find(cursor);
+                        ok = sinks.count(cursor) > 0;
                         if (fnd == ni->wires.end())
                             break;
-                        ok = sinks.count(cursor) > 0;
                         if (fnd->second.pip == PipId())
                             break;
                         cursor = ctx->getPipSrcWire(fnd->second.pip);

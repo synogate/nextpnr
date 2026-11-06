@@ -143,9 +143,15 @@ Status compute(Context *ctx, NetInfo *net)
             break;
         }
     }
+    pool<WireId> sinks;
+    for (auto &arc : st.arcs)
+        if (arc.sink != WireId())
+            sinks.insert(arc.sink);
     for (auto &w : net->wires) {
         PipId pip = w.second.pip;
-        if (pip != PipId() && w.first != st.source && !net->wires.count(ctx->getPipSrcWire(pip)))
+        // (routing below a sink wire whose arc is unrouted waits for the arc, see belowSinkWires)
+        if (pip != PipId() && w.first != st.source && !net->wires.count(ctx->getPipSrcWire(pip)) &&
+            !sinks.count(ctx->getPipSrcWire(pip)))
             st.dangling++;
     }
     return st;
@@ -188,6 +194,34 @@ std::vector<WireId> subtree(const dict<WireId, std::vector<WireId>> &down, WireI
     return result;
 }
 
+pool<WireId> belowSinkWires(Context *ctx, NetInfo *net)
+{
+    pool<WireId> result;
+    if (net == nullptr || net->wires.empty())
+        return result;
+    WireId source = ctx->getNetinfoSourceWire(net);
+    dict<WireId, std::vector<WireId>> down;
+    for (auto &w : net->wires)
+        if (w.second.pip != PipId() && w.first != source)
+            down[ctx->getPipSrcWire(w.second.pip)].push_back(w.first);
+    pool<WireId> sinks;
+    for (auto &usr : net->users)
+        for (WireId sink : ctx->getNetinfoSinkWires(net, usr))
+            sinks.insert(sink);
+    for (WireId sink : sinks) {
+        if (!down.count(sink))
+            continue;
+        std::vector<WireId> tail = subtree(down, sink);
+        bool other_sink = false;
+        for (size_t i = 1; i < tail.size(); i++)
+            other_sink |= sinks.count(tail[i]) > 0;
+        if (!other_sink)
+            for (size_t i = 1; i < tail.size(); i++)
+                result.insert(tail[i]);
+    }
+    return result;
+}
+
 std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, WireId sink)
 {
     std::vector<WireId> result;
@@ -210,18 +244,17 @@ std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, W
         if (i > 0 && other_sinks.count(w))
             break;
         if (i == 0) {
-            // Routing below the sink wire (e.g. GateMate's LUT-input routing inside the CPE, from the
-            // bel pin wire on) belongs to this arc, unless it reaches another sink
+            // The sink wire goes even if routing continues below it (see belowSinkWires), that routing stays;
+            // unless the routing below reaches another sink
             std::vector<WireId> tail = subtree(down, w);
             bool shared = false;
             for (size_t j = 1; j < tail.size(); j++)
                 shared |= other_sinks.count(tail[j]) > 0;
             if (shared)
                 break;
-            for (WireId t : tail) {
-                result.push_back(t);
+            result.push_back(w);
+            for (WireId t : tail)
                 removed.insert(t);
-            }
             continue;
         }
         // Drives anything else of the net (other than what is removed already)?

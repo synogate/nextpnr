@@ -80,9 +80,14 @@ std::string summary(const Status &st);
 dict<WireId, std::vector<WireId>> downstream(Context *ctx, NetInfo *net);
 // The wire and every wire of the net below it (through bound pips), wire first
 std::vector<WireId> subtree(const dict<WireId, std::vector<WireId>> &down, WireId wire);
-// The wires to unbind to remove the routing of one arc: what the net routes below the sink wire
-// (unless it reaches another sink), then from the sink up its path while a wire
+// The wires the net routes below one of its sink wires, reaching no other sink: e.g. on GateMate, in a design
+// routed and finished before, the routing inside a CPE from a LUT input's bel pin wire on (the LUT inputs were
+// renamed to the CPE inputs the routing reaches; the routing below is part of the CPE's configuration). Rip-up
+// keeps it (also when the arc above it goes), the router does the same.
+pool<WireId> belowSinkWires(Context *ctx, NetInfo *net);
+// The wires to unbind to remove the routing of one arc: from the sink up its path while a wire
 // drives nothing else of the net, is not the sink of another routed arc and is not the source
+// (what the net routes below the sink wire stays, see belowSinkWires)
 std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, WireId sink);
 
 // Centre of a bel's graphics (or of its grid location if it has none), in view coordinates

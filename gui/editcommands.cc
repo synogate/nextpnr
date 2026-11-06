@@ -684,9 +684,11 @@ std::string addUnrouteNet(EditBatch &b, IdString net)
     if (ni == nullptr)
         return "net " + q(net.str(ctx)) + " does not exist";
     WireId src = ctx->getNetinfoSourceWire(ni);
+    // (the routing below the sink wires stays, see NetStatus::belowSinkWires)
+    pool<WireId> below = NetStatus::belowSinkWires(ctx, ni);
     std::vector<WireId> wires;
     for (auto &w : ni->wires)
-        if (w.first != src)
+        if (w.first != src && !below.count(w.first))
             wires.push_back(w.first);
     if (wires.empty())
         return "net " + q(net.str(ctx)) + " has no routing";
@@ -716,7 +718,13 @@ std::string addRemovePip(EditBatch &b, PipId pip)
         return "pip " + q(ctx->nameOfPip(pip)) + " is not used";
     WireId dst = ctx->getPipDstWire(pip);
     auto down = NetStatus::downstream(ctx, ni);
-    return unbindWires(b, NetStatus::subtree(down, dst));
+    // The routing below the sink wires stays (see NetStatus::belowSinkWires), unless the pip is part of it
+    pool<WireId> below = NetStatus::belowSinkWires(ctx, ni);
+    std::vector<WireId> wires;
+    for (WireId w : NetStatus::subtree(down, dst))
+        if (below.count(dst) || !below.count(w))
+            wires.push_back(w);
+    return unbindWires(b, wires);
 }
 
 void prepareDesignForWrite(Context *ctx)

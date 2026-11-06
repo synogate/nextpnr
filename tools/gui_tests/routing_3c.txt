@@ -3,7 +3,9 @@
 # (tree connected, every sink wire of the router's routing reached) and saved as JSON.
 # design: counter_pnr
 resize 1600 1000
-py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; nw=lambda: len(ctx.nets[N].wires); T0={str(w):m.pip for w,m in ctx.nets[N].wires}; print(len(T0), T0)
+# (nw() leaves out the routing inside the sink CPE below the sink pin wire X77Y116/CPE.IN8_int: part of the
+# CPE configuration of this design routed before, rip-up keeps it)
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; TAIL={str(w) for w,m in ctx.nets[N].wires if str(w).startswith("X77Y116/CPE.") and str(w).endswith("_int") and str(w) != "X77Y116/CPE.IN8_int"}; print("tail", TAIL); nw=lambda: sum(1 for w,m in ctx.nets[N].wires if str(w) not in TAIL); T0={str(w):m.pip for w,m in ctx.nets[N].wires}; print(len(T0), T0)
 # (the router's routing continues below the sink pin wire X77Y116/CPE.IN8_int into the CPE; the check needs the sink pin wire)
 py S=[w for w in T0 if not T0[w]][0]; L0=["X77Y116/CPE.IN8_int"]; print("source", S, "sinks", L0, [w for w in T0 if not any(p and ctx.getPipSrcWire(p)==w for p in T0.values())])
 py tree=lambda: {str(w):m.pip for w,m in ctx.nets[N].wires}

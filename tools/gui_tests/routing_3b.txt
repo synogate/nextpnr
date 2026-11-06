@@ -2,7 +2,9 @@
 # undo; NetStatus of GateMate's CP-line nets (no false unrouted arcs on a routed design).
 # design: counter_pnr
 resize 1400 1000
-py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; nw=lambda: len(ctx.nets[N].wires); W0=nw(); print(W0)
+# (nw() leaves out the routing inside the sink CPE below the sink pin wire X77Y116/CPE.IN8_int: part of the
+# CPE configuration of this design routed before, rip-up keeps it)
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; TAIL={str(w) for w,m in ctx.nets[N].wires if str(w).startswith("X77Y116/CPE.") and str(w).endswith("_int") and str(w) != "X77Y116/CPE.IN8_int"}; print("tail", TAIL); nw=lambda: sum(1 for w,m in ctx.nets[N].wires if str(w) not in TAIL); W0=nw(); print(W0)
 # --- a routed design has no unrouted arcs (the CP-line nets split off after routing count as routed)
 key U
 wait 300
