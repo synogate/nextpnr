@@ -45,6 +45,8 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
         if (delay >= 0)
             return delay + d2d;
     }
+    if (model_route)
+        return distance.estimate(src, dst) + d2d;
     tile_xy(ctx->chip_info, src.tile, sx, sy);
     tile_xy(ctx->chip_info, dst.tile, dx, dy);
 
@@ -97,6 +99,27 @@ void GateMateImpl::load_clock_tree_delays(std::istream &in)
 }
 
 const dict<WireId, delay_t> &GateMateImpl::clock_tree_delays(WireId src) const
+{
+    const uint64_t slot_key = (uint64_t(src.tile + 1) << 32) | uint32_t(src.index);
+    int used = clock_tree_used.load(std::memory_order_acquire);
+    for (int i = 0; i < used; i++)
+        if (clock_tree_slots[i].key.load(std::memory_order_relaxed) == slot_key)
+            return *clock_tree_slots[i].sinks;
+    const dict<WireId, delay_t> &sinks = clock_tree_search(src);
+    std::lock_guard<std::mutex> lock(clock_tree_slot_mutex);
+    used = clock_tree_used.load(std::memory_order_relaxed);
+    for (int i = 0; i < used; i++)
+        if (clock_tree_slots[i].key.load(std::memory_order_relaxed) == slot_key)
+            return sinks;
+    if (used < int(clock_tree_slots.size())) {
+        clock_tree_slots[used].sinks = &sinks;
+        clock_tree_slots[used].key.store(slot_key, std::memory_order_relaxed);
+        clock_tree_used.store(used + 1, std::memory_order_release);
+    }
+    return sinks;
+}
+
+const dict<WireId, delay_t> &GateMateImpl::clock_tree_search(WireId src) const
 {
     std::string key = stringf("%s %d %d %d%d%d %d %d", ctx->args.device.c_str(), timing_mode, fpga_mode,
                               int(use_cp_for_clk), int(use_cp_for_cpe), int(use_bridges), src.tile, src.index);
@@ -224,6 +247,11 @@ delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_be
         delay_t delay = src != WireId() && dst != WireId() ? lookahead.estimate(src, dst) : -1;
         if (delay >= 0)
             return delay + d2d;
+    }
+    if (model_place) {
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        if (src != WireId() && dst != WireId())
+            return distance.estimate(src, dst) + d2d;
     }
 
     Loc src_loc = ctx->getBelLocation(src_bel), dst_loc = ctx->getBelLocation(dst_bel);

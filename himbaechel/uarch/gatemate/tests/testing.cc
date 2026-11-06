@@ -41,9 +41,10 @@ NEXTPNR_NAMESPACE_BEGIN
 
 namespace {
 // The delay tables and global clock delays for the options most tests share: those of init_context
-// on both devices, and the routing restrictions of the place-repair tests. The clock delays are
-// searched in a context of their own, without delay tables (which they do not depend on), at the
-// same time as the tables are built.
+// on both devices, and the routing restrictions of the place-repair tests. Two kinds of tables: the
+// radius-4 hybrid tables of the default (key "... r4 near"), built in the contexts that search the
+// clock delays (which do not depend on them), and the full radius-12 tables (key "... r12") where tests
+// ask for them (--lookahead=table: the lookahead test and the place-repair tests, both on CCGM1A1).
 TestWarmUp warm_up(
         [](const std::string &file) {
             init_share_dirname();
@@ -60,11 +61,18 @@ TestWarmUp warm_up(
                         args.vopts.insert(args.vopts.end(), config.second.begin(), config.second.end());
                         if (clocks)
                             args.vopts.insert(args.vopts.end(), {"--route-repair=0", "--place-repair=0"});
-                        Context ctx(args);
-                        ctx.uarch->init(&ctx);
-                        ctx.late_init();
-                        if (clocks)
-                            static_cast<GateMateImpl *>(ctx.uarch.get())->prepare_clock_tree_delays();
+                        else if (config.first == "CCGM1A1")
+                            args.vopts.push_back("--lookahead=table");
+                        // A device whose chipdb was not built (HIMBAECHEL_GATEMATE_DEVICES) fails here with
+                        // log_error; its tests fail on their own, the warm-up goes on without it
+                        try {
+                            Context ctx(args);
+                            ctx.uarch->init(&ctx);
+                            ctx.late_init();
+                            if (clocks)
+                                static_cast<GateMateImpl *>(ctx.uarch.get())->prepare_clock_tree_delays();
+                        } catch (const log_execution_error_exception &) {
+                        }
                     });
             for (auto &thread : threads)
                 thread.join();

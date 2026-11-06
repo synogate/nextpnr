@@ -21,8 +21,10 @@
 #define HIMBAECHEL_GATEMATE_H
 
 #include <array>
+#include <atomic>
 #include <mutex>
 
+#include "distance.h"
 #include "extra_data.h"
 #include "himbaechel_api.h"
 #include "log.h"
@@ -154,7 +156,7 @@ struct GateMateImpl : HimbaechelAPI
     pool<IdString> prerouted_nets;
     bool swap_pairs = true, swap_halves = true;
     // Criticality-weighted delay from a LUT tree's inputs to its output, as it is and with the pairs
-    // swapped; with `routed`, as it is uses the real routing, otherwise both use the delay tables
+    // swapped; with `routed`, as it is uses the real routing, otherwise both use least_delay()
     std::pair<float, float> lut_tree_costs(CellInfo *ci, const TimingAnalyser &tmg, bool routed) const;
     // Extra router cost (ns) of entering a scarce switch box mux, per tile type and pip; the router
     // scales it down for critical connections. Empty unless --vopt sb-y-cost or sb-ydiag-cost.
@@ -163,6 +165,28 @@ struct GateMateImpl : HimbaechelAPI
     // Delay tables for the router (estimateDelay) and the placer (predictDelay), see lookahead.h
     GateMateLookahead lookahead;
     bool table_route = false, table_place = false;
+    // The closed-form model for them instead (--vopt lookahead=model, place-delay=model), see distance.h
+    GateMateDistance distance;
+    bool model_route = false, model_place = false;
+    // lookahead or place-delay=hybrid (the default): tables of radius hybrid-radius near, the model beyond
+    bool hybrid = false;
+    // --vopt lookahead and place-delay after the defaults: hybrid, linear, table or model
+    std::string route_estimate, place_estimate;
+    // The least routing delay from src to dst on the empty chip, for the post-route repairs, the LUT
+    // input swap and report-crit-routing: from the delay tables when they were built (--vopt
+    // lookahead or place-delay table or hybrid; -1 where the tables have no value, i.e. neither end is
+    // a pin at a CPE), else from the closed-form model (always a value, initialised in init()).
+    // In hybrid mode (lookahead or place-delay=hybrid) the tables only within their radius, the model beyond.
+    delay_t least_delay(WireId src, WireId dst) const
+    {
+        if (!lookahead.built())
+            return distance.estimate(src, dst);
+        delay_t delay = lookahead.estimate(src, dst);
+        if (delay >= 0 || !lookahead.is_near_only())
+            return delay;
+        return distance.estimate(src, dst);
+    }
+    bool has_least_delay() const { return lookahead.built() || distance.initialised(); }
     bool getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const override;
     TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const override;
     TimingClockingInfo getPortClockingInfo(const CellInfo *cell, IdString port, int index) const override;
@@ -364,6 +388,18 @@ struct GateMateImpl : HimbaechelAPI
     // reaches, the way route_clock() routes them (computed when first needed, for all contexts with the
     // same device and settings)
     const dict<WireId, delay_t> &clock_tree_delays(WireId src) const;
+    const dict<WireId, delay_t> &clock_tree_search(WireId src) const; // (through the process-wide cache)
+    // The results of clock_tree_delays() this context has asked for, so that predictDelay finds them
+    // without the process-wide cache's key and lock: `clock_tree_used` slots, each published once
+    // (key: tile + 1 << 32 | index)
+    struct ClockTreeSlot
+    {
+        std::atomic<uint64_t> key{0};
+        const dict<WireId, delay_t> *sinks = nullptr;
+    };
+    mutable std::array<ClockTreeSlot, 32> clock_tree_slots;
+    mutable std::atomic<int> clock_tree_used{0};
+    mutable std::mutex clock_tree_slot_mutex;
     std::map<IdString, const GateMateTimingExtraDataPOD *> timing;
 
     enum class RamPinKind
