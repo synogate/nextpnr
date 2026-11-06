@@ -1,0 +1,25 @@
+# A partition saved part way through hand work (stage3.json of saveload_part.txt: hand placed, a net hand routed and
+# locked) loaded on the command line (--json stage3.json --gui) in a session started without --vopt as-partition:
+# the design is as it was saved (design_state.py), the partition settings come with it, and Place, Route and Save
+# as partition finish it.
+# design: saveload_part_stage3
+resize 1400 1000
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("../saveload_part/stage3_state.json")
+assert_action Pack off
+assert_action Place on
+assert_action Route off
+assert_action Undo off
+py S3=load_state("../saveload_part/stage3_state.json")
+action Place
+waitidle
+py print("moved:", moved_cells(S3))
+assert_py not moved_cells(S3)
+action Route
+waitidle
+py print("hand routing changed:", changed_wires(S3, "m"))
+assert_py not changed_wires(S3, "m")
+savepartition core_part.json
+assert_py not [n for n, c in ctx.cells if "partition_port" in n or c.type in ("CLKIN", "GLBOUT")]
+py J=open("core_part.json").read(); print("partition-clusters" in J, "partition-unrouted" in J)
+assert_py "partition-clusters" in J and "partition-unrouted" not in J

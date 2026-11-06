@@ -64,9 +64,17 @@ static PyObject *redirector_write(PyObject *, PyObject *args)
     return Py_None;
 }
 
+// (Python flushes sys.stdout / sys.stderr when the interpreter is finalized, e.g. for a newly loaded design)
+static PyObject *redirector_flush(PyObject *, PyObject *)
+{
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
 static PyMethodDef redirector_methods[] = {
         {"__init__", redirector_init, METH_VARARGS, "initialize the stdout/err redirector"},
         {"write", redirector_write, METH_VARARGS, "implement the write method to redirect stdout/err"},
+        {"flush", redirector_flush, METH_VARARGS, "nothing to flush"},
         {NULL, NULL, 0, NULL},
 };
 

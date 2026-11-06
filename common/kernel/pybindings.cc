@@ -233,6 +233,8 @@ PYBIND11_EMBEDDED_MODULE(MODULE_NAME, m)
             ni_cls, "users");
     readonly_wrapper<NetInfo &, decltype(&NetInfo::wires), &NetInfo::wires, wrap_context<WireMap &>>::def_wrap(ni_cls,
                                                                                                                "wires");
+    readonly_wrapper<NetInfo &, decltype(&NetInfo::attrs), &NetInfo::attrs, wrap_context<AttrMap &>>::def_wrap(ni_cls,
+                                                                                                               "attrs");
 
     auto pr_cls = py::class_<ContextualWrapper<PortRef>>(m, "PortRef");
     readonly_wrapper<PortRef, decltype(&PortRef::cell), &PortRef::cell, deref_and_wrap<CellInfo>>::def_wrap(pr_cls,

@@ -106,6 +106,12 @@ template <typename R> struct ArchAPI : BaseCtx
     // router can route it again elsewhere. Returns "" (also when there is nothing to undo) or why it can not be
     // done; with check_only nothing changes. Called with the context lock held.
     virtual std::string prepareCellForMove(CellInfo *cell, bool check_only) = 0;
+    // Saving and loading a design part way through the flow (JSON): the arch's own state beyond the netlist,
+    // placement and routing (e.g. clusters, what the packer worked out) as cell, net and design attributes before
+    // writing (archStateToAttributes, from write_json_file), and back after loading (attributesToArchState, from
+    // attributesToArchInfo, before the cells are bound)
+    virtual void archStateToAttributes() = 0;
+    virtual void attributesToArchState() = 0;
     virtual WireId getPipSrcWire(PipId pip) const = 0;
     virtual WireId getPipDstWire(PipId pip) const = 0;
     virtual DelayQuad getPipDelay(PipId pip) const = 0;

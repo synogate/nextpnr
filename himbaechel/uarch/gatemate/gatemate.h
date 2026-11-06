@@ -78,6 +78,10 @@ struct GateMateImpl : HimbaechelAPI
     // Placement or routing changed by hand: the pip masks are recomputed (with the routing) when next needed
     void notifyDesignEdited() override { pip_masks_ready = false; }
     std::string preparePartitionWrite(bool check_only, bool *changes_design) override;
+    // Saving a packed design part way through the flow and loading it again (partition.cc): what the packer
+    // worked out beyond the netlist (clusters, regions, multiplier and partition roles, ...) as attributes
+    void archStateToAttributes() override;
+    void attributesToArchState() override;
     // A cell of a routed design moved by hand: the inverse of postRoute's changes to it (LUT inputs and a
     // register's clock / enable renamed to the CPE inputs the routing reached, carry-line selects; inputs fed
     // through CP-line cells reconnected to the net those pass on)
@@ -329,7 +333,7 @@ struct GateMateImpl : HimbaechelAPI
     std::vector<CellInfo *> glbout;
     std::vector<CellInfo *> pll;
     pool<IdString> ignore;
-    MultiDieStrategy strategy;
+    MultiDieStrategy strategy = MultiDieStrategy::CLOCK_MIRROR;
     dict<int, IdString> index_to_die;
     dict<IdString, int> die_to_index;
     dict<IdString, dict<IdString, IdString>> pass_backtrace;

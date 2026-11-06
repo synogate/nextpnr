@@ -13,6 +13,8 @@
     counter_synth the synthesized 008-counter with its CCF (not packed; Pack in the GUI)
     counter_synth_bit  the same, also writing the bitstream (-o out=bitstream.txt) when routed
     counter_part  008-counter as module core synthesized without IO pads, with --vopt as-partition
+    mux_part      designs/mux_core.v synthesized without IO pads, with --vopt as-partition
+    saveload_part_stage3  <OutDir>/saveload_part/stage3.json (saved by saveload_part.txt), without --vopt
   Results: <OutDir>/<script>/ (guitest.log, PNGs). Prints one line per script and returns the number of
   failed scripts.
 
@@ -85,6 +87,23 @@ function Get-Design([string]$name) {
             }
             return @{ Json = $core; Extra = "--vopt as-partition" }
         }
+        "mux_part" {
+            # designs/mux_core.v (counter, CC_MX4, LUT / register clusters) as a partition, with --vopt as-partition
+            $mux = Join-Path $designs "mux_core.json"
+            if (-not (Test-Path $mux)) {
+                Push-Location $designs
+                & $Yosys -ql mux_synth.log -p "read_verilog -sv $here\designs\mux_core.v; synth_gatemate -luttree -top core -noiopad; write_json mux_core.json"
+                Pop-Location
+                if (-not (Test-Path $mux)) { throw "could not synthesize $mux (see $designs\mux_synth.log)" }
+            }
+            return @{ Json = $mux; Extra = "--vopt as-partition" }
+        }
+        "saveload_part_stage3" {
+            # saved by saveload_part.txt (runs before): loaded on the command line, without --vopt as-partition
+            $saved = Join-Path $OutDir "saveload_part\stage3.json"
+            if (-not (Test-Path $saved)) { throw "$saved is missing (run saveload_part first)" }
+            return @{ Json = $saved; Extra = "" }
+        }
         default { throw "unknown design '$name'" }
     }
 }
@@ -96,7 +115,8 @@ foreach ($s in $scripts) {
     if ($Only -ne "" -and $base -notlike "*$Only*") { continue }
     $line = Select-String -Path $s.FullName -Pattern "^#\s*design:\s*(\S+)" | Select-Object -First 1
     $dname = if ($line) { $line.Matches[0].Groups[1].Value } else { "dff_pnr" }
-    $d = Get-Design $dname
+    try { $d = Get-Design $dname }
+    catch { Write-Output ("{0,-28} {1,-10} {2}" -f $base, "FAIL", $_.Exception.Message); $failed++; continue }
     $out = Join-Path $OutDir $base
     if (Test-Path $out) { Remove-Item -Recurse -Force $out }
     $start = Get-Date

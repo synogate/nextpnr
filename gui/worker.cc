@@ -78,16 +78,41 @@ void Worker::place(bool timing_driven)
     // placed, the others keep their bels for this pass (else the refinement would move every cell that is not
     // locked and break the routing there)
     std::vector<std::pair<IdString, PlaceStrength>> held;
-    if (ctx->settings.count(ctx->id("place"))) {
-        for (auto &cell : ctx->cells) {
-            CellInfo *ci = cell.second.get();
-            if (ci->bel != BelId() && ci->belStrength < STRENGTH_LOCKED) {
-                held.emplace_back(ci->name, ci->belStrength);
-                ci->belStrength = STRENGTH_LOCKED;
-            }
+    auto hold = [&](CellInfo *ci) {
+        if (ci->bel != BelId() && ci->belStrength < STRENGTH_LOCKED) {
+            held.emplace_back(ci->name, ci->belStrength);
+            ci->belStrength = STRENGTH_LOCKED;
         }
+    };
+    if (ctx->settings.count(ctx->id("place"))) {
+        for (auto &cell : ctx->cells)
+            hold(cell.second.get());
         if (!held.empty())
             log_info("Placing the unplaced cells only: %d placed cells keep their bels.\n", int(held.size()));
+    } else {
+        // The first Place may move the cells placed by hand, but not those that routing (done by hand) reaches:
+        // the drivers and sinks of routed nets, with their clusters, else that routing would lead nowhere
+        pool<ClusterId> clusters;
+        std::vector<CellInfo *> cells;
+        for (auto &net : ctx->nets) {
+            NetInfo *ni = net.second.get();
+            if (ni->wires.empty())
+                continue;
+            cells.push_back(ni->driver.cell);
+            for (auto &usr : ni->users)
+                cells.push_back(usr.cell);
+        }
+        for (CellInfo *ci : cells)
+            if (ci && ci->bel != BelId()) {
+                if (ci->cluster != ClusterId())
+                    clusters.insert(ci->cluster);
+                hold(ci);
+            }
+        for (auto &cell : ctx->cells)
+            if (cell.second->cluster != ClusterId() && clusters.count(cell.second->cluster))
+                hold(cell.second.get());
+        if (!held.empty())
+            log_info("%d placed cells on routed nets keep their bels.\n", int(held.size()));
     }
     auto release = [&] {
         for (auto &h : held) {

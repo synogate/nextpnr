@@ -1412,6 +1412,15 @@ void GateMateImpl::finishRoute()
 
     dict<IdString, int> cfg;
     dict<IdString, IdString> port_mapping;
+    // An input renamed after the CPE input its routing reaches; one without a net and no routing goes (it was renamed
+    // to the empty name before, a port no JSON reader takes)
+    auto rename_routed = [&](CellInfo *cell, IdString port) {
+        IdString to = port_mapping[port];
+        if (to == IdString() && cell->ports.count(port) && !cell->ports.at(port).net)
+            cell->ports.erase(port);
+        else
+            cell->renamePort(port, to);
+    };
     auto add_input = [&](IdString orig_port, IdString port, bool merged) -> bool {
         static dict<IdString, IdString> convert_port = {
                 {ctx->id("CPE.IN1"), id_IN1},     {ctx->id("CPE.IN2"), id_IN2},     {ctx->id("CPE.IN3"), id_IN3},
@@ -1599,14 +1608,14 @@ void GateMateImpl::finishRoute()
             cell.second->params[id_INIT_L02] = Property(l02, 4);
             cell.second->params[id_INIT_L03] = Property(l03, 4);
 
-            cell.second->renamePort(id_D0_00, port_mapping[id_D0_00]);
-            cell.second->renamePort(id_D1_00, port_mapping[id_D1_00]);
-            cell.second->renamePort(id_D0_01, port_mapping[id_D0_01]);
-            cell.second->renamePort(id_D1_01, port_mapping[id_D1_01]);
-            cell.second->renamePort(id_D0_02, port_mapping[id_D0_02]);
-            cell.second->renamePort(id_D1_02, port_mapping[id_D1_02]);
-            cell.second->renamePort(id_D0_03, port_mapping[id_D0_03]);
-            cell.second->renamePort(id_D1_03, port_mapping[id_D1_03]);
+            rename_routed(cell.second.get(), id_D0_00);
+            rename_routed(cell.second.get(), id_D1_00);
+            rename_routed(cell.second.get(), id_D0_01);
+            rename_routed(cell.second.get(), id_D1_01);
+            rename_routed(cell.second.get(), id_D0_02);
+            rename_routed(cell.second.get(), id_D1_02);
+            rename_routed(cell.second.get(), id_D0_03);
+            rename_routed(cell.second.get(), id_D1_03);
 
             if (cfg.count(id_C_I1) && cfg.at(id_C_I1) == 1)
                 cell.second->params[id_C_I1] = Property(1, 1);
@@ -1633,8 +1642,8 @@ void GateMateImpl::finishRoute()
                 cell.second->params[id_C_ENSEL] = Property(1, 1);
             }
             ff_routed_ports[cell.first] = {port_mapping[id_CLK_INT], port_mapping[id_EN_INT]};
-            cell.second->renamePort(id_CLK_INT, port_mapping[id_CLK_INT]);
-            cell.second->renamePort(id_EN_INT, port_mapping[id_EN_INT]);
+            rename_routed(cell.second.get(), id_CLK_INT);
+            rename_routed(cell.second.get(), id_EN_INT);
         }
         if (cell.second->type.in(id_CPE_MX8)) {
             // The selects S0 and S1 pass the same muxes as a register's clock and enable: from CLK and EN,

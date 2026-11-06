@@ -68,7 +68,13 @@ is only reachable from its own CPE.
   invalid locations. Double-click zooms to the element.
 - **Timing** dock (`T` runs the analysis): Fmax per clock and the critical path on the design as it is
   (unplaced cells left out, open arcs with estimated delays); "Highlight critical path" draws it.
-- **File > Save JSON** writes the design (placement and routing attributes refreshed). **File > Save as
+- **File > Save JSON** writes the design at any stage (packed, partly placed, partly routed, with the locks)
+  and **File > Open JSON** (or `--json <file> --gui`) continues it where it was: the placement, routing and
+  strengths are attributes of the cells and nets, and what the GateMate packer worked out (clusters, regions,
+  multiplier and partition roles, the partition settings) is saved with them, so a packed design is not packed
+  again. Open JSON replaces the design in the session (the edit history starts empty). Without the GUI,
+  `--json <file> --no-pack` places and routes a saved design further. Routing that a Route left open for the
+  repairs is finished before saving. The first Place keeps the cells that hand routing reaches. **File > Save as
   partition** (session started with `--vopt as-partition`) writes a GateMate partition to import with
   `--vopt partition=<instance>:<file>`. The bitstream is written by Route when `-o out=<file>` was given.
 

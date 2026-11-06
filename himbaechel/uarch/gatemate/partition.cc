@@ -31,6 +31,8 @@
 // the LUT inputs after the CPE inputs their routing reaches; that happens once the ports are routed.
 
 #include <fstream>
+#include <map>
+#include <set>
 #include <regex>
 #include <sstream>
 
@@ -968,12 +970,66 @@ std::string GateMateImpl::preparePartitionWrite(bool check_only, bool *changes_d
 void GateMateImpl::save_partition_attrs()
 {
     ctx->settings[ctx->id("partition-clusters")] = 1;
-    if (partition_area.x0 >= 0)
-        ctx->settings[ctx->id("partition-area")] = stringf("%d,%d,%d,%d", partition_area.x0, partition_area.y0,
-                                                           partition_area.x1, partition_area.y1);
-    // What the bitstream takes from the packer beyond the netlist and the routing
+    // (the rest as for any packed design written, see archStateToAttributes: the import needs the clusters, the
+    // multiplier roles and the partition's area)
+    archStateToAttributes();
+}
+
+// Saving and loading a packed design part way through the flow (GUI File > Save JSON / Open JSON, --write and
+// --json ... --no-pack): the JSON holds the netlist, the placement and the routing (NEXTPNR_BEL, ROUTING); what the
+// packer worked out beyond that goes into attributes here and is read back after loading, so that placing and
+// routing go on as in the session that saved the design. The partition import reads the same attributes.
+namespace {
+const char *const region_setting_prefix = "gatemate-region:";
+
+// The tiles of a region as rectangles "x0,y0,x1,y1;..." (the regions of GateMate designs are made of whole tiles)
+std::string encode_region_tiles(const Context *ctx, const Region *region)
+{
+    std::map<int, std::set<int>> rows;
+    for (BelId bel : region->bels) {
+        Loc loc = ctx->getBelLocation(bel);
+        rows[loc.y].insert(loc.x);
+    }
+    // Runs of x in each row; rows with the same runs one after another make one rectangle
+    std::map<int, std::vector<std::pair<int, int>>> runs;
+    for (auto &row : rows)
+        for (int x : row.second) {
+            auto &r = runs[row.first];
+            if (!r.empty() && r.back().second == x - 1)
+                r.back().second = x;
+            else
+                r.emplace_back(x, x);
+        }
+    std::string out;
+    for (auto it = runs.begin(); it != runs.end();) {
+        int y0 = it->first, y1 = y0;
+        auto next = std::next(it);
+        while (next != runs.end() && next->first == y1 + 1 && next->second == it->second) {
+            y1 = next->first;
+            ++next;
+        }
+        for (auto &run : it->second)
+            out += stringf("%s%d,%d,%d,%d", out.empty() ? "" : ";", run.first, y0, run.second, y1);
+        it = next;
+    }
+    return out;
+}
+} // namespace
+
+void GateMateImpl::archStateToAttributes()
+{
+    if (!ctx->settings.count(ctx->id("pack")))
+        return;
+    const IdString a_region = ctx->id("GATEMATE_REGION"), a_port_cell = ctx->id("GATEMATE_PORT_CELL"),
+                   a_mult_cluster = ctx->id("GATEMATE_MULT_CLUSTER"), a_ddr = ctx->id("GATEMATE_DDR"),
+                   a_clock = ctx->id("GATEMATE_PARTITION_CLOCK"), a_global = ctx->id("GATEMATE_GLOBAL");
+    pool<IdString> regions;
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
+        for (IdString a : {id_GATEMATE_MULT, id_GATEMATE_CONSTR_X, id_GATEMATE_CLUSTER, id_GATEMATE_CONSTR,
+                           id_GATEMATE_PORT_OFFSETS, a_region, a_port_cell, a_mult_cluster})
+            ci->attrs.erase(a);
+        // What the bitstream and the routing of the multipliers take from the packer
         if (multiplier_a_passthru_lowers.count(ci->name))
             ci->attrs[id_GATEMATE_MULT] = std::string("a_passthru_lower");
         else if (multiplier_a_passthru_uppers.count(ci->name))
@@ -982,32 +1038,187 @@ void GateMateImpl::save_partition_attrs()
             ci->attrs[id_GATEMATE_MULT] = std::string("zero_driver");
         if (ci->type == id_CPE_MULT)
             ci->attrs[id_GATEMATE_CONSTR_X] = Property(ci->constr_x, 32);
-        // The clusters, which the passes after placement respect (a register merged with its LUT, chains)
+        if (multiplier_clusters.count(ci->name))
+            ci->attrs[a_mult_cluster] = Property(1, 1);
+        // The clusters (a register merged with its LUT, chains, ...): the root, the offsets and the place among
+        // the root's children
         if (ci->cluster != ClusterId()) {
+            int index = -1;
+            CellInfo *root = ctx->getClusterRootCell(ci->cluster);
+            if (root != ci) {
+                auto &children = root->constr_children;
+                index = int(std::find(children.begin(), children.end(), ci) - children.begin());
+            }
             ci->attrs[id_GATEMATE_CLUSTER] = ci->cluster.str(ctx);
-            ci->attrs[id_GATEMATE_CONSTR] = stringf("%d,%d,%d,%d", ci->constr_x, ci->constr_y, ci->constr_z,
-                                                    int(ci->constr_abs_z));
+            ci->attrs[id_GATEMATE_CONSTR] = stringf("%d,%d,%d,%d,%d", ci->constr_x, ci->constr_y, ci->constr_z,
+                                                    int(ci->constr_abs_z), index);
         }
-        // The JSON writer writes the ports name[i] of a cell as a bus from the lowest i, without that index
-        dict<std::string, int> offsets;
-        for (auto &port : ci->ports) {
-            std::string name = port.first.str(ctx);
-            size_t open = name.find_last_of('[');
-            if (name.back() != ']' || open == std::string::npos)
-                continue;
-            int index = std::stoi(name.substr(open + 1));
-            std::string base = name.substr(0, open);
-            auto found = offsets.find(base);
-            if (found == offsets.end() || index < found->second)
-                offsets[base] = index;
+        if (ci->region) {
+            ci->attrs[a_region] = ci->region->name.str(ctx);
+            regions.insert(ci->region->name);
         }
-        std::string value;
-        for (auto &offset : offsets)
-            if (offset.second != 0)
-                value += stringf("%s%s=%d", value.empty() ? "" : ";", offset.first.c_str(), offset.second);
-        if (!value.empty())
-            ci->attrs[id_GATEMATE_PORT_OFFSETS] = value;
+        // The stand-ins on the ports of a partition, with what packing made of them (see partition_detached_cells)
+        for (auto dummy : partition_port_cells)
+            if (cell.first.str(ctx).rfind(dummy.str(ctx), 0) == 0) {
+                ci->attrs[a_port_cell] = Property(1, 1);
+                break;
+            }
     }
+    for (auto &net : ctx->nets) {
+        NetInfo *ni = net.second.get();
+        for (IdString a : {a_ddr, a_clock, a_global})
+            ni->attrs.erase(a);
+        if (ddr_nets.count(ni->name))
+            ni->attrs[a_ddr] = Property(1, 1);
+        auto clock = partition_clocks.find(ni->name);
+        if (clock != partition_clocks.end())
+            ni->attrs[a_clock] = clock->second.str(ctx);
+        auto global = global_signals.find(ni);
+        if (global != global_signals.end())
+            ni->attrs[a_global] = Property(global->second, 32);
+    }
+    // The regions the cells are constrained to, but for the dies (made with the chip)
+    std::vector<IdString> old_regions;
+    for (auto &setting : ctx->settings)
+        if (setting.first.str(ctx).rfind(region_setting_prefix, 0) == 0)
+            old_regions.push_back(setting.first);
+    for (auto name : old_regions)
+        ctx->settings.erase(name);
+    for (auto name : regions)
+        if (!die_to_index.count(name))
+            ctx->settings[ctx->idf("%s%s", region_setting_prefix, name.c_str(ctx))] =
+                    encode_region_tiles(ctx, ctx->region.at(name).get());
+    if (partition_area.x0 >= 0)
+        ctx->settings[ctx->id("partition-area")] = stringf("%d,%d,%d,%d", partition_area.x0, partition_area.y0,
+                                                           partition_area.x1, partition_area.y1);
+    if (!partition_io_tiles.empty()) {
+        std::vector<int> tiles(partition_io_tiles.begin(), partition_io_tiles.end());
+        std::sort(tiles.begin(), tiles.end());
+        std::string value;
+        for (int tile : tiles)
+            value += stringf("%s%d", value.empty() ? "" : ",", tile);
+        ctx->settings[ctx->id("partition-io-tiles")] = value;
+    }
+    ctx->settings[ctx->id("gatemate-strategy")] = Property(int(strategy), 32);
+}
+
+void GateMateImpl::attributesToArchState()
+{
+    if (!ctx->settings.count(ctx->id("pack")))
+        return;
+    auto setting = [&](const char *name) {
+        auto found = ctx->settings.find(ctx->id(name));
+        return found != ctx->settings.end() ? found->second.as_string() : std::string();
+    };
+    // What pack() reads from the options, and how far the partition flow got (see preparePartitionWrite)
+    as_partition |= ctx->settings.count(ctx->id("as-partition")) > 0;
+    partition_unrouted |= ctx->settings.count(ctx->id("partition-unrouted")) > 0;
+    partition_detached = ctx->settings.count(ctx->id("partition-clusters")) > 0;
+    if (ctx->settings.count(ctx->id("gatemate-strategy")))
+        strategy = MultiDieStrategy(ctx->settings.at(ctx->id("gatemate-strategy")).as_int64());
+    int x0, y0, x1, y1;
+    if (sscanf(setting("partition-area").c_str(), "%d,%d,%d,%d", &x0, &y0, &x1, &y1) == 4)
+        partition_area = BoundingBox(x0, y0, x1, y1);
+    {
+        std::vector<std::string> tiles;
+        std::string value = setting("partition-io-tiles");
+        boost::split(tiles, value, boost::is_any_of(","));
+        for (auto &tile : tiles)
+            if (!tile.empty())
+                partition_io_tiles.insert(std::stoi(tile));
+    }
+    for (auto &s : ctx->settings) {
+        std::string key = s.first.str(ctx);
+        if (key.rfind(region_setting_prefix, 0) != 0)
+            continue;
+        IdString name = ctx->id(key.substr(strlen(region_setting_prefix)));
+        ctx->createRectangularRegion(name, 0, 0, -1, -1); // empty, filled below
+        std::vector<std::string> rects;
+        std::string value = s.second.as_string();
+        boost::split(rects, value, boost::is_any_of(";"));
+        for (auto &rect : rects)
+            if (sscanf(rect.c_str(), "%d,%d,%d,%d", &x0, &y0, &x1, &y1) == 4)
+                for (int y = std::max(0, y0); y <= std::min(y1, ctx->getGridDimY() - 1); y++)
+                    for (int x = std::max(0, x0); x <= std::min(x1, ctx->getGridDimX() - 1); x++)
+                        for (BelId bel : ctx->getBelsByTile(x, y))
+                            ctx->addBelToRegion(name, bel);
+    }
+
+    const IdString a_region = ctx->id("GATEMATE_REGION"), a_port_cell = ctx->id("GATEMATE_PORT_CELL"),
+                   a_mult_cluster = ctx->id("GATEMATE_MULT_CLUSTER"), a_ddr = ctx->id("GATEMATE_DDR"),
+                   a_clock = ctx->id("GATEMATE_PARTITION_CLOCK"), a_global = ctx->id("GATEMATE_GLOBAL");
+    struct ClusterMember
+    {
+        CellInfo *cell;
+        IdString root;
+        int index;
+    };
+    std::vector<ClusterMember> members;
+    clkin.clear();
+    glbout.clear();
+    pll.clear();
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        auto constr = ci->attrs.find(id_GATEMATE_CONSTR);
+        int index = std::numeric_limits<int>::max(), x, y, z, abs_z;
+        if (constr != ci->attrs.end() &&
+            sscanf(constr->second.as_string().c_str(), "%d,%d,%d,%d,%d", &x, &y, &z, &abs_z, &index) < 5)
+            index = std::numeric_limits<int>::max(); // (written without it: in the order of the cells)
+        restore_partition_attrs(ci);
+        auto cluster = ci->attrs.find(id_GATEMATE_CLUSTER);
+        if (cluster != ci->attrs.end())
+            members.push_back({ci, ctx->id(cluster->second.as_string()), index});
+        auto region = ci->attrs.find(a_region);
+        if (region != ci->attrs.end()) {
+            IdString name = ctx->id(region->second.as_string());
+            if (ctx->region.count(name))
+                ctx->constrainCellToRegion(ci->name, name);
+            else
+                log_warning("Cell '%s' is constrained to region '%s', which the design does not define.\n",
+                            ctx->nameOf(ci), name.c_str(ctx));
+        }
+        if (ci->attrs.count(a_port_cell))
+            partition_port_cells.insert(ci->name);
+        if (ci->attrs.count(a_mult_cluster))
+            multiplier_clusters.insert(ci->name);
+        if (ci->type == id_CLKIN)
+            clkin.push_back(ci);
+        else if (ci->type == id_GLBOUT)
+            glbout.push_back(ci);
+        else if (ci->type == id_PLL)
+            pll.push_back(ci);
+        for (IdString a :
+             {id_GATEMATE_MULT, id_GATEMATE_CONSTR_X, id_GATEMATE_CLUSTER, a_region, a_port_cell, a_mult_cluster})
+            ci->attrs.erase(a);
+    }
+    std::stable_sort(members.begin(), members.end(),
+                     [](const ClusterMember &a, const ClusterMember &b) { return a.index < b.index; });
+    for (auto &m : members) {
+        auto root = ctx->cells.find(m.root);
+        if (root == ctx->cells.end()) {
+            log_warning("The cluster root '%s' of cell '%s' is missing.\n", m.root.c_str(ctx), ctx->nameOf(m.cell));
+            continue;
+        }
+        m.cell->cluster = m.root;
+        if (m.cell->name != m.root)
+            root->second->constr_children.push_back(m.cell);
+    }
+    for (auto &net : ctx->nets) {
+        NetInfo *ni = net.second.get();
+        if (ni->attrs.count(a_ddr))
+            ddr_nets.insert(ni->name);
+        auto clock = ni->attrs.find(a_clock);
+        if (clock != ni->attrs.end())
+            partition_clocks[ni->name] = ctx->id(clock->second.as_string());
+        auto global = ni->attrs.find(a_global);
+        if (global != ni->attrs.end())
+            global_signals[ni] = int(global->second.as_int64());
+        for (IdString a : {a_ddr, a_clock, a_global})
+            ni->attrs.erase(a);
+    }
+    if (dies > 1)
+        log_warning("A packed multi-die design was loaded: placing it again does not reassign the global clocks "
+                    "between the dies as the session that packed it would.\n");
 }
 
 std::vector<IdString> GateMateImpl::getPartitionInstances() const

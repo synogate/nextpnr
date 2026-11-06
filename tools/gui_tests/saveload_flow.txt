@@ -1,0 +1,91 @@
+# Save JSON and load it again (File > Open JSON) at every stage of the flow on a design that is not a partition
+# (the synthesized 008-counter with its CCF): packed; LUT/FF clusters hand placed, one locked; placed; a net hand
+# routed and locked, another hand routed; routed and finished (the routing renames the LUT inputs). Each time the
+# design loaded is as it was saved (design_state.py), with Pack / Place / Route enabled as they should be; at the
+# end Route runs again on the loaded routed design (nothing to do, nothing lost).
+# design: counter_synth
+resize 1400 1000
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+action Pack
+waitidle
+savejson stage1.json
+py save_state("stage1_state.json")
+openjson stage1.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage1_state.json")
+assert_action Pack off
+assert_action Place on
+assert_action Route off
+# --- two LUT/FF clusters by hand, one locked
+key E
+zoombel X40Y60/CPE_LT_L 1.6
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+clickbel X40Y60/CPE_LT_L
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
+clickbel X41Y60/CPE_LT_L
+wait 200
+key Esc
+clickbel X40Y60/CPE_LT_L right
+menu Lock
+wait 200
+py L0="$abc$348$auto$blifparse.cc:397:parse_blif$384"; L1="$abc$348$auto$blifparse.cc:397:parse_blif$383"; print(str(ctx.cells[L0].bel), int(ctx.cells[L0].belStrength), str(ctx.cells[L1].bel), int(ctx.cells[L1].belStrength))
+assert_py int(ctx.cells[L0].belStrength) == 6 and str(ctx.cells[L1].bel) == "X41Y60/CPE_LT_L"
+savejson stage2.json
+py save_state("stage2_state.json")
+openjson stage2.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage2_state.json")
+assert_action Place on
+assert_action Route off
+# --- Place the rest
+action Place
+waitidle
+assert_action Route on
+savejson stage3.json
+py save_state("stage3_state.json")
+openjson stage3.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage3_state.json")
+assert_action Place off
+assert_action Route on
+# --- route two nets by hand, lock one (edit mode stays on)
+selectnet counter[0]
+key R
+wait 300
+button Route rest
+wait 500
+button Lock
+wait 300
+key Esc
+selectnet counter[1]
+key R
+wait 300
+button Route rest
+wait 500
+key Esc
+py print({n: len(list(ctx.nets[n].wires)) for n in ("counter[0]", "counter[1]")})
+assert_py len(list(ctx.nets["counter[0]"].wires)) > 3 and len(list(ctx.nets["counter[1]"].wires)) > 3
+savejson stage4.json
+py save_state("stage4_state.json")
+openjson stage4.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage4_state.json")
+assert_action Route on
+# --- Route the rest; saving finishes the routing
+py S4=load_state("stage4_state.json")
+action Route
+waitidle
+py print("hand routing changed:", changed_wires(S4, "counter[0]"), "moved:", moved_cells(S4))
+assert_py not changed_wires(S4, "counter[0]") and not moved_cells(S4)
+savejson stage5.json
+py save_state("stage5_state.json")
+openjson stage5.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage5_state.json")
+assert_py not [n for n, ni in ctx.nets if ni.users and not list(ni.wires) and ni.driver.cell]
+assert_action Route on
+action Route
+waitidle
+assert_py check_state("stage5_state.json")
+zoomfit
+shotview stage5.png

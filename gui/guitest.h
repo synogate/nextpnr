@@ -84,6 +84,8 @@
  *   check <text> on|off        set a checkable button (e.g. a checkbox) starting with text
  *   savejson <file.json>       write the design as JSON (like File > Save), e.g. to check it without the
  *                              GUI afterwards
+ *   openjson <file.json>       load a design as File > Open JSON does (without the file dialog), in place of
+ *                              the design there is
  *   savepartition <file.json>  File > Save as partition... without the file dialog and the question
  *                              (fails with the reason if the design can not be saved as a partition)
  *   assert_action <text> on|off  the window action whose text starts with text is enabled / disabled

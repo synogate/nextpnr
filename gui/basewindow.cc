@@ -794,27 +794,40 @@ void BaseMainWindow::enableDisableDecals()
 void BaseMainWindow::open_json()
 {
     QString fileName = QFileDialog::getOpenFileName(this, QString("Open JSON"), QString(), QString("*.json"));
-    if (!fileName.isEmpty()) {
-        disableActions();
-        // Into a new context: a design can not be loaded into one that has a design already (the
-        // JSON frontend asserts that its modules are not there yet)
-        {
-            ArchArgs chipArgs = ctx->args;
-            std::unique_ptr<Context> new_ctx = std::unique_ptr<Context>(new Context(chipArgs));
+    if (!fileName.isEmpty())
+        loadJson(fileName.toStdString());
+}
+
+bool BaseMainWindow::loadJson(const std::string &filename)
+{
+    if (taskRunning)
+        return false;
+    disableActions();
+    // Into a new context: a design can not be loaded into one that has a design already (the JSON frontend asserts
+    // that its modules are not there yet), and the arch keeps state of its own for a design (e.g. the packer's)
+    {
+        ArchArgs chipArgs = ctx->args;
+        std::unique_ptr<Context> new_ctx = std::unique_ptr<Context>(new Context(chipArgs));
 #ifdef ARCH_HIMBAECHEL
-            new_ctx->uarch->with_gui = true;
-            new_ctx->uarch->init(new_ctx.get());
-            new_ctx->late_init();
+        new_ctx->uarch->with_gui = true;
+        new_ctx->uarch->init(new_ctx.get());
+        new_ctx->late_init();
 #endif
-            Q_EMIT contextChanged(new_ctx.get());
-            ctx = std::move(new_ctx);
-        }
-        editStack->clear();
-        handler->load_json(ctx.get(), fileName.toStdString());
-        Q_EMIT updateTreeView();
-        log("Loading design successful.\n");
-        updateActions();
+        Q_EMIT contextChanged(new_ctx.get());
+        ctx = std::move(new_ctx);
     }
+    editStack->clear();
+    bool ok = true;
+    try {
+        handler->load_json(ctx.get(), filename);
+    } catch (log_execution_error_exception) {
+        ok = false;
+    }
+    Q_EMIT updateTreeView();
+    ctx->refreshUi();
+    log(ok ? "Loading design successful.\n" : "Loading design failed.\n");
+    updateActions();
+    return ok;
 }
 
 void BaseMainWindow::save_json()

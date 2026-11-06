@@ -353,6 +353,7 @@ void GateMatePacker::remove_clocking()
 {
     log_info("Remove unused clocking cells..\n");
     auto remove_unused_cells = [&](std::vector<CellInfo *> &cells) {
+        std::vector<CellInfo *> kept;
         for (auto cell : cells) {
             bool used = false;
             for (auto port : cell->ports) {
@@ -366,8 +367,12 @@ void GateMatePacker::remove_clocking()
                 if (bel != BelId())
                     ctx->unbindBel(bel);
                 packed_cells.emplace(cell->name);
+            } else {
+                kept.push_back(cell);
             }
         }
+        // (placing again runs this again, on the cells left)
+        cells = kept;
     };
     remove_unused_cells(uarch->clkin);
     remove_unused_cells(uarch->glbout);

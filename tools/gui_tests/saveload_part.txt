@@ -1,0 +1,114 @@
+# Save JSON and load it again (File > Open JSON, in place of the design) at every stage of hand work on a partition,
+# ending identical to where it was saved: the cells (with the port stand-ins), types, bels, placement strengths,
+# clusters, regions, ports, the nets, their wires, pips and strengths and the settings (design_state.py).
+# The design is designs/mux_core.v (a counter, a CC_MX4 and two LUT / register clusters) as a partition (--vopt
+# as-partition). Stages: packed; hand placed (an MX4 cluster locked, LUT/FF clusters, a stand-in placed and unplaced
+# again); hand routed (one net, locked); Place and Route the rest; Save as partition at the end.
+# saveload_part_cmdline.txt loads stage3.json of this test on the command line.
+# design: mux_part
+resize 1400 1000
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+action Pack
+waitidle
+# --- stage 1: packed only
+savejson stage1.json
+py save_state("stage1_state.json")
+openjson stage1.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage1_state.json")
+py print(ctx.getSettings().get("pack"), ctx.getSettings().get("as-partition"), len([n for n, c in ctx.cells if ctx.getCellCluster(n)]), "cells in clusters")
+assert_action Pack off
+assert_action Place on
+assert_action Route off
+assert_action Undo off
+# --- stage 2: hand placement
+py Q="$auto$ff.cc:337:slice$150"; P="$abc$359$auto$blifparse.cc:397:parse_blif$396"; S0="sel[0]$partition_port"; HAND=(Q, Q+"$lt", "mux", "mux$upper", P, "$auto$ff.cc:337:slice$151")
+key E
+zoombel X20Y20/CPE_LT_L 1.6
+selectcell $auto$ff.cc:337:slice$150
+clickbel X20Y20/CPE_FF_L
+selectcell mux
+clickbel X21Y20/CPE_LT_L
+selectcell $abc$359$auto$blifparse.cc:397:parse_blif$396
+clickbel X20Y21/CPE_LT_L
+selectcell sel[0]$partition_port
+clickbel X21Y21/CPE_FF_L
+wait 200
+key Esc
+py print({n: (str(ctx.cells[n].bel), int(ctx.cells[n].belStrength)) for n in HAND + (S0, S0 + "$lt")})
+assert_py all(ctx.cells[n].bel for n in HAND + (S0, S0 + "$lt"))
+clickbel X21Y20/CPE_LT_L right
+menu Lock
+wait 200
+clickbel X21Y21/CPE_FF_L right
+menu Unplace
+wait 200
+assert_py not ctx.cells[S0].bel and not ctx.cells[S0 + "$lt"].bel and int(ctx.cells["mux"].belStrength) == 6 and int(ctx.cells["mux$upper"].belStrength) == 6
+assert_action Undo Unplace on
+savejson stage2.json
+py save_state("stage2_state.json")
+openjson stage2.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage2_state.json")
+assert_action Pack off
+assert_action Place on
+assert_action Route off
+assert_action Undo off
+# hand work goes on after loading, and can be undone
+py Q="$auto$ff.cc:337:slice$150"; P="$abc$359$auto$blifparse.cc:397:parse_blif$396"; S0="sel[0]$partition_port"; HAND=(Q, Q+"$lt", "mux", "mux$upper", P, "$auto$ff.cc:337:slice$151")
+zoombel X20Y20/CPE_LT_L 1.6
+selectcell sel[1]$partition_port
+clickbel X22Y21/CPE_FF_L
+wait 200
+assert_py str(ctx.cells["sel[1]$partition_port"].bel) == "X22Y21/CPE_FF_L"
+key Esc
+key Ctrl+Z
+wait 200
+assert_py not ctx.cells["sel[1]$partition_port"].bel
+assert_py check_state("stage2_state.json")
+# --- stage 3: route the multiplexer's output by hand (to both registers), lock it
+selectnet m
+key R
+wait 300
+button Route rest
+wait 500
+button Lock
+wait 300
+key Esc
+py W={str(w): (str(m.pip), int(m.strength)) for w, m in ctx.nets["m"].wires}; print(len(W), "wires of m")
+assert_py len(W) > 3 and all(s == 6 for p, s in W.values())
+shotview stage3.png
+savejson stage3.json
+py save_state("stage3_state.json")
+openjson stage3.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage3_state.json")
+assert_action Place on
+assert_action Route off
+assert_action Undo off
+# --- stage 4: Place and Route the rest; saving finishes the routing (the partition's stand-ins go)
+# (the locked and fixed cells stay where they are, compared by tile: postPlace's repack may rebind the halves of a CPE;
+# the router continues the hand routing into the CPEs: compare the hand routed wires)
+py S3=load_state("stage3_state.json")
+action Place
+waitidle
+py print("moved:", moved_cells(S3))
+assert_py not moved_cells(S3)
+assert_action Route on
+action Route
+waitidle
+py print("hand routing changed:", changed_wires(S3, "m"))
+assert_py not changed_wires(S3, "m")
+savejson stage4.json
+py save_state("stage4_state.json"); print(ctx.getSettings().get("route"), ctx.getSettings().get("partition-clusters"), len(list(ctx.cells)), "cells")
+openjson stage4.json
+py import os; exec(open(os.path.join(os.path.dirname(os.environ["NEXTPNR_GUI_TEST"]), "design_state.py")).read())
+assert_py check_state("stage4_state.json")
+assert_py not [n for n, c in ctx.cells if "partition_port" in n or c.type in ("CLKIN", "GLBOUT")]
+assert_action Place off
+assert_action Route off
+savepartition core_part.json
+py J=open("core_part.json").read(); print("partition-clusters" in J, "GATEMATE_CLUSTER" in J)
+assert_py "partition-clusters" in J and "GATEMATE_CLUSTER" in J
+zoomfit
+shotview stage4.png

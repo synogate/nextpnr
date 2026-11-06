@@ -57,7 +57,20 @@ print("HAND bad: %d %s" % (len(bad), bad[:5]))
     & gmpack bitstream.txt bitstream.bit
     if ($LASTEXITCODE -ne 0) { Write-Output "gmpack FAILED"; $failed++ } else { Write-Output "gmpack ok" }
 
-    & yosys -q -p "read_json flow_5a.json; write_verilog -norename -noattr flow_5a_pnr.v"
+    # The JSON has the unconnected ports of the cells too ("x"), some of which the simulation models lack: leave
+    # them out for the netlist checked
+    $j = Get-Content flow_5a.json -Raw | ConvertFrom-Json
+    foreach ($m in $j.modules.PSObject.Properties) {
+        foreach ($c in $m.Value.cells.PSObject.Properties) {
+            $open = @($c.Value.connections.PSObject.Properties | Where-Object { @($_.Value | Where-Object { $_ -ne "x" }).Count -eq 0 })
+            foreach ($p in $open) {
+                $c.Value.connections.PSObject.Properties.Remove($p.Name)
+                $c.Value.port_directions.PSObject.Properties.Remove($p.Name)
+            }
+        }
+    }
+    $j | ConvertTo-Json -Depth 64 -Compress | Set-Content -Encoding ascii flow_5a_eqy.json
+    & yosys -q -p "read_json flow_5a_eqy.json; write_verilog -norename -noattr flow_5a_pnr.v"
     $c = $Cases -replace '\\', '/'
     @"
 [gold]

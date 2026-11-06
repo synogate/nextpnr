@@ -1105,6 +1105,18 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         log("  saved " + fi.absoluteFilePath());
         return true;
     }
+    if (cmd == "openjson") {
+        if (!need(1))
+            return false;
+        QFileInfo fi(rest);
+        // As File > Open JSON (without the file dialog): the design in a fresh context
+        if (!win_->loadJson(fi.absoluteFilePath().toStdString())) {
+            error_ = "cannot load " + fi.absoluteFilePath();
+            return false;
+        }
+        log("  loaded " + fi.absoluteFilePath());
+        return true;
+    }
     if (cmd == "savepartition") {
         if (!need(1))
             return false;

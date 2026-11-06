@@ -19,6 +19,7 @@
 
 #include "jsonwrite.h"
 #include <assert.h>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -64,6 +65,7 @@ struct PortGroup
     std::vector<int> bits;
     PortType dir;
     int offset = 0;
+    bool indexed = false; // made of ports name[i]
 };
 
 std::vector<PortGroup> group_ports(Context *ctx, const dict<IdString, PortInfo> &ports, bool is_cell = false)
@@ -72,6 +74,8 @@ std::vector<PortGroup> group_ports(Context *ctx, const dict<IdString, PortInfo> 
     dict<std::string, size_t> base_to_group;
     for (auto &pair : ports) {
         std::string name = pair.second.name.str(ctx);
+        if (name.empty())
+            continue; // (a port without a name, made by mistake: nothing can read it back)
         if ((name.back() != ']') || (name.find('[') == std::string::npos)) {
             groups.push_back(
                     {name,
@@ -86,12 +90,39 @@ std::vector<PortGroup> group_ports(Context *ctx, const dict<IdString, PortInfo> 
             if (!base_to_group.count(basename)) {
                 base_to_group[basename] = groups.size();
                 groups.push_back({basename, {}, {}, pair.second.type});
+                groups.back().indexed = true;
             }
 
             auto &grp = groups.at(base_to_group[basename]);
             grp.grouped_bits.emplace_back(index, pair.second.net ? pair.second.net->name.index
                                                                  : (is_cell ? -1 : pair.first.index));
         }
+    }
+    if (is_cell) {
+        // Yosys JSON has no offset for the ports of a cell: the frontend names the bits of a connection name[0],
+        // name[1], ... and a lone bit name. A group that would not read back as the same ports (not from index 0,
+        // with gaps, a lone name[0]) is written port by port under the full names instead
+        std::vector<PortGroup> regrouped;
+        for (auto &group : groups) {
+            int hi = -1;
+            pool<int> indices;
+            for (auto &bit : group.grouped_bits) {
+                hi = std::max(hi, bit.first);
+                indices.insert(bit.first);
+            }
+            bool exact = !group.indexed ||
+                         (hi > 0 && int(indices.size()) == hi + 1 && int(group.grouped_bits.size()) == hi + 1);
+            if (exact) {
+                regrouped.push_back(group);
+                continue;
+            }
+            auto bits = group.grouped_bits;
+            std::sort(bits.begin(), bits.end());
+            for (auto &bit : bits)
+                regrouped.push_back(
+                        {stringf("%s[%d]", group.name.c_str(), bit.first), {{0, bit.second}}, {}, group.dir});
+        }
+        groups = std::move(regrouped);
     }
     for (auto &group : groups) {
         NPNR_ASSERT(!group.grouped_bits.empty());
@@ -108,16 +139,20 @@ std::vector<PortGroup> group_ports(Context *ctx, const dict<IdString, PortInfo> 
     return groups;
 }
 
-std::string format_port_bits(const PortGroup &port, int &dummy_idx)
+std::string format_port_bits(const PortGroup &port, int &dummy_idx, bool is_cell = false)
 {
     std::stringstream s;
     s << "[ ";
     bool first = true;
-    if (port.bits.size() != 1 || port.bits.at(0) != -1) // skip single disconnected ports
+    // An unconnected bit of a cell is "x", which the frontend reads as a port without a net (rather than leaving
+    // the port out, or making a net of its own for it)
+    if (is_cell || port.bits.size() != 1 || port.bits.at(0) != -1) // skip single disconnected ports
         for (auto bit : port.bits) {
             if (!first)
                 s << ", ";
-            if (bit == -1)
+            if (bit == -1 && is_cell)
+                s << "\"x\"";
+            else if (bit == -1)
                 s << (++dummy_idx);
             else
                 s << bit;
@@ -188,7 +223,8 @@ void write_module(std::ostream &f, Context *ctx)
         first2 = true;
         for (auto &pg : cell_ports) {
             f << stringf("%s\n", first2 ? "" : ",");
-            f << stringf("            %s: %s", get_string(pg.name).c_str(), format_port_bits(pg, dummy_idx).c_str());
+            f << stringf("            %s: %s", get_string(pg.name).c_str(),
+                         format_port_bits(pg, dummy_idx, true).c_str());
             first2 = false;
         }
         f << stringf("\n          }\n");
@@ -237,6 +273,7 @@ bool write_json_file(std::ostream &f, std::string &filename, Context *ctx)
         using namespace JsonWriter;
         if (!f)
             log_error("failed to open JSON file.\n");
+        ctx->archStateToAttributes();
         write_context(f, ctx);
         log_break();
         return true;

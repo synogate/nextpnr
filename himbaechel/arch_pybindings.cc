@@ -89,6 +89,15 @@ void arch_wrap_python(py::module &m)
             },
             "The children of a cluster root: (name, dx, dy, dz, abs_z) each");
     ctx_cls.def(
+            "getCellRegion",
+            [find_cell](Context &c, const std::string &name) -> py::object {
+                CellInfo *cell = find_cell(c, name);
+                if (!cell->region)
+                    return py::none();
+                return py::str(cell->region->name.str(&c));
+            },
+            "The name of the region the cell is constrained to, or None");
+    ctx_cls.def(
             "removeFromCluster",
             [find_cell](Context &c, const std::string &name) {
                 CellInfo *cell = find_cell(c, name);

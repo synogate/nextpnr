@@ -98,6 +98,9 @@ class BaseMainWindow : public QMainWindow
     virtual void beforeEdit() {}
     // Saves the design to a JSON file, logging how it went
     bool writeJson(const std::string &filename);
+    // Loads a design from a JSON file (File > Open JSON) into a fresh context, in place of the design there is;
+    // a design saved part way through the flow continues where it was (packed, placed, routed so far)
+    bool loadJson(const std::string &filename);
     // The architecture's part of savePartition (HimbaechelAPI::preparePartitionWrite); called with the context lock
     virtual std::string preparePartitionWrite(bool check_only, bool *changes_design)
     {

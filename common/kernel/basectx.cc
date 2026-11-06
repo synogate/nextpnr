@@ -233,6 +233,7 @@ void BaseCtx::archInfoToAttributes()
 
 void BaseCtx::attributesToArchInfo()
 {
+    getCtx()->attributesToArchState();
     for (auto &cell : cells) {
         auto ci = cell.second.get();
         auto val = ci->attrs.find(id("NEXTPNR_BEL"));
