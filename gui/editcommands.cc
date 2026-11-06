@@ -780,6 +780,7 @@ class MacroUndoCommand : public QUndoCommand
             }
             return {};
         });
+        ctx->notifyDesignEdited();
         ctx->refreshUi();
         ctx->unlock();
     }
@@ -800,6 +801,7 @@ class MacroUndoCommand : public QUndoCommand
             }
             return {};
         });
+        ctx->notifyDesignEdited();
         ctx->refreshUi();
         ctx->unlock();
     }
@@ -896,8 +898,10 @@ std::string EditStack::run(const QString &text, const std::function<std::string(
         batch.cmds.clear();
     }
     bool changed = !batch.cmds.empty();
-    if (changed || !err.empty())
+    if (changed || !err.empty()) {
+        ctx->notifyDesignEdited();
         ctx->refreshUi();
+    }
     ctx->unlock();
 
     if (!err.empty()) {
@@ -943,6 +947,9 @@ std::string EditStack::dryRun(const std::function<std::string(EditBatch &)> &fn)
             batch.cmds[i]->revert(ctx);
         return {};
     });
+    // Whatever the Arch derived from the trial state (e.g. computed lazily) is stale now
+    if (!batch.cmds.empty())
+        ctx->notifyDesignEdited();
     batch.cmds.clear();
     if (rerr.empty()) {
         ctx->allUiReload = all_reload;

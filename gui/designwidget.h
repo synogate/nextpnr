@@ -122,6 +122,9 @@ class DesignWidget : public QWidget
     void centerOnBels(std::vector<BelId> bels);
     // The net to show in the device view (selected net, or net of the selected wire / pip; empty: none)
     void netSelected(IdString net);
+    // Enter the device view's route mode for a net, with the head at `from` (a wire of the net) or,
+    // if none, at its source wire
+    void routeNetRequested(IdString net, WireId from);
 
   private Q_SLOTS:
     void prepareMenuProperty(const QPoint &pos);
@@ -146,6 +149,8 @@ class DesignWidget : public QWidget
     void showNet(IdString net);
     // Arm the selected cell, or the cell on the selected bel, for placement by click
     void armSelected();
+    // Route the selected net by hand (or the net of the selected wire / pip, from that wire on)
+    void routeSelected();
     // Select and arm the next unplaced cell (by name, after the last one chosen this way) and centre
     // the view on its placed neighbours (via its nets), if any
     void selectNextUnplaced();

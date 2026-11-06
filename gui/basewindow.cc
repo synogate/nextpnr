@@ -168,6 +168,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(fpgaView, &FPGAViewWidget::nudgeRequested, designview, &DesignWidget::nudgeSelection);
     connect(designview, &DesignWidget::netSelected, fpgaView, &FPGAViewWidget::setNetView);
     connect(fpgaView, &FPGAViewWidget::showNetRequested, designview, &DesignWidget::showNet);
+    connect(designview, &DesignWidget::routeNetRequested, fpgaView, &FPGAViewWidget::startRouting);
 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
@@ -418,10 +419,17 @@ void BaseMainWindow::createMenusAndBars()
     actionUnlockAllNets->setStatusTip("Set the strength of all locked routing to STRONG, as one undoable edit");
     connect(actionUnlockAllNets, &QAction::triggered, designview, &DesignWidget::unlockAllNets);
 
-    actionCancelPlacement = new QAction("Cancel placement", this);
+    QAction *actionRouteNet = new QAction("Route net by hand", this);
+    actionRouteNet->setShortcut(QKeySequence(Qt::Key_R));
+    actionRouteNet->setStatusTip("Route the selected net pip by pip in the device view (from the selected wire of "
+                                 "the net, else from its source): click a green candidate, Backspace takes the "
+                                 "last pip back, Esc ends");
+    connect(actionRouteNet, &QAction::triggered, designview, &DesignWidget::routeSelected);
+
+    actionCancelPlacement = new QAction("Cancel placement / end routing", this);
     actionCancelPlacement->setShortcut(QKeySequence(Qt::Key_Escape));
     actionCancelPlacement->setEnabled(false);
-    connect(actionCancelPlacement, &QAction::triggered, fpgaView, &FPGAViewWidget::disarmPlacement);
+    connect(actionCancelPlacement, &QAction::triggered, fpgaView, &FPGAViewWidget::cancelInteraction);
 
     // View menu actions
     QAction *actionShowUnrouted = new QAction("Show unrouted arcs", this);
@@ -467,6 +475,7 @@ void BaseMainWindow::createMenusAndBars()
     menuEdit->addAction(actionNextUnplaced);
     menuEdit->addAction(actionCancelPlacement);
     menuEdit->addAction(actionMoveSelection);
+    menuEdit->addAction(actionRouteNet);
     menuEdit->addSeparator();
     menuEdit->addAction(actionUnlockSelection);
     menuEdit->addAction(actionUnlockAllCells);

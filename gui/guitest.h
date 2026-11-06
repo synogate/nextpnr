@@ -52,6 +52,10 @@
  *   clickbel|clickwire|clickpip|clickcell <name> [left|right] [mods]
  *                              click a point where the element is the first pick candidate (pans
  *                              the view if it is not in view); hoverbel ... only moves there
+ *   clickcand|hovercand <dst wire or pip> [left|right] [mods]
+ *                              route mode: a point where that candidate pip (downhill of the head)
+ *                              is the one a click takes
+ *   route                      print the route mode state (net, head, candidates by class)
  *   drag <x1> <y1> <x2> <y2> [left|right|middle] [mods]
  *   dragbel <from_bel> <to_bel> [mods]   (both must fit into the view at the current zoom)
  *   key <keyseq>               e.g. key E, key Ctrl+Z, key Esc, key Shift+Left (QKeySequence

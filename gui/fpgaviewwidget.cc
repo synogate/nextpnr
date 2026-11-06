@@ -84,6 +84,11 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     colors_.net[NET_SINK_BAD] = QColor("#ffe020");
     colors_.net[NET_DECAL_SETS + NET_RATSNEST] = QColor("#ffe020");
     colors_.net[NET_DECAL_SETS + ALL_RATSNEST] = QColor("#a0a040");
+    colors_.route[ROUTE_OK] = QColor("#30f030");
+    colors_.route[ROUTE_OTHER] = QColor("#ff9900");
+    colors_.route[ROUTE_UNAVAIL] = QColor("#787878");
+    colors_.route[ROUTE_DST] = QColor("#2a6a2a");
+    colors_.route[ROUTE_HEAD] = QColor("#ffffff");
 
     rendererArgs_->changed = false;
     rendererArgs_->gridChanged = false;
@@ -121,6 +126,8 @@ void FPGAViewWidget::setEditStack(EditStack *stack)
             }
             updateOverlay();
         }
+        if (routeNet_ != IdString())
+            syncRouteState();
         // The hovered element's binding state may have changed
         applyHover();
         refreshNetView();
@@ -128,6 +135,8 @@ void FPGAViewWidget::setEditStack(EditStack *stack)
     connect(stack, &EditStack::stateChanged, this, [this] {
         if (armedCell_ != IdString() && !editStack_->canEdit())
             disarmPlacement();
+        if (routeNet_ != IdString() && !editStack_->canEdit())
+            stopRouting();
     });
 }
 
@@ -137,6 +146,7 @@ void FPGAViewWidget::newContext(Context *ctx)
     hoverCandidates_.clear();
     ctx_ = nullptr;
     disarmPlacement();
+    stopRouting();
     netView_ = IdString();
     ctx_ = ctx;
     updateNetOverlay();
@@ -161,7 +171,7 @@ QSize FPGAViewWidget::sizeHint() const { return QSize(640, 480); }
 
 void FPGAViewWidget::initializeGL()
 {
-    if (!lineShader_.compile(netSlot(NET_SLOTS))) {
+    if (!lineShader_.compile(routeSlot(ROUTE_SLOTS))) {
         log_error("Could not compile shader.\n");
     }
     if (!textShader_.compile(archTextSlot(ARCH_LAYERS, 0, 0))) {
@@ -625,6 +635,12 @@ void FPGAViewWidget::paintGL()
         lineShader_.draw(netSlot(i), colors_.net[i], thick ? thick2Px * 1.5f : thick11Px, matrix);
     }
 
+    // Route mode: the destination wires faint, the candidate pips, the head thick
+    for (int i : {ROUTE_DST, ROUTE_UNAVAIL, ROUTE_OTHER, ROUTE_OK, ROUTE_HEAD}) {
+        float thick = i == ROUTE_HEAD ? thick2Px * 1.5f : (i == ROUTE_OK || i == ROUTE_OTHER) ? thick2Px : thick11Px;
+        lineShader_.draw(routeSlot(i), colors_.route[i], thick, matrix);
+    }
+
     // Draw highlighted items.
     for (int i = 0; i < 8; i++) {
         GraphicElement::style_t style = (GraphicElement::style_t)(GraphicElement::STYLE_HIGHLIGHTED0 + i);
@@ -789,6 +805,8 @@ void FPGAViewWidget::renderLines(void)
     std::vector<DecalXY> netDecals[NET_DECAL_SETS];
     std::vector<std::array<float, 4>> netLines[NET_LINE_SETS];
     bool netChanged;
+    std::vector<DecalXY> routeDecals[ROUTE_SLOTS];
+    bool routeChanged;
     bool highlightedOrSelectedChanged;
     bool gridChanged;
     PickQuadTree::BoundingBox viewRect;
@@ -818,6 +836,11 @@ void FPGAViewWidget::renderLines(void)
             for (int i = 0; i < NET_LINE_SETS; i++)
                 netLines[i] = rendererArgs_->netLines[i];
         }
+        routeChanged = rendererArgs_->routeChanged;
+        rendererArgs_->routeChanged = false;
+        if (routeChanged)
+            for (int i = 0; i < ROUTE_SLOTS; i++)
+                routeDecals[i] = rendererArgs_->routeDecals[i];
 
         highlightedOrSelectedChanged = rendererArgs_->changed;
         gridChanged = rendererArgs_->gridChanged;
@@ -931,6 +954,8 @@ void FPGAViewWidget::renderLines(void)
                 data->gfxOverlay[i] = rendererData_->gfxOverlay[i];
             for (int i = 0; i < NET_SLOTS; i++)
                 data->gfxNet[i] = rendererData_->gfxNet[i];
+            for (int i = 0; i < ROUTE_SLOTS; i++)
+                data->gfxRoute[i] = rendererData_->gfxRoute[i];
             data->arch.setGeneration(++archGeneration_);
             rendererData_ = std::move(data);
         }
@@ -1039,6 +1064,19 @@ void FPGAViewWidget::renderLines(void)
             int last = rendererData_->gfxNet[i].last_render;
             rendererData_->gfxNet[i] = std::move(gfx[i]);
             rendererData_->gfxNet[i].last_render = last + 1;
+        }
+    }
+    if (routeChanged) {
+        LineShaderData gfx[ROUTE_SLOTS];
+        PickQuadTree::BoundingBox bb;
+        for (int i = 0; i < ROUTE_SLOTS; i++)
+            for (auto &decal : routeDecals[i])
+                renderDecal(gfx[i], bb, decal);
+        QMutexLocker locker(&rendererDataLock_);
+        for (int i = 0; i < ROUTE_SLOTS; i++) {
+            int last = rendererData_->gfxRoute[i].last_render;
+            rendererData_->gfxRoute[i] = std::move(gfx[i]);
+            rendererData_->gfxRoute[i].last_render = last + 1;
         }
     }
 
@@ -1252,6 +1290,7 @@ void FPGAViewWidget::emitClicked(const PickedElement &e, bool add)
 
 void FPGAViewWidget::updateHover(int x, int y)
 {
+    lastMousePos_ = QPoint(x, y);
     if (picking_)
         return; // (nothing hovered while picking)
     auto world = mouseToWorldCoordinates(x, y);
@@ -1270,6 +1309,27 @@ void FPGAViewWidget::updateHover(int x, int y)
 
 void FPGAViewWidget::applyHover(bool immediate)
 {
+    // Route mode: the candidate under the cursor, with what a click does
+    int route_pick = routeNet_ != IdString() ? routePick(lastMousePos_.x(), lastMousePos_.y()) : -1;
+    if (route_pick >= 0) {
+        const RouteCand &c = routeCands_.at(route_pick);
+        std::string text = routeCandText(c);
+        DecalXY decal = ctx_->getPipDecal(c.pip);
+        {
+            QMutexLocker locked(&rendererArgsLock_);
+            rendererArgs_->overlayHoverBad = DecalXY();
+            if (immediate)
+                hoverSince_ = clock_.elapsed() - TOOLTIP_DELAY_MS;
+            else if (!(rendererArgs_->hoveredDecal == decal))
+                hoverSince_ = clock_.elapsed();
+            rendererArgs_->hoveredDecal = decal;
+            rendererArgs_->changed = true;
+            rendererArgs_->hintText = text;
+        }
+        pokeRenderer();
+        update();
+        return;
+    }
     if (hoverCandidates_.empty()) {
         QMutexLocker locked(&rendererArgsLock_);
         rendererArgs_->hoveredDecal = DecalXY();
@@ -1288,8 +1348,13 @@ void FPGAViewWidget::applyHover(bool immediate)
     DecalXY decal = e.decal(ctx_);
     // Placing the armed cell: what a click on the bel here would do (the bel the click would use)
     DecalXY hoverBad;
+    if (routeNet_ != IdString()) {
+        WireId tree = routeTreeWire(hoverCandidates_);
+        if (tree != WireId() && tree != routeHead_)
+            text += "\nClick: continue routing " + routeNet_.str(ctx_) + " from " + ctx_->nameOfWire(tree);
+    }
     if (armedCell_ != IdString()) {
-        BelId bel = candidateBel(hoverCandidates_);
+        BelId bel = placementBel(hoverCandidates_);
         if (bel != BelId()) {
             if (bel != hoverCheckedBel_) {
                 hoverCheckedBel_ = bel;
@@ -1324,6 +1389,10 @@ void FPGAViewWidget::applyHover(bool immediate)
 void FPGAViewWidget::showSelectMenu(const QPoint &pos)
 {
     updateHover(pos.x(), pos.y());
+    if (routeNet_ != IdString()) {
+        showRouteMenu(pos);
+        return;
+    }
     if (hoverCandidates_.empty())
         return;
     std::vector<PickedElement> cands = hoverCandidates_;
@@ -1348,7 +1417,7 @@ void FPGAViewWidget::showSelectMenu(const QPoint &pos)
         QAction *more = menu.addAction(QString("... %1 more").arg(cands.size() - shown));
         more->setEnabled(false);
     }
-    BelId bel = candidateBel(cands);
+    BelId bel = placementBel(cands);
     if (bel != BelId())
         addBelEditActions(menu, bel);
     addRouteEditActions(menu, cands);
@@ -1383,9 +1452,30 @@ void FPGAViewWidget::mousePressEvent(QMouseEvent *event)
         QPoint pos = event->pos();
         auto world = mouseToWorldCoordinates(EVENT_POS(event).x(), EVENT_POS(event).y());
         std::vector<PickedElement> cands = pickCandidates(world.x(), world.y());
+        if (routeNet_ != IdString()) {
+            // Routing: a candidate pip / its destination wire, else a wire of the net; the selection
+            // stays as it is
+            lastMousePos_ = pos;
+            int pick = routePick(pos.x(), pos.y());
+            if (pick >= 0) {
+                routeThrough(pick);
+                return;
+            }
+            WireId tree = routeTreeWire(cands);
+            if (tree != WireId()) {
+                setRouteHead(tree);
+                return;
+            }
+            if (editStack_)
+                editStack_->notify(QString("Routing %1: click a green pip (or its wire) or a wire of the net; "
+                                           "Esc ends")
+                                           .arg(routeNet_.c_str(ctx_)));
+            return;
+        }
         if (armedCell_ != IdString()) {
             // Placing: the click goes to the bel here, the selection stays as it is
-            BelId bel = candidateBel(cands);
+            lastMousePos_ = pos;
+            BelId bel = placementBel(cands);
             if (bel == BelId()) {
                 if (editStack_)
                     editStack_->notify(QString("Placing %1: click on a bel (Esc to cancel)")
@@ -1585,6 +1675,11 @@ bool FPGAViewWidget::event(QEvent *event)
             }
             return true;
         }
+        if (ke->key() == Qt::Key_Backspace && routeNet_ != IdString() &&
+            !(ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+            routeBack();
+            return true;
+        }
         // Edit mode: arrow keys move the selection
         if ((ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up ||
              ke->key() == Qt::Key_Down) &&
@@ -1776,6 +1871,8 @@ void FPGAViewWidget::armCell(IdString cell)
     if (ci->name == armedCell_)
         return;
     std::string fixed = cellFixedReason(ctx_, ci);
+    if (fixed.empty())
+        stopRouting();
     if (!fixed.empty()) {
         editStack_->notify("Cannot move: " + QString::fromStdString(fixed));
         return;
@@ -1927,7 +2024,7 @@ void FPGAViewWidget::finishDrag(const QPoint &pos)
         return;
     }
     updateHover(pos.x(), pos.y());
-    BelId bel = candidateBel(hoverCandidates_);
+    BelId bel = placementBel(hoverCandidates_);
     BelId target = dropTarget(bel);
     dragging_ = false;
     if (bel == BelId()) {
@@ -2073,6 +2170,9 @@ void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)
 
 void FPGAViewWidget::setNetView(IdString net)
 {
+    // While routing, the routed net stays in view
+    if (routeNet_ != IdString())
+        net = routeNet_;
     if (net == netView_ && net == IdString())
         return;
     netView_ = net;
@@ -2234,6 +2334,9 @@ void FPGAViewWidget::addRouteEditActions(QMenu &menu, const std::vector<PickedEl
     QAction *show = menu.addAction(QString("Show net %1").arg(netName));
     connect(show, &QAction::triggered, this, [this, net] { Q_EMIT showNetRequested(net); });
 
+    QAction *route = editAction(menu, QString("Route net %1 from %2...").arg(netName).arg(ctx_->nameOfWire(wire)));
+    connect(route, &QAction::triggered, this, [this, net, wire] { startRouting(net, wire); });
+
     QAction *unroute = editAction(menu, QString("Unroute net %1").arg(netName));
     connect(unroute, &QAction::triggered, this, [run, net, netName] {
         run("Unroute net " + netName, [net](EditBatch &b) { return addUnrouteNet(b, net); });
@@ -2279,6 +2382,439 @@ void FPGAViewWidget::addRouteEditActions(QMenu &menu, const std::vector<PickedEl
     }
 }
 
+BelId FPGAViewWidget::placementBel(const std::vector<PickedElement> &cands)
+{
+    BelId bel = candidateBel(cands);
+    IdString cell = dragging_ ? dragCell_ : armedCell_;
+    if (bel == BelId() || cell == IdString() || ctx_ == nullptr)
+        return bel;
+    auto fnd = ctx_->cells.find(cell);
+    if (fnd == ctx_->cells.end())
+        return bel;
+    IdString type = fnd->second->type;
+    if (ctx_->isValidBelForCellType(type, bel))
+        return bel;
+    for (auto &c : cands)
+        if (c.type == ElementType::BEL && ctx_->isValidBelForCellType(type, c.bel))
+            return c.bel;
+    // None under the cursor (e.g. over a part of the full-CPE bel outside both halves): the site for
+    // the cell's type in the same tile closest to the cursor
+    Loc loc = ctx_->getBelLocation(bel);
+    auto world = mouseToWorldCoordinates(lastMousePos_.x(), lastMousePos_.y());
+    BelId best;
+    float best_dist = std::numeric_limits<float>::infinity();
+    for (BelId other : ctx_->getBelsByTile(loc.x, loc.y)) {
+        float x, y;
+        if (!ctx_->isValidBelForCellType(type, other) || !NetStatus::belCentre(ctx_, other, x, y))
+            continue;
+        float d = std::hypot(x - world.x(), y - world.y());
+        if (d < best_dist) {
+            best = other;
+            best_dist = d;
+        }
+    }
+    return best != BelId() ? best : bel;
+}
+
+// ---------------------------------------------------------------------------
+// Route mode
+
+void FPGAViewWidget::startRouting(IdString net, WireId from)
+{
+    QString why;
+    if (editStack_ == nullptr || ctx_ == nullptr || !editStack_->canEdit(&why)) {
+        if (editStack_)
+            editStack_->notify("Cannot route: " + why);
+        return;
+    }
+    WireId head;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        auto fnd = ctx_->nets.find(net);
+        if (fnd == ctx_->nets.end())
+            return;
+        NetInfo *ni = fnd->second.get();
+        WireId source = ctx_->getNetinfoSourceWire(ni);
+        if (from != WireId() && ctx_->getBoundWireNet(from) == ni) {
+            head = from;
+        } else if (source != WireId()) {
+            NetInfo *bound = ctx_->getBoundWireNet(source);
+            if (bound != nullptr && bound != ni) {
+                editStack_->notify(QString("Cannot route %1: its source wire %2 is used by net %3")
+                                           .arg(net.c_str(ctx_))
+                                           .arg(ctx_->nameOfWire(source))
+                                           .arg(bound->name.c_str(ctx_)));
+                return;
+            }
+            head = source;
+        }
+        if (head == WireId()) {
+            editStack_->notify(QString("Cannot route %1: it has no source wire (driver unplaced or missing)")
+                                       .arg(net.c_str(ctx_)));
+            return;
+        }
+        // The availability of pips may depend on placement edits made since it was last computed
+        ctx_->notifyDesignEdited();
+    }
+    disarmPlacement();
+    routeNet_ = net;
+    routeHead_ = head;
+    routeSteps_.clear();
+    netView_ = net;
+    updateNetOverlay();
+    updateRouteCandidates();
+    emitRouteStatus();
+    applyHover();
+}
+
+void FPGAViewWidget::stopRouting()
+{
+    if (routeNet_ == IdString())
+        return;
+    routeNet_ = IdString();
+    routeHead_ = WireId();
+    routeCands_.clear();
+    routeSteps_.clear();
+    updateRouteCandidates();
+    Q_EMIT placementStatus(QString());
+    if (ctx_ != nullptr)
+        applyHover();
+}
+
+void FPGAViewWidget::cancelInteraction()
+{
+    disarmPlacement();
+    if (routeNet_ != IdString()) {
+        if (editStack_)
+            editStack_->notify(QString("Routing %1 ended").arg(routeNet_.c_str(ctx_)));
+        stopRouting();
+    }
+}
+
+void FPGAViewWidget::updateRouteCandidates()
+{
+    std::vector<DecalXY> sets[ROUTE_SLOTS];
+    routeCands_.clear();
+    if (routeNet_ != IdString() && ctx_ != nullptr) {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        auto fnd = ctx_->nets.find(routeNet_);
+        if (fnd != ctx_->nets.end()) {
+            NetInfo *ni = fnd->second.get();
+            for (PipId pip : ctx_->getPipsDownhill(routeHead_)) {
+                RouteCand c;
+                c.pip = pip;
+                c.dst = ctx_->getPipDstWire(pip);
+                c.delay = ctx_->getDelayNS(ctx_->getPipDelay(pip).maxDelay());
+                NetInfo *pip_net = ctx_->getBoundPipNet(pip);
+                NetInfo *dst_net = ctx_->getBoundWireNet(c.dst);
+                if (pip_net == ni) {
+                    c.cls = ROUTE_OK;
+                    c.bound = true;
+                } else if (pip_net != nullptr) {
+                    c.cls = ROUTE_OTHER;
+                    c.why = "pip used by net " + pip_net->name.str(ctx_);
+                } else if (dst_net != nullptr && dst_net != ni) {
+                    c.cls = ROUTE_OTHER;
+                    c.why = "destination wire used by net " + dst_net->name.str(ctx_);
+                } else if (dst_net == ni) {
+                    c.cls = ROUTE_UNAVAIL;
+                    c.why = "destination wire already in the net (driven by another pip)";
+                } else if (!ctx_->checkWireAvail(c.dst)) {
+                    c.cls = ROUTE_UNAVAIL;
+                    c.why = "destination wire not available";
+                } else if (!ctx_->checkPipAvailForNet(pip, ni)) {
+                    c.cls = ROUTE_UNAVAIL;
+                    c.why = "pip not available (e.g. a mode or mux setting of the placed cells forbids it)";
+                } else {
+                    c.cls = ROUTE_OK;
+                }
+                sets[c.cls].push_back(ctx_->getPipDecal(pip));
+                sets[ROUTE_DST].push_back(ctx_->getWireDecal(c.dst));
+                routeCands_.push_back(std::move(c));
+            }
+            // The head: its wire and, as many wires have no graphics of their own, the pip driving it
+            sets[ROUTE_HEAD].push_back(ctx_->getWireDecal(routeHead_));
+            auto head = ni->wires.find(routeHead_);
+            if (head != ni->wires.end() && head->second.pip != PipId())
+                sets[ROUTE_HEAD].push_back(ctx_->getPipDecal(head->second.pip));
+        }
+    }
+    {
+        QMutexLocker locker(&rendererArgsLock_);
+        for (int i = 0; i < ROUTE_SLOTS; i++)
+            rendererArgs_->routeDecals[i] = std::move(sets[i]);
+        rendererArgs_->routeChanged = true;
+    }
+    pokeRenderer();
+}
+
+void FPGAViewWidget::emitRouteStatus()
+{
+    if (routeNet_ == IdString() || ctx_ == nullptr)
+        return;
+    int ok = 0;
+    for (auto &c : routeCands_)
+        ok += c.cls == ROUTE_OK;
+    Q_EMIT placementStatus(QString("Routing %1 from %2 (%3 of %4 pips free): click a pip/wire, Backspace = back, "
+                                   "Esc = done")
+                                   .arg(routeNet_.c_str(ctx_))
+                                   .arg(ctx_->nameOfWire(routeHead_))
+                                   .arg(ok)
+                                   .arg(routeCands_.size()));
+}
+
+int FPGAViewWidget::routePick(int x, int y)
+{
+    if (routeNet_ == IdString() || ctx_ == nullptr || routeCands_.empty())
+        return -1;
+    auto world = mouseToWorldCoordinates(x, y);
+    float reach = mouseToWorldDimensions(6, 0).x();
+    float thin = mouseToWorldDimensions(1, 0).x();
+    // The overlay draws the graphics shown at full detail (see renderDecal)
+    const float full_detail = std::numeric_limits<float>::max();
+    int best = -1;
+    float best_dist = reach;
+    for (size_t i = 0; i < routeCands_.size(); i++) {
+        const RouteCand &c = routeCands_[i];
+        float dist, size;
+        // Closest first; where pips overlap (e.g. the same line on to two destinations), a free one
+        // wins; the pip wins over its wire (counted a pixel further away)
+        auto better = [&](float d) {
+            if (best < 0)
+                return d <= best_dist;
+            if (d < best_dist - 0.5f * thin)
+                return true;
+            return d <= best_dist + 0.5f * thin && c.cls == ROUTE_OK && routeCands_[best].cls != ROUTE_OK;
+        };
+        if (PickedElement::fromPip(c.pip, 0, 0).hitMetrics(ctx_, world.x(), world.y(), full_detail, thin, dist, size) &&
+            better(dist)) {
+            best = int(i);
+            best_dist = dist;
+        }
+        if (PickedElement::fromWire(c.dst, 0, 0)
+                    .hitMetrics(ctx_, world.x(), world.y(), full_detail, thin, dist, size) &&
+            better(dist + thin)) {
+            best = int(i);
+            best_dist = dist + thin;
+        }
+    }
+    return best;
+}
+
+WireId FPGAViewWidget::routeTreeWire(const std::vector<PickedElement> &cands)
+{
+    if (routeNet_ == IdString() || ctx_ == nullptr)
+        return WireId();
+    std::vector<const PickedElement *> order;
+    if (cands == hoverCandidates_ && hoverIndex_ >= 0 && hoverIndex_ < int(cands.size()))
+        order.push_back(&cands.at(hoverIndex_));
+    for (auto &c : cands)
+        order.push_back(&c);
+    for (auto *c : order) {
+        if (c->type == ElementType::WIRE) {
+            NetInfo *ni = ctx_->getBoundWireNet(c->wire);
+            if (ni != nullptr && ni->name == routeNet_)
+                return c->wire;
+        } else if (c->type == ElementType::PIP) {
+            NetInfo *ni = ctx_->getBoundPipNet(c->pip);
+            if (ni != nullptr && ni->name == routeNet_)
+                return ctx_->getPipDstWire(c->pip);
+        }
+    }
+    return WireId();
+}
+
+std::string FPGAViewWidget::routeCandText(const RouteCand &c)
+{
+    std::string text = "PIP " + std::string(ctx_->nameOfPip(c.pip)) + "\nto wire " + ctx_->nameOfWire(c.dst);
+    char delay[32];
+    snprintf(delay, sizeof(delay), "%.3f", c.delay);
+    text += "\ndelay " + std::string(delay) + " ns";
+    if (c.bound)
+        text += "\nalready routed: click to continue from " + std::string(ctx_->nameOfWire(c.dst));
+    else if (c.cls == ROUTE_OK)
+        text += "\nClick: route " + routeNet_.str(ctx_) + " through it";
+    else
+        text += "\nNot allowed: " + c.why;
+    return text;
+}
+
+void FPGAViewWidget::setRouteHead(WireId wire)
+{
+    if (wire == routeHead_)
+        return;
+    routeHead_ = wire;
+    updateRouteCandidates();
+    emitRouteStatus();
+    applyHover();
+}
+
+std::string FPGAViewWidget::routeThrough(int index)
+{
+    if (editStack_ == nullptr || ctx_ == nullptr || index < 0 || index >= int(routeCands_.size()))
+        return "no candidate";
+    RouteCand c = routeCands_.at(index);
+    if (c.bound) {
+        setRouteHead(c.dst);
+        return {};
+    }
+    if (c.cls != ROUTE_OK) {
+        std::string err = "cannot route through " + std::string(ctx_->nameOfPip(c.pip)) + ": " + c.why;
+        editStack_->notify(QString::fromStdString(err));
+        return err;
+    }
+    IdString net = routeNet_;
+    WireId head = routeHead_;
+    QString text = QString("Route %1 through %2").arg(net.c_str(ctx_)).arg(ctx_->nameOfPip(c.pip));
+    std::string err = editStack_->run(text, [&](EditBatch &b) -> std::string {
+        Context *ctx = b.getContext();
+        auto fnd = ctx->nets.find(net);
+        if (fnd == ctx->nets.end())
+            return "net " + net.str(ctx) + " does not exist";
+        NetInfo *ni = fnd->second.get();
+        // The source wire is bound with the first pip, if it is not yet
+        if (ctx->getBoundWireNet(head) == nullptr) {
+            if (head != ctx->getNetinfoSourceWire(ni))
+                return "the head wire " + std::string(ctx->nameOfWire(head)) + " is not part of the net";
+            std::string e = b.add(std::make_unique<BindWireCmd>(net, head, STRENGTH_MANUAL));
+            if (!e.empty())
+                return e;
+        }
+        return b.add(std::make_unique<BindPipCmd>(net, c.pip, STRENGTH_MANUAL));
+    });
+    if (!err.empty())
+        return err; // shown in the status bar by the stack
+    routeSteps_.push_back(RouteStep{c.pip, head, editStack_->undoStack()->index()});
+    routeHead_ = c.dst;
+    updateRouteCandidates();
+    emitRouteStatus();
+    // Reached a sink of the net?
+    QString reached;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        auto fnd = ctx_->nets.find(net);
+        if (fnd != ctx_->nets.end()) {
+            NetStatus::Status st = NetStatus::compute(ctx_, fnd->second.get());
+            for (auto &arc : st.arcs)
+                if (arc.sink == c.dst && arc.state == NetStatus::ArcState::ROUTED)
+                    reached = QString("%1: arc to %2.%3 routed (%4)")
+                                      .arg(text)
+                                      .arg(arc.cell.c_str(ctx_))
+                                      .arg(arc.port.c_str(ctx_))
+                                      .arg(QString::fromStdString(NetStatus::summary(st)));
+        }
+    }
+    if (!reached.isEmpty())
+        editStack_->notify(reached);
+    applyHover();
+    return {};
+}
+
+void FPGAViewWidget::routeBack()
+{
+    if (editStack_ == nullptr || routeNet_ == IdString())
+        return;
+    if (routeSteps_.empty()) {
+        editStack_->notify(
+                QString("Routing %1: no pip of this routing session to take back").arg(routeNet_.c_str(ctx_)));
+        return;
+    }
+    if (editStack_->undoStack()->index() != routeSteps_.back().undoIndex) {
+        editStack_->notify(QString("Routing %1: the last edit is not a pip of this session (use Undo)")
+                                   .arg(routeNet_.c_str(ctx_)));
+        return;
+    }
+    // syncRouteState (on designChanged) drops the step and moves the head back
+    editStack_->undo();
+}
+
+void FPGAViewWidget::syncRouteState()
+{
+    if (routeNet_ == IdString() || ctx_ == nullptr)
+        return;
+    bool gone = false;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        auto fnd = ctx_->nets.find(routeNet_);
+        if (fnd == ctx_->nets.end()) {
+            gone = true;
+        } else {
+            NetInfo *ni = fnd->second.get();
+            while (!routeSteps_.empty() && ctx_->getBoundPipNet(routeSteps_.back().pip) != ni) {
+                routeHead_ = routeSteps_.back().prevHead;
+                routeSteps_.pop_back();
+            }
+            WireId source = ctx_->getNetinfoSourceWire(ni);
+            if (routeHead_ != source && ctx_->getBoundWireNet(routeHead_) != ni)
+                routeHead_ = source;
+        }
+    }
+    if (gone || routeHead_ == WireId()) {
+        stopRouting();
+        return;
+    }
+    updateRouteCandidates();
+    emitRouteStatus();
+}
+
+void FPGAViewWidget::showRouteMenu(const QPoint &pos)
+{
+    if (ctx_ == nullptr || editStack_ == nullptr)
+        return;
+    QMenu menu(this);
+    menu.setToolTipsVisible(true);
+    QAction *title =
+            menu.addAction(QString("Routing %1 from %2").arg(routeNet_.c_str(ctx_)).arg(ctx_->nameOfWire(routeHead_)));
+    title->setEnabled(false);
+    menu.addSeparator();
+    // Free pips first, then the others (greyed, with the reason)
+    std::vector<int> order;
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < int(routeCands_.size()); i++)
+            if ((routeCands_[i].cls == ROUTE_OK) == (pass == 0))
+                order.push_back(i);
+    const int max_entries = 60;
+    for (int k = 0; k < int(order.size()) && k < max_entries; k++) {
+        int i = order[k];
+        const RouteCand &c = routeCands_[i];
+        QString label = QString("%1  (%2 ns)").arg(ctx_->nameOfWire(c.dst)).arg(c.delay, 0, 'f', 3);
+        if (c.bound)
+            label += "  [routed]";
+        QAction *a = menu.addAction(label);
+        a->setEnabled(c.cls == ROUTE_OK);
+        a->setToolTip(QString::fromStdString(c.cls == ROUTE_OK ? std::string(ctx_->nameOfPip(c.pip)) : c.why));
+        WireId dst = c.dst;
+        PipId pip = c.pip;
+        connect(a, &QAction::triggered, this, [this, pip, dst] {
+            for (int j = 0; j < int(routeCands_.size()); j++)
+                if (routeCands_[j].pip == pip && routeCands_[j].dst == dst) {
+                    routeThrough(j);
+                    return;
+                }
+        });
+    }
+    if (int(order.size()) > max_entries)
+        menu.addAction(QString("... %1 more").arg(order.size() - max_entries))->setEnabled(false);
+    if (routeCands_.empty())
+        menu.addAction("(no pips downhill of the head)")->setEnabled(false);
+    menu.addSeparator();
+    WireId tree = routeTreeWire(hoverCandidates_);
+    if (tree != WireId() && tree != routeHead_) {
+        QAction *cont = menu.addAction(QString("Continue from %1").arg(ctx_->nameOfWire(tree)));
+        connect(cont, &QAction::triggered, this, [this, tree] { setRouteHead(tree); });
+    }
+    QAction *back = menu.addAction("Take back the last pip\tBackspace");
+    back->setEnabled(!routeSteps_.empty());
+    connect(back, &QAction::triggered, this, &FPGAViewWidget::routeBack);
+    QAction *done = menu.addAction("End routing\tEsc");
+    connect(done, &QAction::triggered, this, &FPGAViewWidget::cancelInteraction);
+    menu.exec(mapToGlobal(pos));
+}
+
 void FPGAViewWidget::update_vbos()
 {
     lineShader_.update_vbos(GraphicElement::STYLE_GRID, rendererData_->gfxGrid);
@@ -2302,6 +2838,8 @@ void FPGAViewWidget::update_vbos()
         lineShader_.update_vbos(overlaySlot(i), rendererData_->gfxOverlay[i]);
     for (int i = 0; i < NET_SLOTS; i++)
         lineShader_.update_vbos(netSlot(i), rendererData_->gfxNet[i]);
+    for (int i = 0; i < ROUTE_SLOTS; i++)
+        lineShader_.update_vbos(routeSlot(i), rendererData_->gfxRoute[i]);
 
     lineShader_.update_vbos(GraphicElement::STYLE_SELECTED, rendererData_->gfxSelected);
     lineShader_.update_vbos(GraphicElement::STYLE_HOVER, rendererData_->gfxHovered);

@@ -75,6 +75,8 @@ struct GateMateImpl : HimbaechelAPI
     void expandBoundingBox(BoundingBox &bb) const override;
     bool checkPipAvail(PipId pip) const override;
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override;
+    // Placement or routing changed by hand: the pip masks are recomputed (with the routing) when next needed
+    void notifyDesignEdited() override { pip_masks_ready = false; }
     // Whether a pip is usable at all with the chosen options, regardless of placement
     bool pip_allowed_by_options(PipId pip) const;
 

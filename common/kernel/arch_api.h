@@ -98,6 +98,9 @@ template <typename R> struct ArchAPI : BaseCtx
     virtual NetInfo *getBoundPipNet(PipId pip) const = 0;
     virtual WireId getConflictingPipWire(PipId pip) const = 0;
     virtual NetInfo *getConflictingPipNet(PipId pip) const = 0;
+    // The placement or routing was changed outside the flow (by hand, in the GUI): recompute whatever
+    // the availability checks of bels and pips derive from it (called with the context lock held)
+    virtual void notifyDesignEdited() = 0;
     virtual WireId getPipSrcWire(PipId pip) const = 0;
     virtual WireId getPipDstWire(PipId pip) const = 0;
     virtual DelayQuad getPipDelay(PipId pip) const = 0;

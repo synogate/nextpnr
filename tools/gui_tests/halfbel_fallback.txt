@@ -1,0 +1,22 @@
+# Placement by click: where the full-CPE bel is the first candidate under the cursor, a half-CPE
+# cell goes to the matching half bel among the candidates there (not refused for the full bel).
+# design: counter_synth
+resize 1400 1000
+action Pack
+waitidle
+py L="$abc$348$auto$blifparse.cc:397:parse_blif$384"; at=lambda n: str(ctx.cells[n].bel); print(ctx.cells[L].type)
+key E
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Placing cluster $abc$348$auto$blifparse.cc:397:parse_blif$384
+zoombel X40Y60/CPE_LT_FULL 0.6
+hoverbel X40Y60/CPE_LT_FULL
+wait 400
+status
+shot 01_hover_full_bel.png
+clickbel X40Y60/CPE_LT_FULL
+wait 300
+status
+py print(at(L))
+assert_py at(L) in ("X40Y60/CPE_LT_U", "X40Y60/CPE_LT_L")
+assert_status Place cluster $abc$348$auto$blifparse.cc:397:parse_blif$384 at X40Y60/CPE_LT_
+shot 02_placed_half.png

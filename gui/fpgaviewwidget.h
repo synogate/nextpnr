@@ -104,6 +104,8 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void setEditStack(EditStack *stack);
     // The cell armed for placement by click (empty if none)
     IdString armedCell() const { return armedCell_; }
+    IdString routingNet() const { return routeNet_; }
+    WireId routingHead() const { return routeHead_; }
 
   protected:
     // Qt callbacks.
@@ -173,6 +175,15 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void setShowAllUnrouted(bool on);
     // Recompute the net view and the ratsnest from the current design state
     void refreshNetView();
+    // Route mode (edit mode): route a net by hand, pip by pip. The head starts at `from` (a wire of
+    // the net) or at the net's source wire. The pips downhill of the head are shown (green:
+    // available, orange: destination used by another net, grey: unavailable); clicking a green pip
+    // or its destination wire binds it (one undo entry) and moves the head there; clicking a wire of
+    // the net moves the head there. Backspace takes back the last pip of this session, Esc ends.
+    void startRouting(IdString net, WireId from);
+    void stopRouting();
+    // Esc: cancel placement or end routing
+    void cancelInteraction();
   Q_SIGNALS:
     void clickedBel(BelId bel, bool add);
     void clickedWire(WireId wire, bool add);
@@ -379,6 +390,10 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void finishDrag(const QPoint &pos);
     // Bel among the candidates under the cursor: the hovered one if it is a bel, else the first
     BelId candidateBel(const std::vector<PickedElement> &cands);
+    // The bel a click places the armed (or dragged) cell at: candidateBel, or, if that is not a site
+    // for the cell's type (e.g. the full-CPE bel over the half bel of a half-CPE cell), the first
+    // candidate bel that is, else the closest one in the same tile that is
+    BelId placementBel(const std::vector<PickedElement> &cands);
     // Valid-site overlay: free, occupied by a cell that would be swapped, blocked (locked cell,
     // cluster, bel unavailable); and the hovered bel if the trial placement there fails
     static constexpr int OVERLAY_FREE = 0, OVERLAY_SWAP = 1, OVERLAY_BLOCKED = 2, OVERLAY_HOVER_BAD = 3;
@@ -393,6 +408,48 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     static constexpr int NET_SLOTS = NET_DECAL_SETS + NET_LINE_SETS;
     static constexpr int MAX_RATSNEST = 20000;
     static int netSlot(int i) { return overlaySlot(OVERLAY_SLOTS) + i; }
+
+    // Route mode (see startRouting): candidate pips by class, their destination wires (faint), the head
+    static constexpr int ROUTE_OK = 0, ROUTE_OTHER = 1, ROUTE_UNAVAIL = 2, ROUTE_DST = 3, ROUTE_HEAD = 4;
+    static constexpr int ROUTE_SLOTS = 5;
+    static int routeSlot(int i) { return netSlot(NET_SLOTS) + i; }
+    struct RouteCand
+    {
+        PipId pip;
+        WireId dst;
+        int cls = ROUTE_UNAVAIL;
+        bool bound = false; // already a pip of the net: a click only moves the head
+        std::string why;    // for ROUTE_OTHER / ROUTE_UNAVAIL
+        float delay = 0;    // ns
+    };
+    IdString routeNet_;
+    WireId routeHead_;
+    std::vector<RouteCand> routeCands_;
+    // Pips bound in this session, with the head before and the undo stack index after binding
+    struct RouteStep
+    {
+        PipId pip;
+        WireId prevHead;
+        int undoIndex;
+    };
+    std::vector<RouteStep> routeSteps_;
+    QPoint lastMousePos_;
+    // Recompute the candidates of the head and the route overlay (takes the context lock)
+    void updateRouteCandidates();
+    void emitRouteStatus();
+    // The candidate (index in routeCands_) whose pip or destination wire is under the cursor, or -1
+    int routePick(int x, int y);
+    // A wire of the routed net under the cursor (a bound wire, or the destination of a bound pip)
+    WireId routeTreeWire(const std::vector<PickedElement> &cands);
+    // Bind the candidate's pip (or follow it if bound) and move the head; "" or the reason
+    std::string routeThrough(int index);
+    void setRouteHead(WireId wire);
+    // Backspace: take back the last pip of this session
+    void routeBack();
+    // After an edit / undo: drop the steps undone, keep the head on the net
+    void syncRouteState();
+    std::string routeCandText(const RouteCand &c);
+    void showRouteMenu(const QPoint &pos);
     IdString netView_;
     bool showAllUnrouted_ = false;
     // Returns the number of ratsnest lines of all nets, or -1 if capped at MAX_RATSNEST
@@ -466,6 +523,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         QColor highlight[8];
         QColor overlay[OVERLAY_SLOTS];
         QColor net[NET_SLOTS];
+        QColor route[ROUTE_SLOTS];
     } colors_;
 
     struct RendererArgs
@@ -500,6 +558,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         std::vector<DecalXY> netDecals[NET_DECAL_SETS];
         std::vector<std::array<float, 4>> netLines[NET_LINE_SETS];
         bool netChanged = false;
+        // Route mode overlay (ROUTE_OK ...), and whether it changed
+        std::vector<DecalXY> routeDecals[ROUTE_SLOTS];
+        bool routeChanged = false;
         // Hint text
         std::string hintText;
         // cursor pos
@@ -536,6 +597,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         LineShaderData gfxHighlighted[8];
         LineShaderData gfxOverlay[OVERLAY_SLOTS];
         LineShaderData gfxNet[NET_SLOTS];
+        LineShaderData gfxRoute[ROUTE_SLOTS];
         // Global bounding box of data from Arch.
         PickQuadTree::BoundingBox bbGlobal;
         // Bounding box of selected items.

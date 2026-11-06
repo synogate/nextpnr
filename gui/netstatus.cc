@@ -59,6 +59,13 @@ void walkArc(Context *ctx, NetInfo *net, WireId source, Arc &arc)
             return;
         }
         arc.path.push_back(cursor);
+        // The source wire may itself be driven by a pip of another net: e.g. GateMate's CP-line and
+        // bridge nets, split off after routing (the output of a CPE's CP-line mux or bridge is the
+        // source of a net of its own, the mux pip into it stays bound)
+        if (cursor == source) {
+            arc.state = ArcState::ROUTED;
+            return;
+        }
         PipId pip = fnd->second.pip;
         if (pip == PipId()) {
             arc.state = isRoot(ctx, net, cursor, source) ? ArcState::ROUTED : ArcState::PARTIAL;
@@ -138,7 +145,7 @@ Status compute(Context *ctx, NetInfo *net)
     }
     for (auto &w : net->wires) {
         PipId pip = w.second.pip;
-        if (pip != PipId() && !net->wires.count(ctx->getPipSrcWire(pip)))
+        if (pip != PipId() && w.first != st.source && !net->wires.count(ctx->getPipSrcWire(pip)))
             st.dangling++;
     }
     return st;

@@ -787,6 +787,7 @@ struct Arch : BaseArch<ArchRanges>
     DecalXY getPipDecal(PipId pip) const override;
     DecalXY getGroupDecal(GroupId group) const override;
     bool guiDrawsUnusedRouting() const override { return uarch->guiDrawsUnusedRouting(); }
+    void notifyDesignEdited() override { uarch->notifyDesignEdited(); }
     std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return uarch->getDetailDecals(); }
     std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override
     {

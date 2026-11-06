@@ -835,6 +835,53 @@ void DesignWidget::armSelected()
     Q_EMIT armCellRequested(cell);
 }
 
+void DesignWidget::routeSelected()
+{
+    if (ctx == nullptr || editStack == nullptr)
+        return;
+    QString why;
+    if (!editStack->canEdit(&why)) {
+        editStack->notify("Cannot route: " + why);
+        return;
+    }
+    IdString net;
+    WireId from;
+    int num_selected = 0;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        for (int i = 0; i <= getIndexByElementType(ElementType::GROUP); i++) {
+            for (auto index : selectionModel[i]->selectedIndexes()) {
+                num_selected++;
+                TreeModel::Item *item = treeModel[i]->nodeFromIndex(index);
+                if (item->type() == ElementType::NET) {
+                    if (ctx->nets.count(item->id()[0]))
+                        net = item->id()[0];
+                } else if (item->type() == ElementType::WIRE) {
+                    WireId wire = ctx->getWireByName(item->id());
+                    NetInfo *ni = wire != WireId() ? ctx->getBoundWireNet(wire) : nullptr;
+                    if (ni != nullptr) {
+                        net = ni->name;
+                        from = wire;
+                    }
+                } else if (item->type() == ElementType::PIP) {
+                    PipId pip = ctx->getPipByName(item->id());
+                    NetInfo *ni = pip != PipId() ? ctx->getBoundPipNet(pip) : nullptr;
+                    if (ni != nullptr) {
+                        net = ni->name;
+                        from = ctx->getPipDstWire(pip);
+                    }
+                }
+            }
+        }
+    }
+    if (num_selected != 1 || net == IdString()) {
+        editStack->notify("To route by hand, select one net (or one wire / pip of a net) first");
+        return;
+    }
+    Q_EMIT routeNetRequested(net, from);
+}
+
 std::vector<IdString> DesignWidget::selectedCells(bool *on_bels)
 {
     std::vector<IdString> cells;
@@ -1839,6 +1886,11 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
             });
             if (nets.size() == 1) {
                 IdString net = nets[0];
+                QAction *route = menu.addAction(QString("Route net %1 by hand...	R").arg(net.c_str(ctx)));
+                route->setEnabled(can_edit);
+                if (!can_edit)
+                    route->setToolTip(why);
+                connect(route, &QAction::triggered, this, [this, net] { Q_EMIT routeNetRequested(net, WireId()); });
                 NetInfo *ni = ctx->nets.at(net).get();
                 std::vector<std::pair<QString, WireId>> arcs;
                 {

@@ -390,7 +390,23 @@ bool GuiTest::elementPoint(const QString &kind, const QString &name, QPointF &po
     std::unique_ptr<PE> target;
     std::string n = name.toStdString();
     DecalXY decal;
-    if (kind == "bel" || kind == "cell") {
+    // Route mode candidate (by destination wire or pip name): a point where routePick finds it
+    int cand = -1;
+    if (kind == "cand") {
+        for (int i = 0; i < int(v->routeCands_.size()); i++) {
+            auto &c = v->routeCands_[i];
+            if (ctx->nameOfWire(c.dst) == n || ctx->nameOfPip(c.pip) == n) {
+                cand = i;
+                break;
+            }
+        }
+        if (cand < 0) {
+            error_ = "no route candidate " + name + (v->routeNet_ == IdString() ? " (not routing)" : "");
+            return false;
+        }
+        decal = ctx->getPipDecal(v->routeCands_[cand].pip);
+        target.reset(new PE(PE::fromPip(v->routeCands_[cand].pip, decal.x, decal.y)));
+    } else if (kind == "bel" || kind == "cell") {
         BelId bel;
         if (kind == "cell") {
             auto it = ctx->cells.find(ctx->id(n));
@@ -487,6 +503,13 @@ bool GuiTest::elementPoint(const QString &kind, const QString &name, QPointF &po
             continue;
         // Pick at the pixel the click will land on
         QPoint px(int(std::round(s.x())), int(std::round(s.y())));
+        if (cand >= 0) {
+            if (v->routePick(px.x(), px.y()) == cand) {
+                pos = px;
+                return true;
+            }
+            continue;
+        }
         QVector4D wp = v->mouseToWorldCoordinates(px.x(), px.y());
         auto cands = v->pickCandidates(wp.x(), wp.y());
         if (cands.empty())
@@ -1036,6 +1059,37 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         log("  last msg:  " + t.at(1));
         log("  selection: " + t.at(2));
         log("  placement: " + t.at(3));
+        return true;
+    }
+    if (cmd == "route") {
+        FPGAViewWidget *v = win_->fpgaView;
+        Context *ctx = win_->getContext();
+        if (v->routeNet_ == IdString()) {
+            log("  not routing");
+            return true;
+        }
+        static const char *cls[] = {"ok", "other", "unavail"};
+        // How many graphic elements the overlay draws for the pip and its wire (0: cannot be clicked)
+        auto shown = [&](DecalId decal) {
+            int n = 0;
+            for (auto &el : ctx->getDecalGraphics(decal))
+                n += std::isinf(el.max_scale) && el.type != GraphicElement::TYPE_LABEL;
+            return n;
+        };
+        log(QString("  net %1, head %2 (gfx %3), %4 steps")
+                    .arg(v->routeNet_.c_str(ctx))
+                    .arg(ctx->nameOfWire(v->routeHead_))
+                    .arg(shown(ctx->getWireDecal(v->routeHead_).decal))
+                    .arg(v->routeSteps_.size()));
+        for (auto &c : v->routeCands_)
+            log(QString("    %1 %2 -> %3%4 %5 (gfx %6/%7)")
+                        .arg(cls[c.cls])
+                        .arg(ctx->nameOfPip(c.pip))
+                        .arg(ctx->nameOfWire(c.dst))
+                        .arg(c.bound ? " [bound]" : "")
+                        .arg(QString::fromStdString(c.why))
+                        .arg(shown(ctx->getPipDecal(c.pip).decal))
+                        .arg(shown(ctx->getWireDecal(c.dst).decal)));
         return true;
     }
     if (cmd == "assert_status" || cmd == "assert_nostatus") {
