@@ -404,7 +404,9 @@ void BaseMainWindow::open_json()
     QString fileName = QFileDialog::getOpenFileName(this, QString("Open JSON"), QString(), QString("*.json"));
     if (!fileName.isEmpty()) {
         disableActions();
-        if (ctx->settings.find(ctx->id("synth")) == ctx->settings.end()) {
+        // Into a new context: a design can not be loaded into one that has a design already (the
+        // JSON frontend asserts that its modules are not there yet)
+        {
             ArchArgs chipArgs = ctx->args;
             std::unique_ptr<Context> new_ctx = std::unique_ptr<Context>(new Context(chipArgs));
 #ifdef ARCH_HIMBAECHEL
