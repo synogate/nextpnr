@@ -536,7 +536,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
         }
     };
     for (int attempt = 0; attempt < 4 && !routed; attempt++) {
-        std::vector<WireId> bound; // by this attempt, to undo
+        std::vector<std::pair<NetInfo *, WireId>> bound; // by this attempt, to undo
         size_t failed = arcs.size();
         for (size_t i = 0; i < arcs.size() && failed == arcs.size(); i++) {
             auto [estimate, net, sink] = arcs[i]; // (displace() adds to arcs)
@@ -550,7 +550,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
                     break;
                 }
                 ctx->bindWire(src, net, STRENGTH_WEAK);
-                bound.push_back(src);
+                bound.emplace_back(net, src);
             }
             delay_t delay = 0;
             // Near the connection first, as router2 does
@@ -575,7 +575,7 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
                     why = stringf("%s is taken", ctx->nameOfWire(w));
                 } else {
                     ctx->bindPip(path[j], net, STRENGTH_WEAK);
-                    bound.push_back(w);
+                    bound.emplace_back(net, w);
                 }
             }
         }
@@ -584,8 +584,10 @@ bool GateMateImpl::route_ripped(std::vector<std::pair<NetInfo *, WireId>> laid)
             log_info("    routing %s to %s: %s\n", std::get<1>(arcs[failed])->name.c_str(ctx),
                      ctx->nameOfWire(std::get<2>(arcs[failed])), why.c_str());
         if (!routed) {
+            // (displace() can have ripped up wires this attempt bound for an earlier connection)
             for (auto w = bound.rbegin(); w != bound.rend(); ++w)
-                ctx->unbindWire(*w);
+                if (ctx->getBoundWireNet(w->second) == w->first)
+                    ctx->unbindWire(w->second);
             std::rotate(arcs.begin(), arcs.begin() + failed, arcs.begin() + failed + 1);
         }
     }
