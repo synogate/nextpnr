@@ -1124,7 +1124,6 @@ void DesignWidget::selectNextUnplaced()
         return;
     }
     IdString cell;
-    std::vector<BelId> neighbours;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
@@ -1152,6 +1151,24 @@ void DesignWidget::selectNextUnplaced()
                     break;
                 }
         }
+    }
+    lastUnplaced = cell;
+    placeUnplacedCell(cell);
+}
+
+void DesignWidget::placeUnplacedCell(IdString cell)
+{
+    if (ctx == nullptr || editStack == nullptr || !ctx->cells.count(cell))
+        return;
+    if (!editStack->editMode() && !editStack->busy()) {
+        arm_ignore = true;
+        editStack->setEditMode(true);
+        arm_ignore = false;
+    }
+    std::vector<BelId> neighbours;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
         // Its placed neighbours
         pool<BelId> seen;
         std::vector<CellInfo *> group = placementGroup(ctx, ctx->cells.at(cell).get());
@@ -1173,7 +1190,6 @@ void DesignWidget::selectNextUnplaced()
             }
         }
     }
-    lastUnplaced = cell;
     showCell(cell);
     Q_EMIT armCellRequested(cell);
     if (!neighbours.empty())
@@ -1525,6 +1541,15 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
             if (arc.blocked)
                 state += " (sink wire used by " + std::string(ctx->nameOf(ctx->getBoundWireNet(arc.sink))) + ")";
             addProperty(arcItem, QtType::QString, "State", QString::fromStdString(state));
+            // Delay: of the routing for a routed arc, else the estimate between the placed cells
+            const PortRef &usr = net->users.at(arc.user);
+            QString delay;
+            if (arc.state == NetStatus::ArcState::ROUTED)
+                delay = QString("%1 ns").arg(ctx->getDelayNS(ctx->getNetinfoRouteDelay(net, usr)), 0, 'f', 3);
+            else if (net->driver.cell != nullptr && net->driver.cell->bel != BelId() && usr.cell != nullptr &&
+                     usr.cell->bel != BelId())
+                delay = QString("%1 ns (est.)").arg(ctx->getDelayNS(ctx->predictArcDelay(net, usr)), 0, 'f', 3);
+            addProperty(arcItem, QtType::QString, "Delay", delay);
             QString sink = arc.sink != WireId() ? ctx->nameOfWire(arc.sink) : "";
             addProperty(arcItem, QtType::QString, "Sink Wire", sink, ElementType::WIRE);
             if (!arc.path.empty())

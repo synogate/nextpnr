@@ -84,6 +84,8 @@ FPGAViewWidget::FPGAViewWidget(QWidget *parent)
     colors_.net[NET_SINK] = QColor("#40e0ff");
     colors_.net[NET_SINK_BAD] = QColor("#ffe020");
     colors_.net[NET_LOCKED] = QColor("#ff7a00");
+    colors_.net[NET_CRIT] = QColor("#ff2050");
+    colors_.net[NET_DECAL_SETS + CRIT_RATSNEST] = QColor("#ff2050");
     colors_.net[NET_DECAL_SETS + NET_RATSNEST] = QColor("#ffe020");
     colors_.net[NET_DECAL_SETS + ALL_RATSNEST] = QColor("#a0a040");
     colors_.route[ROUTE_OK] = QColor("#30f030");
@@ -631,10 +633,19 @@ void FPGAViewWidget::paintGL()
         lineShader_.draw(overlaySlot(i), colors_.overlay[i], i == OVERLAY_HOVER_BAD ? thick2Px : thick11Px, matrix);
     // Net view and ratsnest: the source and sink wires thick, on top of the tree
     // Locked routing: thicker, in its own colour
-    const int netOrder[NET_SLOTS] = {NET_DECAL_SETS + ALL_RATSNEST, NET_TREE, NET_LOCKED, NET_SINK_BAD, NET_SINK,
-                                     NET_SOURCE, NET_DECAL_SETS + NET_RATSNEST};
+    // The critical path under the net view
+    const int netOrder[NET_SLOTS] = {NET_DECAL_SETS + ALL_RATSNEST,
+                                     NET_CRIT,
+                                     NET_DECAL_SETS + CRIT_RATSNEST,
+                                     NET_TREE,
+                                     NET_LOCKED,
+                                     NET_SINK_BAD,
+                                     NET_SINK,
+                                     NET_SOURCE,
+                                     NET_DECAL_SETS + NET_RATSNEST};
     for (int i : netOrder) {
-        bool thick = i == NET_SOURCE || i == NET_SINK || i == NET_SINK_BAD;
+        bool thick = i == NET_SOURCE || i == NET_SINK || i == NET_SINK_BAD || i == NET_CRIT ||
+                     i == NET_DECAL_SETS + CRIT_RATSNEST;
         lineShader_.draw(netSlot(i), colors_.net[i],
                          thick ? thick2Px * 1.5f : i == NET_LOCKED ? thick2Px * 1.2f : thick11Px, matrix);
     }
@@ -2211,8 +2222,39 @@ void FPGAViewWidget::setShowAllUnrouted(bool on)
 
 void FPGAViewWidget::refreshNetView()
 {
-    if (netView_ != IdString() || showAllUnrouted_)
+    if (netView_ != IdString() || showAllUnrouted_ || !critPath_.empty())
         updateNetOverlay();
+}
+
+void FPGAViewWidget::setCriticalPath(std::vector<CriticalPath::Segment> segments)
+{
+    if (segments.empty() && critPath_.empty())
+        return;
+    critPath_ = std::move(segments);
+    updateNetOverlay();
+}
+
+bool FPGAViewWidget::zoomToDecals(const std::vector<DecalXY> &decals)
+{
+    if (ctx_ == nullptr || decals.empty())
+        return false;
+    PickQuadTree::BoundingBox bb;
+    LineShaderData scratch;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        for (auto &decal : decals)
+            renderDecal(scratch, bb, decal);
+    }
+    if (bb.x0() == std::numeric_limits<float>::infinity())
+        return false;
+    // At least about two tiles across
+    const float min_size = 2.0f;
+    float cx = bb.x0() + bb.w() / 2, cy = bb.y0() + bb.h() / 2;
+    float w = std::max(bb.w(), min_size), h = std::max(bb.h(), min_size);
+    zoomToBB(PickQuadTree::BoundingBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), 0.5f, true);
+    update();
+    return true;
 }
 
 int FPGAViewWidget::updateNetOverlay()
@@ -2221,7 +2263,7 @@ int FPGAViewWidget::updateNetOverlay()
     std::vector<DecalXY> decals[NET_DECAL_SETS];
     std::vector<std::array<float, 4>> lines[NET_LINE_SETS];
     bool capped = false;
-    if (ctx_ != nullptr && (netView_ != IdString() || showAllUnrouted_)) {
+    if (ctx_ != nullptr && (netView_ != IdString() || showAllUnrouted_ || !critPath_.empty())) {
         std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx_->mutex);
         // Lines from the driver bel to the sink bels of the arcs not routed; false if capped
@@ -2278,6 +2320,47 @@ int FPGAViewWidget::updateNetOverlay()
                     capped = true;
                     break;
                 }
+            }
+        }
+        if (!critPath_.empty()) {
+            // Each routing segment: the routing of its arc, else a line from driver to sink bel
+            auto cellBel = [&](IdString name) {
+                auto fnd = ctx_->cells.find(name);
+                return fnd == ctx_->cells.end() ? BelId() : fnd->second->bel;
+            };
+            pool<BelId> bels;
+            dict<IdString, NetStatus::Status> status;
+            for (auto &seg : critPath_) {
+                for (IdString c : {seg.from.first, seg.to.first}) {
+                    BelId bel = cellBel(c);
+                    if (bel != BelId() && bels.insert(bel).second)
+                        decals[NET_CRIT].push_back(ctx_->getBelDecal(bel));
+                }
+                if (seg.type != CriticalPath::Segment::Type::ROUTING)
+                    continue;
+                auto fnd = ctx_->nets.find(seg.net);
+                if (fnd == ctx_->nets.end())
+                    continue;
+                NetInfo *ni = fnd->second.get();
+                if (!status.count(seg.net))
+                    status.emplace(seg.net, NetStatus::compute(ctx_, ni));
+                const NetStatus::Status &st = status.at(seg.net);
+                bool routed = false;
+                for (auto &arc : st.arcs) {
+                    if (arc.cell != seg.to.first || arc.port != seg.to.second || arc.state != ArcState::ROUTED)
+                        continue;
+                    routed = true;
+                    for (WireId w : arc.path) {
+                        decals[NET_CRIT].push_back(ctx_->getWireDecal(w));
+                        PipId pip = ni->wires.at(w).pip;
+                        if (pip != PipId())
+                            decals[NET_CRIT].push_back(ctx_->getPipDecal(pip));
+                    }
+                }
+                float x0, y0, x1, y1;
+                if (!routed && NetStatus::belCentre(ctx_, cellBel(seg.from.first), x0, y0) &&
+                    NetStatus::belCentre(ctx_, cellBel(seg.to.first), x1, y1))
+                    lines[CRIT_RATSNEST].push_back({x0, y0, x1, y1});
             }
         }
     }

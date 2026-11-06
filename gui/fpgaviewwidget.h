@@ -192,6 +192,12 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void setShowAllUnrouted(bool on);
     // Recompute the net view and the ratsnest from the current design state
     void refreshNetView();
+    // Critical path overlay (timing dock): the routing of each routing segment's arc (a straight
+    // line from driver to sink bel where it is not routed) and the bels of the cells on the path;
+    // empty: none
+    void setCriticalPath(std::vector<CriticalPath::Segment> segments);
+    // Centre on and zoom to the graphics of these decals (at least a few tiles); false if they have none
+    bool zoomToDecals(const std::vector<DecalXY> &decals);
     // Route mode (edit mode): route a net by hand, pip by pip. The head starts at `from` (a wire of
     // the net) or at the net's source wire. The pips downhill of the head are shown (green:
     // available, orange: destination used by another net, grey: unavailable); clicking a green pip
@@ -432,9 +438,10 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     // Net view and ratsnest: decal sets (routing tree, source wire, routed sink wires, sink wires of
     // arcs not routed) and line sets (ratsnest of the net, of all nets)
     // (and the locked part of the tree, drawn thick)
-    static constexpr int NET_TREE = 0, NET_SOURCE = 1, NET_SINK = 2, NET_SINK_BAD = 3, NET_LOCKED = 4,
-                         NET_DECAL_SETS = 5;
-    static constexpr int NET_RATSNEST = 0, ALL_RATSNEST = 1, NET_LINE_SETS = 2;
+    // (and the critical path of the timing dock: its routing and cells, lines for its unrouted arcs)
+    static constexpr int NET_TREE = 0, NET_SOURCE = 1, NET_SINK = 2, NET_SINK_BAD = 3, NET_LOCKED = 4, NET_CRIT = 5,
+                         NET_DECAL_SETS = 6;
+    static constexpr int NET_RATSNEST = 0, ALL_RATSNEST = 1, CRIT_RATSNEST = 2, NET_LINE_SETS = 3;
     static constexpr int NET_SLOTS = NET_DECAL_SETS + NET_LINE_SETS;
     static constexpr int MAX_RATSNEST = 20000;
     static int netSlot(int i) { return overlaySlot(OVERLAY_SLOTS) + i; }
@@ -473,6 +480,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void showRouteMenu(const QPoint &pos);
     IdString netView_;
     bool showAllUnrouted_ = false;
+    std::vector<CriticalPath::Segment> critPath_;
     // Returns the number of ratsnest lines of all nets, or -1 if capped at MAX_RATSNEST
     int updateNetOverlay();
 

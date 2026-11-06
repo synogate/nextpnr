@@ -772,6 +772,10 @@ IdString GateMateImpl::ff_clock_port(const CellInfo *cell) const
     auto found = ff_routed_ports.find(cell->name);
     if (found != ff_routed_ports.end() && !cell->ports.count(id_CLK_INT) && found->second.first != IdString())
         return found->second.first;
+    // A routed design loaded from JSON (postRoute ran in an earlier run, ff_routed_ports is empty): the clock was
+    // renamed to CLK
+    if (!cell->ports.count(id_CLK_INT) && cell->ports.count(id_CLK))
+        return id_CLK;
     return id_CLK_INT;
 }
 

@@ -26,6 +26,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QKeyEvent>
@@ -41,6 +42,7 @@
 #include <QTreeView>
 #include <QTreeWidget>
 #include <fstream>
+#include <functional>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -1115,8 +1117,17 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         QString obj = names.value(w.at(1).toLower(), w.at(1));
         QString want = QStringList(w.mid(2)).join(' ');
         if (QTreeWidget *t = win_->findChild<QTreeWidget *>(obj)) {
-            for (int i = 0; i < t->topLevelItemCount(); i++) {
-                QTreeWidgetItem *item = t->topLevelItem(i);
+            // All rows, children indented under their parents
+            QList<QPair<QTreeWidgetItem *, int>> rows;
+            std::function<void(QTreeWidgetItem *, int)> collect = [&](QTreeWidgetItem *item, int depth) {
+                rows.append(qMakePair(item, depth));
+                for (int i = 0; i < item->childCount(); i++)
+                    collect(item->child(i), depth + 1);
+            };
+            for (int i = 0; i < t->topLevelItemCount(); i++)
+                collect(t->topLevelItem(i), 0);
+            for (auto &row : rows) {
+                QTreeWidgetItem *item = row.first;
                 QStringList cols;
                 bool hit = false;
                 for (int c = 0; c < t->columnCount(); c++) {
@@ -1124,7 +1135,7 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
                     hit |= !want.isEmpty() && item->text(c).startsWith(want);
                 }
                 if (want.isEmpty()) {
-                    log("  " + cols.join(" | "));
+                    log("  " + QString(2 * row.second, ' ') + cols.join(" | "));
                 } else if (hit) {
                     log("  activate: " + cols.join(" | "));
                     t->setCurrentItem(item);
@@ -1150,6 +1161,26 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         }
         if (!want.isEmpty()) {
             error_ = "no row '" + want + "' in " + obj;
+            return false;
+        }
+        return true;
+    }
+    if (cmd == "label" || cmd == "assert_label" || cmd == "assert_nolabel") {
+        if (!need(cmd == "label" ? 1 : 2))
+            return false;
+        QLabel *l = win_->findChild<QLabel *>(w.at(1));
+        if (l == nullptr) {
+            error_ = "no label " + w.at(1);
+            return false;
+        }
+        QString want = QStringList(w.mid(2)).join(' ');
+        log("  " + w.at(1) + ": " + QString(l->text()).replace(QChar('\n'), " / "));
+        if (cmd == "assert_label" && !l->text().contains(want)) {
+            error_ = "label " + w.at(1) + " does not contain '" + want + "'";
+            return false;
+        }
+        if (cmd == "assert_nolabel" && l->text().contains(want)) {
+            error_ = "label " + w.at(1) + " contains '" + want + "'";
             return false;
         }
         return true;

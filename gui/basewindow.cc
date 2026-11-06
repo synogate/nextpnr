@@ -32,6 +32,7 @@
 #include <QStyle>
 #include <algorithm>
 #include <fstream>
+#include "checkdock.h"
 #include "designwidget.h"
 #include "editcommands.h"
 #include "fpgaviewwidget.h"
@@ -43,6 +44,7 @@
 #include "mainwindow.h"
 #include "pythontab.h"
 #include "routedock.h"
+#include "timingdock.h"
 #include "version.h"
 
 static void initBasenameResource() { Q_INIT_RESOURCE(base); }
@@ -154,6 +156,28 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     routeDock->hide();
     connect(editStack, &EditStack::designChanged, routeDock, &RouteDock::scheduleRefresh);
 
+    // Feedback while working by hand (closed by default, View menu)
+    checkDock = new CheckDock(editStack, this);
+    addDockWidget(Qt::RightDockWidgetArea, checkDock);
+    checkDock->hide();
+    timingDock = new TimingDock(editStack, this);
+    addDockWidget(Qt::RightDockWidgetArea, timingDock);
+    timingDock->hide();
+    tabifyDockWidget(checkDock, timingDock);
+    connect(editStack, &EditStack::designChanged, checkDock, &CheckDock::scheduleRefresh);
+    connect(editStack, &EditStack::designChanged, timingDock, &TimingDock::designEdited);
+    connect(this, &BaseMainWindow::contextChanged, checkDock, &CheckDock::setContext);
+    connect(this, &BaseMainWindow::contextChanged, timingDock, &TimingDock::setContext);
+    connect(this, &BaseMainWindow::updateTreeView, checkDock, &CheckDock::scheduleRefresh);
+    connect(this, &BaseMainWindow::updateTreeView, timingDock, &TimingDock::designEdited);
+    connect(checkDock, &CheckDock::focusCell, this, &BaseMainWindow::focusCell);
+    connect(checkDock, &CheckDock::focusNet, this, &BaseMainWindow::focusNet);
+    connect(checkDock, &CheckDock::focusWire, this, &BaseMainWindow::focusWire);
+    connect(checkDock, &CheckDock::focusPip, this, &BaseMainWindow::focusPip);
+    connect(timingDock, &TimingDock::focusCell, this, &BaseMainWindow::focusCell);
+    connect(timingDock, &TimingDock::focusNet, this, &BaseMainWindow::focusNet);
+    connect(timingDock, &TimingDock::criticalPathChanged, fpgaView, &FPGAViewWidget::setCriticalPath);
+
     // Catch close tab events
     connect(centralTabWidget, &QTabWidget::tabCloseRequested, this, &BaseMainWindow::closeTab);
 
@@ -180,6 +204,9 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     // Update tree event
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
     connect(this, &BaseMainWindow::updateTreeView, timingview, &TimingWidget::designChanged);
+    // (the Paths tab lists the worst paths of the whole design; the Timing dock shows Fmax and the critical path
+    // also of a partly placed or routed design)
+    connect(editStack, &EditStack::designChanged, timingview, &TimingWidget::designChanged);
     connect(this, &BaseMainWindow::updateTreeView, fpgaView, &FPGAViewWidget::refreshNetView);
 
     createMenusAndBars();
@@ -446,6 +473,12 @@ void BaseMainWindow::createMenusAndBars()
     actionShowUnrouted->setStatusTip("Draw a straight line from driver to sink for every arc not routed, in all nets");
     connect(actionShowUnrouted, &QAction::toggled, fpgaView, &FPGAViewWidget::setShowAllUnrouted);
 
+    QAction *actionRunTiming = new QAction("Run timing analysis", this);
+    actionRunTiming->setShortcut(QKeySequence(Qt::Key_T));
+    actionRunTiming->setStatusTip("Static timing analysis of the design as it is (unplaced cells left out, unrouted "
+                                  "arcs estimated): Fmax per clock and the critical path in the Timing dock");
+    connect(actionRunTiming, &QAction::triggered, timingDock, &TimingDock::runTiming);
+
     // set initial state
     fpgaView->enableDisableDecals(actionDisplayBel->isChecked(), actionDisplayWire->isChecked(),
                                   actionDisplayPip->isChecked(), actionDisplayGroups->isChecked());
@@ -494,6 +527,25 @@ void BaseMainWindow::createMenusAndBars()
     actionRouteDock->setText("Route candidates");
     actionRouteDock->setStatusTip("Show the route mode candidates (head, downhill pips, session pips, arcs) as lists");
     menuView->addAction(actionRouteDock);
+    QAction *actionCheckDock = checkDock->toggleViewAction();
+    actionCheckDock->setText("Design check");
+    actionCheckDock->setStatusTip("Unplaced cells, unrouted nets, conflicts, dangling routing and invalid locations, "
+                                  "updated after every edit");
+    menuView->addAction(actionCheckDock);
+    QAction *actionTimingDock = timingDock->toggleViewAction();
+    actionTimingDock->setText("Timing");
+    actionTimingDock->setStatusTip("Fmax per clock and the critical path of the last timing analysis");
+    menuView->addAction(actionTimingDock);
+    // (the docks share a tab: the one opened comes to the front)
+    connect(actionCheckDock, &QAction::triggered, checkDock, [this](bool on) {
+        if (on)
+            checkDock->raise();
+    });
+    connect(actionTimingDock, &QAction::triggered, timingDock, [this](bool on) {
+        if (on)
+            timingDock->raise();
+    });
+    menuView->addAction(actionRunTiming);
 
     // Add Design menu actions
     menuDesign->addAction(actionOptions);
@@ -501,6 +553,7 @@ void BaseMainWindow::createMenusAndBars()
     menuDesign->addAction(actionPack);
     menuDesign->addAction(actionPlace);
     menuDesign->addAction(actionRoute);
+    menuDesign->addAction(actionRunTiming);
     menuDesign->addSeparator();
     menuDesign->addAction(actionExecutePy);
     menuDesign->addAction(actionMcp);
@@ -614,6 +667,64 @@ void BaseMainWindow::editStateChanged()
 }
 
 void BaseMainWindow::taskIdle() { editStack->setBusy(false); }
+
+void BaseMainWindow::focusCell(IdString cell)
+{
+    BelId bel;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        auto fnd = ctx->cells.find(cell);
+        if (fnd == ctx->cells.end())
+            return;
+        bel = fnd->second->bel;
+    }
+    if (bel == BelId()) {
+        designview->placeUnplacedCell(cell);
+        return;
+    }
+    designview->showCell(cell);
+    fpgaView->zoomToDecals({ctx->getBelDecal(bel)});
+}
+
+void BaseMainWindow::focusNet(IdString net)
+{
+    std::vector<DecalXY> decals;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        auto fnd = ctx->nets.find(net);
+        if (fnd == ctx->nets.end())
+            return;
+        NetInfo *ni = fnd->second.get();
+        // The bels of the driver and the users (the routing lies between them)
+        auto add = [&](CellInfo *c) {
+            if (c != nullptr && c->bel != BelId() && decals.size() < 256)
+                decals.push_back(ctx->getBelDecal(c->bel));
+        };
+        add(ni->driver.cell);
+        for (auto &usr : ni->users)
+            add(usr.cell);
+        if (decals.empty())
+            for (auto &w : ni->wires)
+                if (decals.size() < 256)
+                    decals.push_back(ctx->getWireDecal(w.first));
+    }
+    designview->showNet(net);
+    fpgaView->zoomToDecals(decals);
+}
+
+void BaseMainWindow::focusWire(WireId wire)
+{
+    designview->onClickedWire(wire, false);
+    fpgaView->zoomToDecals({ctx->getWireDecal(wire)});
+}
+
+void BaseMainWindow::focusPip(PipId pip)
+{
+    designview->onClickedPip(pip, false);
+    fpgaView->zoomToDecals({ctx->getPipDecal(pip)});
+}
 
 void BaseMainWindow::enableDisableDecals()
 {

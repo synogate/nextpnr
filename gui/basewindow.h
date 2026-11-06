@@ -47,6 +47,8 @@ class DesignWidget;
 class TimingWidget;
 class FPGAViewWidget;
 class RouteDock;
+class CheckDock;
+class TimingDock;
 
 class BaseMainWindow : public QMainWindow
 {
@@ -121,6 +123,12 @@ class BaseMainWindow : public QMainWindow
     void setElidedText(QLabel *label, const QString &text);
     void taskIdle();
 
+    // From the check / timing docks: select the element and zoom to it (an unplaced cell: arm it)
+    void focusCell(IdString cell);
+    void focusNet(IdString net);
+    void focusWire(WireId wire);
+    void focusPip(PipId pip);
+
   Q_SIGNALS:
     void contextChanged(Context *ctx);
     void updateTreeView();
@@ -159,6 +167,8 @@ class BaseMainWindow : public QMainWindow
     QTabWidget *rightTabWidget;
     FPGAViewWidget *fpgaView;
     RouteDock *routeDock;
+    CheckDock *checkDock;
+    TimingDock *timingDock;
 
     // Menus, bars and actions
     QMenuBar *menuBar;

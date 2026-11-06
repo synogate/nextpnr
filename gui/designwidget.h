@@ -154,6 +154,9 @@ class DesignWidget : public QWidget
     // Select and arm the next unplaced cell (by name, after the last one chosen this way) and centre
     // the view on its placed neighbours (via its nets), if any
     void selectNextUnplaced();
+    // Select an unplaced cell and arm it for placement (turning edit mode on), centring the view on
+    // its placed neighbours (via its nets), if any
+    void placeUnplacedCell(IdString cell);
     // Ask for an offset and move the selected cells by it (see moveSelectionBy)
     void moveSelectionDialog();
     // Move the selected cells (Cells tree, or the cells on selected bels; clusters as a whole) by

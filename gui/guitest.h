@@ -85,10 +85,15 @@
  *   button <text>              click the visible push button whose text starts with text (fails if
  *                              it is disabled)
  *   settext <objectName> <text> set the text of a line edit (e.g. routeTarget in the route dock)
- *   dock cands|steps|sinks [text]
+ *   dock cands|steps|sinks|<objectName> [text]
  *                              route dock lists: without text, log the rows; with text, activate
  *                              the row with a column starting with text (cands / sinks: like a
- *                              double-click) or click the session pip row containing text (steps)
+ *                              double-click) or click the session pip row containing text (steps);
+ *                              any other tree by object name (checkList, timingClocks, timingPath;
+ *                              nested rows included)
+ *   label <objectName>         log the text of a label (e.g. checkHeader, timingHeader);
+ *                              assert_label / assert_nolabel <objectName> <substring>: it contains /
+ *                              does not contain substring
  *   status                     print the status bar texts (message, last message, selection,
  *                              placement)
  *   assert_status <substring>  one of these texts contains substring

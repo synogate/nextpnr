@@ -8,6 +8,8 @@ set(GUI_SOURCES
     autoroute.h
     basewindow.cc
     basewindow.h
+    checkdock.cc
+    checkdock.h
     designwidget.cc
     designwidget.h
     editcommands.cc
@@ -40,6 +42,8 @@ set(GUI_SOURCES
     textshader.h
     timingwidget.cc
     timingwidget.h
+    timingdock.cc
+    timingdock.h
     treemodel.cc
     treemodel.h
     worker.cc
