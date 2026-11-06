@@ -1,0 +1,22 @@
+# Route again with the clock routed already (by an earlier Route that failed later on, or by hand): the
+# GateMate clock router keeps that routing instead of failing on its bound source wire (assertion
+# w2n_entry == nullptr in bindWire).
+# design: counter_synth
+resize 1400 1000
+action Pack
+waitidle
+action Place
+waitidle
+action Route
+waitidle
+py clk=[ni for n, ni in ctx.nets if ni.driver.cell is not None and ni.driver.cell.type == "GLBOUT"]; print("clocks", [c.name for c in clk])
+assert_py len(clk) >= 1 and all(len(c.wires) > 0 for c in clk)
+# --- take the routing of one data net away, keep the clock routing, Route again
+py N=[n for n, ni in ctx.nets if len(ni.users) == 1 and len(ni.wires) > 2 and ni.driver.cell is not None and ni.driver.cell.type != "GLBOUT"][0]; W=[w for w, m in ctx.nets[N].wires]; [ctx.unbindWire(w) for w in W]; print(N, len(W))
+assert_py len(ctx.nets[N].wires) == 0
+action Route
+waitidle
+status
+py print(N, len(ctx.nets[N].wires), [len(c.wires) for c in clk])
+assert_py len(ctx.nets[N].wires) > 0 and all(len(c.wires) > 0 for c in clk)
+shot 01_routed_again.png

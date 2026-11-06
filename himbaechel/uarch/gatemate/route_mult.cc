@@ -871,6 +871,8 @@ void GateMateImpl::route_mult()
             continue; // imported with its routing
         auto *lower = ctx->cells.at(a_passthru_lower).get();
         auto *lower_out = lower->ports.at(id_OUT).net;
+        if (!lower_out->wires.empty())
+            continue; // routed already (an earlier Route that failed later on)
 
         auto loc = ctx->getBelLocation(lower->bel);
         bool is_fourgroup_a =
@@ -903,6 +905,8 @@ void GateMateImpl::route_mult()
             continue; // imported with its routing
         auto *upper = ctx->cells.at(a_passthru_upper).get();
         auto *upper_out = upper->ports.at(id_OUT).net;
+        if (!upper_out->wires.empty())
+            continue; // routed already
 
         auto loc = ctx->getBelLocation(upper->bel);
         bool is_fourgroup_a =
@@ -948,6 +952,8 @@ void GateMateImpl::route_mult()
             continue; // imported with its routing
         auto *zero_driver = ctx->cells.at(zero_driver_name).get();
         auto *out = zero_driver->ports.at(id_OUT).net;
+        if (!out->wires.empty())
+            continue; // routed already
 
         auto loc = ctx->getBelLocation(zero_driver->bel);
         bool is_fourgroup_a = is_fourgroup_a_within_tile(tile_extra_data(zero_driver->bel.tile), x_within_fourgroup,

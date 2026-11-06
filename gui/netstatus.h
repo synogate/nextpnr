@@ -90,6 +90,10 @@ pool<WireId> belowSinkWires(Context *ctx, NetInfo *net);
 // (what the net routes below the sink wire stays, see belowSinkWires)
 std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, WireId sink);
 
+// The net (other than `net`) whose sink wire this is, by the cells on the wire's bel pins, or nullptr; `port`
+// gets "cell.port". Another net routed into it takes the wire its sink needs (the router keeps them apart).
+NetInfo *sinkOfOtherNet(Context *ctx, WireId wire, const NetInfo *net, std::string *port = nullptr);
+
 // Centre of a bel's graphics (or of its grid location if it has none), in view coordinates
 bool belCentre(Context *ctx, BelId bel, float &x, float &y);
 

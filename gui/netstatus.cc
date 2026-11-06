@@ -222,6 +222,29 @@ pool<WireId> belowSinkWires(Context *ctx, NetInfo *net)
     return result;
 }
 
+NetInfo *sinkOfOtherNet(Context *ctx, WireId wire, const NetInfo *net, std::string *port)
+{
+    if (wire == WireId())
+        return nullptr;
+    for (const auto &bp : ctx->getWireBelPins(wire)) {
+        CellInfo *ci = ctx->getBoundBelCell(bp.bel);
+        if (ci == nullptr)
+            continue;
+        for (auto &p : ci->ports) {
+            NetInfo *other = p.second.net;
+            if (other == nullptr || other == net || p.second.type != PORT_IN || p.second.user_idx.empty())
+                continue;
+            for (WireId sink : ctx->getNetinfoSinkWires(other, other->users.at(p.second.user_idx)))
+                if (sink == wire) {
+                    if (port != nullptr)
+                        *port = ci->name.str(ctx) + "." + p.first.str(ctx);
+                    return other;
+                }
+        }
+    }
+    return nullptr;
+}
+
 std::vector<WireId> arcOnlyWires(Context *ctx, NetInfo *net, const Status &st, WireId sink)
 {
     std::vector<WireId> result;

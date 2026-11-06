@@ -173,6 +173,9 @@ std::string BindPipCmd::checkApply(Context *ctx)
         return "wire " + q(ctx->nameOfWire(dst)) + " is not available";
     if (!ctx->checkPipAvailForNet(pip, ni))
         return "pip " + q(ctx->nameOfPip(pip)) + " is not available for net " + q(net.str(ctx));
+    std::string port;
+    if (NetInfo *owner = NetStatus::sinkOfOtherNet(ctx, dst, ni, &port))
+        return "wire " + q(ctx->nameOfWire(dst)) + " is the sink of net " + q(owner->name.str(ctx)) + " (" + port + ")";
     return {};
 }
 

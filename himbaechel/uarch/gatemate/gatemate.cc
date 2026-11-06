@@ -1418,12 +1418,14 @@ void GateMateImpl::finishRoute()
     dict<IdString, IdString> port_mapping;
     // An input renamed after the CPE input its routing reaches; one without a net and no routing goes (it was renamed
     // to the empty name before, a port no JSON reader takes)
+    // An input with a net its routing does not reach (unrouted by hand before Route runs again, which finishes the
+    // routing there is first) keeps its name: the router routes it as before routing
     auto rename_routed = [&](CellInfo *cell, IdString port) {
         IdString to = port_mapping[port];
-        if (to == IdString() && cell->ports.count(port) && !cell->ports.at(port).net)
-            cell->ports.erase(port);
-        else
+        if (to != IdString())
             cell->renamePort(port, to);
+        else if (cell->ports.count(port) && !cell->ports.at(port).net)
+            cell->ports.erase(port);
     };
     auto add_input = [&](IdString orig_port, IdString port, bool merged) -> bool {
         static dict<IdString, IdString> convert_port = {

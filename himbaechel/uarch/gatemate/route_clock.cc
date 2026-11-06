@@ -156,7 +156,15 @@ void GateMateImpl::route_clock()
     for (auto clk_net : clk_nets) {
         log_info("    routing net '%s' to %d users\n", clk_net->name.c_str(ctx), clk_net->users.entries());
         auto src_wire = ctx->getNetinfoSourceWire(clk_net);
-        ctx->bindWire(src_wire, clk_net, STRENGTH_LOCKED);
+        // A clock can be routed already (by hand, or by an earlier Route that failed later on): keep that
+        // routing and only route the sinks it does not reach yet
+        if (NetInfo *bound = ctx->getBoundWireNet(src_wire)) {
+            if (bound != clk_net)
+                log_error("Can't route clock net '%s': its source wire %s is used by net '%s'.\n",
+                          ctx->nameOf(clk_net), ctx->nameOfWire(src_wire), ctx->nameOf(bound));
+        } else {
+            ctx->bindWire(src_wire, clk_net, STRENGTH_LOCKED);
+        }
 
         auto sink_wires = dict<WireId, PortRef>{};
         auto sink_wires_to_do = pool<WireId>{};
@@ -165,10 +173,14 @@ void GateMateImpl::route_clock()
                 continue;
 
             auto sink_wire = ctx->getNetinfoSinkWire(clk_net, usr, 0);
+            if (ctx->getBoundWireNet(sink_wire) == clk_net)
+                continue; // reached by the routing there is already
 
             sink_wires.insert({sink_wire, usr});
             sink_wires_to_do.insert(sink_wire);
         }
+        if (sink_wires.empty())
+            continue;
 
         std::priority_queue<QueuedWire, std::vector<QueuedWire>, std::greater<QueuedWire>> visit;
         dict<WireId, PipId> backtrace;
@@ -241,9 +253,11 @@ void GateMateImpl::route_clock()
             while (backtrace.count(src)) {
                 auto uh = backtrace[src];
                 if (ctx->getBoundWireNet(src) == clk_net) {
+                    // The rest of the way to the source is bound already (by an earlier arc or earlier routing)
                     if (ctx->debug)
                         log_info("                 pip %s --> %s (plane %hhd)\n", ctx->nameOfPip(uh),
                                  ctx->nameOfWire(src), pip_plane(uh));
+                    break;
                 } else if (ctx->getBoundWireNet(src) == nullptr) {
                     if (ctx->debug)
                         log_info("            bind pip %s --> %s (plane %hhd)\n", ctx->nameOfPip(uh),

@@ -2609,6 +2609,7 @@ void FPGAViewWidget::updateRouteCandidates()
         auto fnd = ctx_->nets.find(routeNet_);
         if (fnd != ctx_->nets.end()) {
             NetInfo *ni = fnd->second.get();
+            std::string port;
             for (PipId pip : ctx_->getPipsDownhill(routeHead_)) {
                 RouteCand c;
                 c.pip = pip;
@@ -2634,6 +2635,9 @@ void FPGAViewWidget::updateRouteCandidates()
                 } else if (!ctx_->checkPipAvailForNet(pip, ni)) {
                     c.cls = ROUTE_UNAVAIL;
                     c.why = "pip not available (e.g. a mode or mux setting of the placed cells forbids it)";
+                } else if (NetInfo *owner = NetStatus::sinkOfOtherNet(ctx_, c.dst, ni, &port)) {
+                    c.cls = ROUTE_OTHER;
+                    c.why = "destination wire is the sink of net " + owner->name.str(ctx_) + " (" + port + ")";
                 } else {
                     c.cls = ROUTE_OK;
                 }

@@ -192,6 +192,8 @@ bool findPath(Context *ctx, NetInfo *net, const std::vector<WireId> &starts, Wir
                     }
                     if (!ctx->checkPipAvailForNet(pip, net))
                         continue;
+                    if (dst != target && NetStatus::sinkOfOtherNet(ctx, dst, net))
+                        continue;
                 }
                 if (boxed && dst != target) {
                     Loc l = ctx->getPipLocation(pip);
