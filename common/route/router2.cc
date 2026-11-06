@@ -587,8 +587,13 @@ struct Router2
             }
         }
 
+        // (Unchanged where the resource has neither conflict nor history: the factor is 1 there)
+        float resource_factor = resource_hist_cost * resource_present_cost;
+        float resource_cost = base_cost * resource_factor;
+        if (resource_idx >= 0 && base_cost < cfg.resource_conflict_base_cost)
+            resource_cost += (cfg.resource_conflict_base_cost - base_cost) * (resource_factor - 1.0f);
         return base_cost * hist_cost * present_cost / (1 + (source_uses * crit_weight)) + bias_cost +
-               base_cost * resource_hist_cost * resource_present_cost / (1 + crit_weight) + arb_cost;
+               resource_cost / (1 + crit_weight) + arb_cost;
     }
 
     float get_togo_cost(NetInfo *net, store_index<PortRef> user, int wire, WireId src_sink, bool bwd, float crit_weight)
@@ -928,6 +933,34 @@ struct Router2
         return false;
     }
 
+    // Whether the path found through the midpoint sets a resource that other nets use with another value
+    bool path_in_resource_conflict(int midpoint_wire)
+    {
+        auto conflict = [&](PipId pip) {
+            auto key = ctx->getResourceKeyForPip(pip);
+            if (key == GroupId())
+                return false;
+            int value = ctx->getResourceValueForPip(pip);
+            for (auto &vc : resource_data(key).value_count)
+                if (vc.first != value && vc.second > 0)
+                    return true;
+            return false;
+        };
+        for (bool fwd : {true, false}) {
+            int cursor = midpoint_wire;
+            while (fwd ? was_visited_fwd(cursor, std::numeric_limits<float>::max())
+                       : was_visited_bwd(cursor, std::numeric_limits<float>::max())) {
+                PipId pip = fwd ? flat_wires.at(cursor).pip_fwd : flat_wires.at(cursor).pip_bwd;
+                if (pip == PipId())
+                    break;
+                if (conflict(pip))
+                    return true;
+                cursor = wire_to_idx.at(fwd ? ctx->getPipSrcWire(pip) : ctx->getPipDstWire(pip));
+            }
+        }
+        return false;
+    }
+
     bool was_visited_fwd(int wire, float cost)
     {
         return flat_wires.at(wire).cost_fwd != PerWireData::NOT_VISITED && flat_wires.at(wire).cost_fwd <= cost;
@@ -1086,8 +1119,20 @@ struct Router2
                                 : (!t.fwd_queue.empty() || !t.bwd_queue.empty())) &&
                    ((!is_bb && midpoint_wire == -1) || iter < toexplore)) {
                 ++iter;
-                if (meet_limit >= 0 && iter > meet_limit)
-                    break;
+                if (meet_limit >= 0 && iter > meet_limit) {
+                    // Out of the extra budget: more where the best meeting point sets a resource other nets use
+                    // with another value and a frontier still promises less than a quarter of its cost. The way around
+                    // such a resource often only starts further on (a sink's other way in from another plane),
+                    // and a path through a resource in conflict is not legal however long it is kept.
+                    float frontier = std::numeric_limits<float>::max();
+                    if (!t.fwd_queue.empty())
+                        frontier = std::min(frontier, t.fwd_queue.top().score.total());
+                    if (!t.bwd_queue.empty())
+                        frontier = std::min(frontier, t.bwd_queue.top().score.total());
+                    if (!(4 * frontier < best_meet) || !path_in_resource_conflict(midpoint_wire))
+                        break;
+                    meet_limit = iter + std::max(200, iter);
+                }
                 if (!t.fwd_queue.empty() && !const_mode) {
                     // Explore forwards
                     auto curr = t.fwd_queue.top();
@@ -2177,6 +2222,7 @@ Router2Cfg::Router2Cfg(Context *ctx)
     bb_margin_y = ctx->setting<int>("router2/bbMargin/y", 3);
     ipin_cost_adder = ctx->setting<float>("router2/ipinCostAdder", 0.0f);
     bias_cost_factor = ctx->setting<float>("router2/biasCostFactor", 0.25f);
+    resource_conflict_base_cost = ctx->setting<float>("router2/resourceConflictBaseCost", 0.0f);
     if (ctx->settings.count(ctx->id("router2/alt-weights"))) {
         init_curr_cong_weight = ctx->setting<float>("router2/initCurrCongWeight", 5.0f);
         hist_cong_weight = ctx->setting<float>("router2/histCongWeight", 0.5f);

@@ -48,6 +48,10 @@ struct Router2Cfg
     float init_curr_cong_weight, hist_cong_weight;
     // Current congestion cost multiplier
     float curr_cong_mult;
+    // The least base cost a resource in conflict (or with a history of one) is charged by. A resource set by
+    // pips that cost next to nothing (a virtual or internal mux with only the delay epsilon) is otherwise never
+    // worth a detour, however high its history and present congestion: its users never give way (a livelock).
+    float resource_conflict_base_cost;
 
     // Weight given to delay estimate in A*. Higher values
     // mean faster and more directed routing, at the risk

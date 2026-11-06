@@ -864,6 +864,10 @@ void GateMateImpl::ensure_pip_masks() const
 
 void GateMateImpl::configureRouter2(Router2Cfg &cfg)
 {
+    // The CPE's internal muxes that are resources (the virtual LUT input and subtree swaps, the CP-line selects)
+    // cost only the delay epsilon: in conflict they are charged like a routing hop
+    if (!ctx->settings.count(ctx->id("router2/resourceConflictBaseCost")))
+        cfg.resource_conflict_base_cost = 0.1f;
     if (scarce_pip_cost.empty())
         return;
     int y_pips = 0, ydiag_pips = 0;
