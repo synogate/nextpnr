@@ -218,6 +218,16 @@ void BaseCtx::archInfoToAttributes()
             first = false;
         }
         ni->attrs[id("ROUTING")] = routing;
+        // The clock constraint (given, or derived as for a PLL's outputs from its settings, which the
+        // packer may not keep), so that a design loaded placed and routed is timed as it was
+        if (ni->clkconstr) {
+            const ClockConstraint &cc = *ni->clkconstr;
+            std::string value;
+            for (const DelayPair *d : {&cc.period, &cc.high, &cc.low})
+                value += stringf("%s%.17g %.17g", value.empty() ? "" : " ", double(d->min_delay),
+                                 double(d->max_delay));
+            ni->attrs[id("NEXTPNR_CLOCK")] = value;
+        }
     }
 }
 
@@ -238,6 +248,21 @@ void BaseCtx::attributesToArchInfo()
     }
     for (auto &net : getCtx()->nets) {
         auto ni = net.second.get();
+        // (a constraint given again, e.g. by an SDC file, is kept)
+        auto clock = ni->attrs.find(id("NEXTPNR_CLOCK"));
+        if (clock != ni->attrs.end() && !ni->clkconstr) {
+            std::vector<std::string> strs;
+            std::string value = clock->second.as_string();
+            boost::split(strs, value, boost::is_any_of(" "));
+            if (strs.size() == 6) {
+                auto delay = [&](int i) { return delay_t(std::stod(strs.at(i))); };
+                auto cc = std::make_unique<ClockConstraint>();
+                cc->period = DelayPair(delay(0), delay(1));
+                cc->high = DelayPair(delay(2), delay(3));
+                cc->low = DelayPair(delay(4), delay(5));
+                ni->clkconstr = std::move(cc);
+            }
+        }
         auto val = ni->attrs.find(id("ROUTING"));
         if (val != ni->attrs.end()) {
             std::vector<std::string> strs;

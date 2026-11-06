@@ -21,7 +21,12 @@
 // performance mode, the outputs must carry the right clock constraints, and invalid uses must be
 // reported.
 
+#include <array>
 #include <cmath>
+#include <map>
+#include <sstream>
+#include "json_frontend.h"
+#include "jsonwrite.h"
 #include "testing.h"
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
 #include "himbaechel_constids.h"
@@ -152,6 +157,42 @@ TEST_F(GateMatePllTest, no_reference_clock)
 {
     pll("pll", nullptr, {{id_REF_CLK, Property("10.0")}, {id_OUT_CLK, Property("100.0")}});
     EXPECT_LOG_ERROR(pack(), "At least one reference clock (CLK_REF or USR_CLK_REF) must be set for cell 'pll'.");
+}
+
+// The clock constraints of a PLL's outputs come from its REF_CLK and OUT_CLK, which the packer turns
+// into divider settings: a placed and routed JSON keeps them (as the attribute NEXTPNR_CLOCK), so that
+// the design is timed as before when loaded again (as in the GUI) and not at the default frequency.
+TEST_F(GateMatePllTest, clock_constraints_survive_the_json)
+{
+    pll("pll", clock_input("clkin"),
+        {{id_REF_CLK, Property("10.0")}, {id_OUT_CLK, Property("100.0")}, {id_PERF_MD, Property("SPEED")}});
+    place_and_route();
+    std::map<std::string, std::array<delay_t, 3>> constrained;
+    for (auto &net : ctx->nets)
+        if (net.second->clkconstr)
+            constrained[net.first.str(ctx)] = {net.second->clkconstr->period.minDelay(),
+                                               net.second->clkconstr->high.minDelay(),
+                                               net.second->clkconstr->low.minDelay()};
+    ASSERT_FALSE(constrained.empty());
+    std::ostringstream out;
+    std::string filename = "routed.json";
+    ASSERT_TRUE(write_json_file(out, filename, ctx));
+
+    init_context();
+    std::istringstream in(out.str());
+    ASSERT_TRUE(parse_json(in, filename, ctx));
+    for (auto &c : constrained) {
+        ASSERT_TRUE(ctx->nets.count(ctx->id(c.first))) << c.first;
+        NetInfo *net = ctx->nets.at(ctx->id(c.first)).get();
+        ASSERT_NE(net->clkconstr, nullptr) << c.first;
+        EXPECT_EQ(net->clkconstr->period.minDelay(), c.second[0]) << c.first;
+        EXPECT_EQ(net->clkconstr->high.minDelay(), c.second[1]) << c.first;
+        EXPECT_EQ(net->clkconstr->low.minDelay(), c.second[2]) << c.first;
+    }
+    // 100 MHz, not the default
+    NetInfo *clk0 = ctx->nets.at(ctx->id("pll$clk0")).get();
+    ASSERT_NE(clk0->clkconstr, nullptr);
+    EXPECT_NEAR(ctx->getDelayNS(clk0->clkconstr->period.minDelay()), 10.0, 0.01);
 }
 
 TEST_F(GateMatePllTest, two_reference_clocks)
