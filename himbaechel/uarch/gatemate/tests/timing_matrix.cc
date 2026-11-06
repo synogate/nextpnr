@@ -1129,6 +1129,38 @@ TEST_F(GateMateTimingArcTest, ram_output_slack_is_known)
     EXPECT_EQ(checked, 1);
 }
 
+// A design loaded placed and routed has a net without a driver on each unconnected RAM pin (the JSON
+// writes a port bus such as ENA with every bit up to the highest used, ENA[1] too where ENA[0] and
+// ENA[2] are used), also on the pins with no clock domain: those are not timed, and the timing analysis
+// (as the GUI's Paths tab runs it) does not fail on them.
+TEST_F(GateMateTimingArcTest, unused_ram_pins_with_a_net_are_not_timed)
+{
+    NetInfo *clk = global("clk");
+    CellInfo *ram = bram("ram", false, false, clk, clk);
+    connect_input(ram, ctx->id("A_ADDR[7]"), input("a"));
+    output("q", connect_output(ram, ctx->id("A_DO[0]")));
+    implement();
+    auto rams = cells_of_type(id_RAM);
+    ASSERT_EQ(rams.size(), 1u);
+    int dangling = 0;
+    for (const char *pin : {"ENA[1]", "ENA[3]", "ENB[1]", "GLWEA[1]"}) {
+        IdString port = ctx->id(pin);
+        if (rams[0]->getPort(port))
+            continue;
+        if (!rams[0]->ports.count(port))
+            rams[0]->addInput(port);
+        rams[0]->connectPort(port, ctx->createNet(ctx->idf("$frontend$%s", pin)));
+        int count = 0;
+        EXPECT_EQ(impl->getPortTimingClass(rams[0], port, count), TMG_IGNORE) << pin;
+        dangling++;
+    }
+    ASSERT_GT(dangling, 0) << "no unconnected RAM pin without a clock domain";
+    TimingAnalyser tmg(ctx);
+    tmg.setup_only = false;
+    tmg.with_clock_skew = true;
+    EXPECT_NO_THROW(tmg.setup());
+}
+
 // The input of a bidirectional pad drives the fabric through its IOSEL like that of an input pad.
 TEST_F(GateMateTimingArcTest, bidirectional_pad_input_is_timed)
 {
