@@ -77,6 +77,7 @@ struct GateMateImpl : HimbaechelAPI
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override;
     // Placement or routing changed by hand: the pip masks are recomputed (with the routing) when next needed
     void notifyDesignEdited() override { pip_masks_ready = false; }
+    std::string preparePartitionWrite(bool check_only, bool *changes_design) override;
     // Whether a pip is usable at all with the chosen options, regardless of placement
     bool pip_allowed_by_options(PipId pip) const;
 
@@ -344,6 +345,8 @@ struct GateMateImpl : HimbaechelAPI
     // Registers standing in for the design outside a partition on its ports while it is routed
     pool<IdString> partition_port_cells;
     void detach_partition_ports();
+    // detach_partition_ports ran: the design is what a partition file holds
+    bool partition_detached = false;
     // The cells detach_partition_ports takes out: stand-ins, clocking and constant drivers
     pool<IdString> partition_detached_cells() const;
     // The area of a partition (its floorplan regions), outside which the routing it keeps must not go, and the
@@ -408,6 +411,9 @@ struct GateMateImpl : HimbaechelAPI
                           dict<WireId, IdString> &wire_to_net, int &num, IdString in_port);
     // pass_backtrace of the bridge and CP line cells of a design routed before (it is not saved with the design)
     void restore_pass_backtrace();
+    // restore_pass_backtrace ran (a routed design loaded from JSON gets pass_backtrace when first needed)
+    std::atomic<bool> pass_backtrace_ready{false};
+    mutable std::mutex pass_backtrace_mutex_;
     void repack();
 
     bool get_delay_from_tmg_db(IdString id, DelayQuad &delay) const;

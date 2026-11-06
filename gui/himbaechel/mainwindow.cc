@@ -112,6 +112,7 @@ void MainWindow::finish_route()
 
 void MainWindow::run_finished(bool status)
 {
+    taskRunning = false;
     repairTimer->stop();
     ctx->repair_ui_wants = false;
     ctx->repair_progress = false;
@@ -354,6 +355,11 @@ std::vector<PnrOption> MainWindow::pnrOptions()
     add(file(finish, "Bitstream", "Bitstream file", "Textual configuration, written when finishing", "out",
              PnrOption::SaveFile));
     return options;
+}
+
+std::string MainWindow::preparePartitionWrite(bool check_only, bool *changes_design)
+{
+    return ctx->uarch->preparePartitionWrite(check_only, changes_design);
 }
 
 void MainWindow::new_proj()

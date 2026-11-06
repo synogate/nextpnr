@@ -258,6 +258,14 @@ std::vector<CellInfo *> placementGroup(Context *ctx, CellInfo *ci);
 
 class EditBatch;
 
+// The routing that only makes sense with the cell on its bel: what a net routes below one of the cell's sink wires
+// (NetStatus::belowSinkWires, e.g. on GateMate the CPE-internal routing of a design routed before, part of the
+// cell's configuration) and the whole routing of the nets the cell drives (it grows from the source wire at the
+// cell's bel). The routing of the arcs into the cell, up to its sink wires, stays (the router reuses it).
+std::vector<WireId> cellRouting(Context *ctx, const CellInfo *ci);
+// Add the commands unbinding the cell on `bel` to a batch, together with cellRouting (also when locked), so moving
+// or unplacing a cell leaves nothing of it in the old site; undo restores both.
+std::string addUnbindBel(EditBatch &b, BelId bel);
 // Add the commands placing `cell` at `bel` to a batch: place it if unplaced, else move it. If the
 // bel is taken by another unlocked cell outside a cluster, the two are swapped (an unplaced cell
 // displaces the other, which ends up unplaced). A cluster root moves with its whole cluster

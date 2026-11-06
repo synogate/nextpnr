@@ -702,6 +702,11 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
         }
         if (name[0] == 'F')
             return TMG_IGNORE;
+        // A design written to JSON and loaded again: the JSON writes the ports name[i] as buses, and the gaps
+        // (e.g. ENA[1] between ENA[0] and ENA[2] of a merged RAM) come back as ports on undriven nets; they are
+        // not used by the block
+        if (fifo == ram_signal_clk.end())
+            return TMG_IGNORE;
         for (auto c : boost::adaptors::reverse(name)) {
             if (std::isdigit(c) || c == 'X' || c == '[' || c == ']')
                 continue;

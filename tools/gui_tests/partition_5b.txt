@@ -1,0 +1,33 @@
+# Phase 5b: File > Save as partition. The 008-counter synthesized as a partition (module core, no IO pads),
+# started with --vopt as-partition: Pack, Place, route one net by hand, save as partition (the port stand-ins,
+# clock buffer and constant drivers go as at the end of step 1 of the partition flow, the hand routing stays).
+# Afterwards Place and Route are disabled. Import check without the GUI: tools/gui_tests/check_partition.ps1.
+# design: counter_part
+resize 1400 1000
+action Pack
+waitidle
+py S=[n for n, c in ctx.cells if "$nextpnr" in n or "standin" in n.lower() or c.type in ("CLKIN", "GLBOUT")]; print(len(list(ctx.cells)), "cells, stand-ins / clocking:", S[:8])
+action Place
+waitidle
+assert_action Route on
+key E
+selectnet counter[5]
+key R
+wait 300
+button Route rest
+wait 500
+assert_status arcs routed
+key Esc
+py R1={str(w): str(m.pip) for w, m in ctx.nets["counter[5]"].wires}; print(len(R1), "wires of counter[5]")
+assert_py len(R1) > 3
+shot 01_hand_routed.png
+savepartition core_part.json
+py J=open("core_part.json").read(); print(len(list(ctx.cells)), "cells after saving;", "partition-clusters" in J, "partition-unrouted" in J)
+assert_py "partition-clusters" in J and "partition-unrouted" not in J and not [n for n, c in ctx.cells if c.type in ("CLKIN", "GLBOUT")]
+assert_py {str(w): str(m.pip) for w, m in ctx.nets["counter[5]"].wires} == R1
+assert_action Place off
+assert_action Route off
+# saving again writes the same partition
+savepartition core_part2.json
+zoomfit
+shot 02_saved.png

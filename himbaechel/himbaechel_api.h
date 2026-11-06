@@ -101,6 +101,13 @@ struct HimbaechelAPI
     virtual bool isPipInverting(PipId pip) const { return false; }
     // See ArchAPI::notifyDesignEdited
     virtual void notifyDesignEdited() {}
+    // GUI, File > Save as partition: make the design what a partition file holds (as the arch's own partition flow
+    // writes it). With check_only nothing changes. Returns "" or why it can not be saved as a partition;
+    // *changes_design tells whether it takes something out of the design (the GUI asks first).
+    virtual std::string preparePartitionWrite(bool check_only, bool *changes_design)
+    {
+        return "saving a partition is not supported for this architecture";
+    }
 
     // --- Route lookahead ---
     virtual delay_t estimateDelay(WireId src, WireId dst) const;

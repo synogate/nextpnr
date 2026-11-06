@@ -11,6 +11,7 @@
                   WEAK, IO cells FIXED); built once into <OutDir>/designs
     counter_synth the synthesized 008-counter with its CCF (not packed; Pack in the GUI)
     counter_synth_bit  the same, also writing the bitstream (-o out=bitstream.txt) when routed
+    counter_part  008-counter as module core synthesized without IO pads, with --vopt as-partition
   Results: <OutDir>/<script>/ (guitest.log, PNGs). Prints one line per script and returns the number of
   failed scripts.
 
@@ -65,6 +66,18 @@ function Get-Design([string]$name) {
                 if (-not (Test-Path $pnr)) { throw "could not build $pnr (see $designs\pnr.log)" }
             }
             return @{ Json = $pnr; Extra = "" }
+        }
+        "counter_part" {
+            # the counter as a partition: module core, synthesized without IO pads, run with --vopt as-partition
+            $core = Join-Path $designs "core.json"
+            if (-not (Test-Path $core)) {
+                (Get-Content "$Cases\008-counter\top.v") -replace '^module top', 'module core' | Set-Content (Join-Path $designs "core.v")
+                Push-Location $designs
+                & $Yosys -ql core_synth.log -p "read_verilog -sv core.v; synth_gatemate -luttree -top core -noiopad; write_json core.json"
+                Pop-Location
+                if (-not (Test-Path $core)) { throw "could not synthesize $core (see $designs\core_synth.log)" }
+            }
+            return @{ Json = $core; Extra = "--vopt as-partition" }
         }
         default { throw "unknown design '$name'" }
     }

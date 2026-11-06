@@ -1,0 +1,98 @@
+# Phase 5b: iterative hand work in one session. Pack, Place and Route are enabled whenever they make sense:
+# Place while cells are unplaced (not after routing), Route once everything is placed, again and again.
+# Place, unplace a LUT/FF cluster, Place again (only that cluster moves); Route, unroute two nets, Route again;
+# unplace the cluster in the routed design (its CPE-internal routing below the renamed sink wires and the
+# routing of the nets it drives go with it, undo brings everything back), Route again. reroute_5b.json is the
+# result (check it with check_routed.py: every net one routing tree).
+# design: counter_synth
+resize 1400 1000
+assert_action Pack on
+assert_action Place off
+assert_action Route off
+action Pack
+waitidle
+assert_action Pack off
+assert_action Place on
+assert_action Route off
+action Place
+waitidle
+assert_action Place off
+assert_action Route on
+# --- unplace the LUT/FF cluster, Place again: only it is placed, the others stay
+py L="$abc$348$auto$blifparse.cc:397:parse_blif$384"; T=str(ctx.cells[L].bel).split("/")[0]; P0={n: str(c.bel) for n, c in ctx.cells}; print("L at", ctx.cells[L].bel)
+key E
+zoomcell $abc$348$auto$blifparse.cc:397:parse_blif$384 1.2
+py B=str(ctx.cells[L].bel); print(B)
+clickcell $abc$348$auto$blifparse.cc:397:parse_blif$384 right
+menu Unplace
+wait 300
+assert_py ctx.cells[L].bel is None
+assert_action Place on
+assert_action Route off
+key E
+action Place
+waitidle
+py moved=[n for n, b in P0.items() if n in [x for x, c in ctx.cells] and ctx.cells[n].bel is not None and str(ctx.cells[n].bel) != b]; print("L placed again at", ctx.cells[L].bel, "moved:", moved)
+assert_py ctx.cells[L].bel is not None and set(moved) <= {L, "$auto$ff.cc:337:slice$106"}
+assert_action Place off
+assert_action Route on
+action Route
+waitidle
+assert_action Route on
+assert_action Place off
+py rt=lambda n: sum(1 for w, m in ctx.nets[n].wires if m.pip is not None); N=["counter[5]", "counter[9]"]; R={n: rt(n) for n in N}; print("routed:", R); bad=lambda: [n for n, ni in ctx.nets if ni.driver.cell is not None and len(ni.users) and not len(ni.wires)]; B0=set(bad()); print("nets without routing (IO):", sorted(B0))
+assert_py all(v > 3 for v in R.values())
+# --- unroute two nets from the Nets tree, Route again
+key E
+selectnet counter[5]
+treemenu
+menu Unroute net
+wait 300
+selectnet counter[9]
+treemenu
+menu Unroute net
+wait 300
+py print("after unroute:", {n: rt(n) for n in N})
+assert_py all(rt(n) < R[n] for n in N)
+assert_action Route on
+key E
+action Route
+waitidle
+py print("routed again:", {n: rt(n) for n in N}, "nets without routing:", bad()[:5])
+assert_py all(rt(n) > 3 for n in N) and set(bad()) <= B0
+assert_action Route on
+# --- unplace the cluster in the routed design: its CPE-internal routing and the routing of the nets it drives
+# are unbound with it, undo restores them
+py T=str(ctx.cells[L].bel).split("/")[0]; iw=lambda: sorted(str(w) for n, ni in ctx.nets for w, m in ni.wires if str(w).startswith(T + "/CPE.") and str(w).endswith("_int") and not str(w).startswith(T + "/CPE.IN")); I0=iw(); W0=sum(len(ni.wires) for n, ni in ctx.nets); print(T, "internal routing:", I0)
+assert_py len(I0) > 0
+key E
+zoomcell $abc$348$auto$blifparse.cc:397:parse_blif$384 1.2
+clickcell $abc$348$auto$blifparse.cc:397:parse_blif$384 right
+menu Unplace
+wait 300
+status
+py print("after unplace:", ctx.cells[L].bel, iw())
+assert_py ctx.cells[L].bel is None and iw() == []
+assert_action Place off
+assert_action Route off
+shot 01_unplaced_routed.png
+key Ctrl+Z
+wait 300
+assert_py str(ctx.cells[L].bel).startswith(T) and iw() == I0 and sum(len(ni.wires) for n, ni in ctx.nets) == W0
+assert_action Route on
+key Ctrl+Y
+wait 300
+assert_py ctx.cells[L].bel is None and iw() == []
+key Ctrl+Z
+wait 300
+assert_py iw() == I0
+# --- Route again on the complete design: nothing to do, nothing lost
+key E
+action Route
+waitidle
+py print("nets without routing:", bad()[:5])
+assert_py set(bad()) <= B0 and iw() == I0
+assert_action Route on
+zoomfit
+shot 02_routed_again.png
+savejson reroute_5b.json

@@ -68,6 +68,8 @@
  *   selectcell <name> [ctrl]   click the cell's row in the Cells tree like a user (arms it in edit
  *                              mode; ctrl: add it to the selection); selectnet <name> selects a net
  *                              in the Nets tree (programmatically, like "Show in tree")
+ *   treemenu                   open the context menu of the visible tree's current row (as a right-click
+ *                              there; handle it with menu / assert_menu)
  *   menu <text>                pick the entry of the open popup / context menu starting with text
  *                              (waits up to 10 s for the menu; submenus: menu A > B)
  *   assert_menu <text> / assert_menu_disabled <text>
@@ -82,6 +84,9 @@
  *   check <text> on|off        set a checkable button (e.g. a checkbox) starting with text
  *   savejson <file.json>       write the design as JSON (like File > Save), e.g. to check it without the
  *                              GUI afterwards
+ *   savepartition <file.json>  File > Save as partition... without the file dialog and the question
+ *                              (fails with the reason if the design can not be saved as a partition)
+ *   assert_action <text> on|off  the window action whose text starts with text is enabled / disabled
  *   button <text>              click the visible push button whose text starts with text (fails if
  *                              it is disabled)
  *   settext <objectName> <text> set the text of a line edit (e.g. routeTarget in the route dock)

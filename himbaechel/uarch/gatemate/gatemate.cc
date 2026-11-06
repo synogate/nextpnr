@@ -556,6 +556,19 @@ bool GateMateImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
     // A partition keeps the CPEs next to IOs and the clocking free for the design importing it
     if (as_partition && partition_io_tiles.count(bel.tile) && cell->belStrength < STRENGTH_FIXED)
         return false;
+    // After repacking (postPlace), a cell using the whole CPE (adder, 8:1 multiplexer) sits on CPE_LT_FULL, over
+    // both LUT halves: placing again (e.g. after unplacing cells by hand) must not put a LUT into such a CPE
+    IdString bel_type = ctx->getBelType(bel);
+    if (bel_type.in(id_CPE_LT_L, id_CPE_LT_U, id_CPE_LT_FULL)) {
+        Loc loc = ctx->getBelLocation(bel);
+        for (int z : {CPE_LT_L_Z, CPE_LT_U_Z, CPE_LT_FULL_Z}) {
+            if (z == loc.z || (z != CPE_LT_FULL_Z && loc.z != CPE_LT_FULL_Z))
+                continue;
+            const CellInfo *other = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(loc.x, loc.y, z)));
+            if (other && other != cell)
+                return false;
+        }
+    }
 
     if (getBelBucketForBel(bel) == id_CPE_FF) {
         Loc loc = ctx->getBelLocation(bel);
@@ -1157,12 +1170,15 @@ void GateMateImpl::reassign_cplines(NetInfo *ni, const dict<WireId, PipMap> &net
 
 void GateMateImpl::restore_pass_backtrace()
 {
+    pass_backtrace_ready = true;
     static const dict<std::string, IdString> input_port_map = {
             {"CPE.CINX", id_CINX},          {"CPE.CINY1", id_CINY1},          {"CPE.CINY2", id_CINY2},
             {"CPE.PINX", id_PINX},          {"CPE.PINY1", id_PINY1},          {"CPE.PINY2", id_PINY2},
             {"CPE.OUT1_IN_int", id_OUT1}, {"CPE.OUT2_IN_int", id_OUT2}, {"CPE.COMPOUT_IN_int", id_COMPOUT}};
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
+        if (pass_backtrace.count(ci->name))
+            continue; // (made by postRoute in this run)
         if (ci->type == id_CPE_BRIDGE) {
             for (auto &port : ci->ports)
                 if (port.second.type == PORT_IN && port.second.net)

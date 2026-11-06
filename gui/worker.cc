@@ -74,16 +74,44 @@ void Worker::pack()
 void Worker::place(bool timing_driven)
 {
     Q_EMIT taskStarted();
+    // Placing again (after cells were unplaced by hand, maybe in a routed design): only the unplaced cells are
+    // placed, the others keep their bels for this pass (else the refinement would move every cell that is not
+    // locked and break the routing there)
+    std::vector<std::pair<IdString, PlaceStrength>> held;
+    if (ctx->settings.count(ctx->id("place"))) {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->bel != BelId() && ci->belStrength < STRENGTH_LOCKED) {
+                held.emplace_back(ci->name, ci->belStrength);
+                ci->belStrength = STRENGTH_LOCKED;
+            }
+        }
+        if (!held.empty())
+            log_info("Placing the unplaced cells only: %d placed cells keep their bels.\n", int(held.size()));
+    }
+    auto release = [&] {
+        for (auto &h : held) {
+            auto found = ctx->cells.find(h.first);
+            if (found != ctx->cells.end() && found->second->bel != BelId() &&
+                found->second->belStrength == STRENGTH_LOCKED)
+                found->second->belStrength = h.second;
+        }
+    };
     try {
         ctx->settings[ctx->id("timing_driven")] = std::to_string(timing_driven);
-        Q_EMIT place_finished(ctx->place());
+        bool result = ctx->place();
+        release();
+        Q_EMIT place_finished(result);
     } catch (WorkerInterruptionRequested) {
+        release();
         Q_EMIT taskCanceled();
     } catch (log_execution_error_exception) {
         // The pass failed (log_error): the step ends, and the error goes on to the GUI
+        release();
         Q_EMIT place_finished(false);
         throw;
     } catch (const std::exception &e) {
+        release();
         log_nonfatal_error("Internal error: %s\n", e.what());
         Q_EMIT place_finished(false);
     }

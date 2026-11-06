@@ -61,7 +61,6 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     setObjectName("BaseMainWindow");
     resize(1024, 768);
-    restoreGeometry(QSettings("YosysHQ", "nextpnr").value("mainwindow/geometry").toByteArray());
 
     task = new TaskManager();
     editStack = new EditStack(this);
@@ -149,6 +148,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     fpgaView->setEditStack(editStack);
     connect(editStack, &EditStack::designChanged, designview, &DesignWidget::refreshAfterEdit);
     connect(editStack, &EditStack::stateChanged, this, &BaseMainWindow::editStateChanged);
+    // Placing / unplacing by hand changes what Place and Route can do
+    connect(editStack, &EditStack::designChanged, this, &BaseMainWindow::updateActions);
 
     // Route mode candidates as lists (shown when route mode starts)
     routeDock = new RouteDock(fpgaView, editStack, this);
@@ -210,23 +211,64 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(this, &BaseMainWindow::updateTreeView, fpgaView, &FPGAViewWidget::refreshNetView);
 
     createMenusAndBars();
+    restoreWindowState();
 
-    QSettings settings("YosysHQ", "nextpnr");
-    for (auto splitter : findChildren<QSplitter *>())
-        if (!splitter->objectName().isEmpty())
-            splitter->restoreState(settings.value("mainwindow/" + splitter->objectName()).toByteArray());
     GuiTest::startIfRequested(this);
 }
 
-BaseMainWindow::~BaseMainWindow() { delete task; }
+BaseMainWindow::~BaseMainWindow()
+{
+    saveWindowState();
+    delete task;
+}
+
+// Window geometry, toolbars, docks and splitters are kept between sessions. NEXTPNR_GUI_SETTINGS=<file.ini> uses
+// that file instead of the user's settings; GUI tests (NEXTPNR_GUI_TEST) use none unless it is set, so they always
+// start from the default layout.
+static std::unique_ptr<QSettings> windowSettings()
+{
+    QByteArray file = qgetenv("NEXTPNR_GUI_SETTINGS");
+    if (!file.isEmpty())
+        return std::make_unique<QSettings>(QString::fromLocal8Bit(file), QSettings::IniFormat);
+    if (!qgetenv("NEXTPNR_GUI_TEST").isEmpty())
+        return nullptr;
+    return std::make_unique<QSettings>("YosysHQ", "nextpnr");
+}
+
+static const int windowStateVersion = 1;
+
+// (the keys under mainwindow/: geometry, state (toolbars and docks) and one per named splitter)
+void BaseMainWindow::restoreWindowState()
+{
+    auto settings = windowSettings();
+    if (!settings)
+        return;
+    if (settings->contains("mainwindow/geometry"))
+        restoreGeometry(settings->value("mainwindow/geometry").toByteArray());
+    if (settings->contains("mainwindow/state"))
+        restoreState(settings->value("mainwindow/state").toByteArray(), windowStateVersion);
+    for (QSplitter *splitter : findChildren<QSplitter *>()) {
+        QString key = "mainwindow/" + splitter->objectName();
+        if (!splitter->objectName().isEmpty() && settings->contains(key))
+            splitter->restoreState(settings->value(key).toByteArray());
+    }
+}
+
+void BaseMainWindow::saveWindowState()
+{
+    auto settings = windowSettings();
+    if (!settings)
+        return;
+    settings->setValue("mainwindow/geometry", saveGeometry());
+    settings->setValue("mainwindow/state", saveState(windowStateVersion));
+    for (QSplitter *splitter : findChildren<QSplitter *>())
+        if (!splitter->objectName().isEmpty())
+            settings->setValue("mainwindow/" + splitter->objectName(), splitter->saveState());
+}
 
 void BaseMainWindow::closeEvent(QCloseEvent *event)
 {
-    QSettings settings("YosysHQ", "nextpnr");
-    settings.setValue("mainwindow/geometry", saveGeometry());
-    for (auto splitter : findChildren<QSplitter *>())
-        if (!splitter->objectName().isEmpty())
-            settings.setValue("mainwindow/" + splitter->objectName(), splitter->saveState());
+    saveWindowState();
     QMainWindow::closeEvent(event);
 }
 
@@ -279,6 +321,12 @@ void BaseMainWindow::createMenusAndBars()
     actionSaveJSON->setStatusTip("Write to JSON file");
     actionSaveJSON->setEnabled(true);
     connect(actionSaveJSON, &QAction::triggered, this, &BaseMainWindow::save_json);
+
+    actionSavePartition = new QAction("Save as partition...", this);
+    actionSavePartition->setStatusTip("Write the placed (and routed) design as a partition file for --vopt "
+                                      "partition=<instance>:<file> (the session must be started with --vopt "
+                                      "as-partition)");
+    connect(actionSavePartition, &QAction::triggered, this, &BaseMainWindow::save_partition);
 
     // Design menu options
     actionPack = new QAction("Pack", this);
@@ -502,6 +550,7 @@ void BaseMainWindow::createMenusAndBars()
     menuFile->addAction(actionNew);
     menuFile->addAction(actionLoadJSON);
     menuFile->addAction(actionSaveJSON);
+    menuFile->addAction(actionSavePartition);
     menuFile->addSeparator();
     menuFile->addAction(actionExit);
 
@@ -563,6 +612,7 @@ void BaseMainWindow::createMenusAndBars()
 
     // Main action bar
     mainActionBar = new QToolBar("Main");
+    mainActionBar->setObjectName("MainToolBar");
     addToolBar(Qt::TopToolBarArea, mainActionBar);
     mainActionBar->addAction(actionNew);
     mainActionBar->addAction(actionLoadJSON);
@@ -581,6 +631,7 @@ void BaseMainWindow::createMenusAndBars()
 
     // Add worker control toolbar
     QToolBar *workerControlToolBar = new QToolBar("Worker");
+    workerControlToolBar->setObjectName("WorkerToolBar");
     addToolBar(Qt::TopToolBarArea, workerControlToolBar);
     workerControlToolBar->addAction(actionPlay);
     workerControlToolBar->addAction(actionPause);
@@ -588,6 +639,7 @@ void BaseMainWindow::createMenusAndBars()
 
     // Add device view control toolbar
     QToolBar *deviceViewToolBar = new QToolBar("Device");
+    deviceViewToolBar->setObjectName("DeviceToolBar");
     addToolBar(Qt::TopToolBarArea, deviceViewToolBar);
     deviceViewToolBar->addAction(actionZoomIn);
     deviceViewToolBar->addAction(actionZoomOut);
@@ -787,6 +839,70 @@ bool BaseMainWindow::setArchOption(const std::string &, const QJsonValue &, QStr
     return false;
 }
 
+void BaseMainWindow::save_partition()
+{
+    std::string err;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        err = preparePartitionWrite(true, nullptr);
+    }
+    if (!err.empty()) {
+        QMessageBox::warning(this, "Save as partition", QString::fromStdString("Cannot save as partition: " + err));
+        return;
+    }
+    QString fileName =
+            QFileDialog::getSaveFileName(this, QString("Save as partition"), QString(), QString("*.json"));
+    if (!fileName.isEmpty())
+        savePartition(fileName, true);
+}
+
+std::string BaseMainWindow::savePartition(const QString &fileName, bool ask)
+{
+    if (taskRunning)
+        return "a pass is running";
+    bool changes = false;
+    std::string err;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        err = preparePartitionWrite(true, &changes);
+    }
+    if (err.empty() && changes && ask &&
+        QMessageBox::question(this, "Save as partition",
+                              "Saving as a partition takes the port stand-ins, the clock buffers and the constant "
+                              "drivers out of the design, as the partition flow does after routing. The design can "
+                              "not be placed or routed further in this session.\n\nContinue?") != QMessageBox::Yes)
+        return "canceled";
+    if (err.empty()) {
+        std::string fn = fileName.toStdString();
+        std::ofstream f(fn);
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        prepareDesignForWrite(ctx.get());
+        err = preparePartitionWrite(false, nullptr);
+        if (err.empty()) {
+            // (the attributes again: the stand-ins took their routing with them)
+            ctx->archInfoToAttributes();
+            if (!f || !write_json_file(f, fn, ctx.get()))
+                err = "cannot write " + fn;
+        }
+    }
+    if (changes) {
+        // Cells and nets are gone: the edit history does not apply any more
+        editStack->clear();
+        ctx->refreshUi();
+        Q_EMIT updateTreeView();
+        disableActions();
+        updateActions();
+    }
+    if (err.empty())
+        log("Saving partition successful.\n");
+    else
+        log("Saving partition failed: %s\n", err.c_str());
+    return err;
+}
+
 void BaseMainWindow::screenshot()
 {
     QString fileName = QFileDialog::getSaveFileName(this, QString("Save screenshot"), QString(), QString("*.png"));
@@ -847,46 +963,52 @@ void BaseMainWindow::saveSVG()
 
 void BaseMainWindow::pack_finished(bool status)
 {
+    taskRunning = false;
     disableActions();
     if (status) {
         log("Packing design successful.\n");
         Q_EMIT updateTreeView();
-        updateActions();
     } else {
         log("Packing design failed.\n");
     }
+    updateActions();
 }
 
 void BaseMainWindow::place_finished(bool status)
 {
+    taskRunning = false;
     disableActions();
     if (status) {
         log("Placing design successful.\n");
         Q_EMIT updateTreeView();
-        updateActions();
     } else {
         log("Placing design failed.\n");
     }
+    updateActions();
 }
 void BaseMainWindow::route_finished(bool status)
 {
+    taskRunning = false;
     disableActions();
     if (status) {
         log("Routing design successful.\n");
         Q_EMIT updateTreeView();
-        updateActions();
     } else
         log("Routing design failed.\n");
+    updateActions();
 }
 
 void BaseMainWindow::taskCanceled()
 {
+    taskRunning = false;
     log("CANCELED\n");
     disableActions();
+    updateActions();
 }
 
 void BaseMainWindow::taskStarted()
 {
+    taskRunning = true;
     disableActions();
     actionPause->setEnabled(true);
     actionStop->setEnabled(true);
@@ -1096,12 +1218,37 @@ void BaseMainWindow::disableActions()
 
 void BaseMainWindow::updateActions()
 {
-    if (ctx->settings.find(ctx->id("pack")) == ctx->settings.end())
-        actionPack->setEnabled(true);
-    else if (ctx->settings.find(ctx->id("place")) == ctx->settings.end()) {
-        actionPlace->setEnabled(true);
-    } else if (ctx->settings.find(ctx->id("route")) == ctx->settings.end())
-        actionRoute->setEnabled(true);
+    // (all stay disabled while a pass runs, see taskStarted)
+    if (taskRunning)
+        return;
+    // Hand work is iterative: Place again whenever cells are unplaced (the placer keeps the placed ones where
+    // they are), Route again whenever everything is placed (the router keeps the routing that is there and
+    // routes what is missing, e.g. after unrouting nets or moving cells)
+    bool packed = ctx->settings.count(ctx->id("pack"));
+    // A finished partition (written, or saved as one, see savePartition) is not placed or routed again
+    bool partition = ctx->settings.count(ctx->id("partition-clusters"));
+    bool placed_before = ctx->settings.count(ctx->id("place"));
+    bool unplaced = false;
+    if (packed) {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        for (auto &cell : ctx->cells)
+            if (cell.second->bel == BelId() && !cell.second->isPseudo()) {
+                unplaced = true;
+                break;
+            }
+    }
+    // Not after routing: the routing renamed the cells' pins to the inputs it took and made cells of its own (on
+    // GateMate: LUT inputs renamed to CPE inputs, CP-line and bridge cells), which placing again does not undo
+    bool routed_before = ctx->settings.count(ctx->id("route"));
+    actionPack->setEnabled(!packed);
+    actionPlace->setEnabled(packed && !partition && !routed_before && (unplaced || !placed_before));
+    actionRoute->setEnabled(packed && !partition && !unplaced);
+    actionPlace->setToolTip(routed_before && unplaced
+                                    ? "The design was routed: placing again is not supported (undo the unplacing, or "
+                                      "place the cells by hand)"
+                                    : "Place current design");
+    actionRoute->setToolTip(unplaced ? "Place all cells first" : "Route current design");
     actionOptions->setEnabled(true);
 
     onUpdateActions();

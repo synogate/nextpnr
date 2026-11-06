@@ -942,6 +942,21 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         }
         return true;
     }
+    if (cmd == "treemenu") {
+        QTreeView *tree = nullptr;
+        for (QTreeView *t : win_->designview->findChildren<QTreeView *>())
+            if (t->isVisible() && t->currentIndex().isValid())
+                tree = t;
+        if (!tree) {
+            error_ = "no visible tree with a current row";
+            return false;
+        }
+        tree->scrollTo(tree->currentIndex());
+        QPoint p = tree->visualRect(tree->currentIndex()).center();
+        // (the menu runs modally: open it from the event loop, the next steps handle it)
+        QTimer::singleShot(0, tree, [tree, p] { Q_EMIT tree->customContextMenuRequested(p); });
+        return true;
+    }
     if (cmd == "menu" || cmd == "assert_menu" || cmd == "assert_menu_disabled" || cmd == "assert_nomenu") {
         if (!need(1))
             return false;
@@ -1080,6 +1095,42 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         }
         log("  saved " + fi.absoluteFilePath());
         return true;
+    }
+    if (cmd == "savepartition") {
+        if (!need(1))
+            return false;
+        QFileInfo fi(rest);
+        std::string err = win_->savePartition(fi.absoluteFilePath(), false);
+        if (!err.empty()) {
+            error_ = QString::fromStdString("save as partition: " + err);
+            return false;
+        }
+        log("  saved partition " + fi.absoluteFilePath());
+        return true;
+    }
+    if (cmd == "assert_action") {
+        if (!need(2))
+            return false;
+        bool want = w.last() == "on";
+        QString text = rest.left(rest.lastIndexOf(' ')).trimmed();
+        // (the action with exactly that text first: "Place" is also the start of "Place/move selected cell")
+        QList<QAction *> actions = win_->findChildren<QAction *>();
+        std::stable_sort(actions.begin(), actions.end(), [&](QAction *a, QAction *b) {
+            return plain(a->text()).compare(text, Qt::CaseInsensitive) == 0 &&
+                   plain(b->text()).compare(text, Qt::CaseInsensitive) != 0;
+        });
+        for (QAction *a : actions) {
+            if (!plain(a->text()).startsWith(text, Qt::CaseInsensitive))
+                continue;
+            if (a->isEnabled() != want) {
+                error_ = QString("action '%1' is %2").arg(a->text(), a->isEnabled() ? "enabled" : "disabled");
+                return false;
+            }
+            log(QString("  action '%1' %2").arg(a->text(), want ? "enabled" : "disabled"));
+            return true;
+        }
+        error_ = "no action " + text;
+        return false;
     }
     if (cmd == "button") {
         if (!need(1))

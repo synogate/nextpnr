@@ -47,6 +47,7 @@ class MainWindow : public BaseMainWindow
     void optionsChanged() override;
     bool setArchOption(const std::string &key, const QJsonValue &value, QString &error) override;
     void beforeSave() override;
+    std::string preparePartitionWrite(bool check_only, bool *changes_design) override;
 
   protected Q_SLOTS:
     void new_proj() override;

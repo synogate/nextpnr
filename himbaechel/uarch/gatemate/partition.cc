@@ -878,6 +878,7 @@ bool GateMateImpl::checkPipAvailForNet(PipId pip, const NetInfo *net) const
 
 void GateMateImpl::detach_partition_ports()
 {
+    partition_detached = true;
     for (auto &clock : partition_clocks) {
         if (!ctx->nets.count(clock.first) || !ctx->nets.count(clock.second))
             log_error("Lost the clock net '%s' of the partition.\n", clock.first.c_str(ctx));
@@ -925,6 +926,42 @@ void GateMateImpl::detach_partition_ports()
         if (!is_port)
             ctx->nets.erase(name);
     }
+}
+
+// The GUI's File > Save as partition: what step 1 of the partition flow (--vopt as-partition) writes, from the
+// design as it is now: placed (and routed, by hand or by Route) in a session started with --vopt as-partition. The
+// stand-ins, buffers and constant drivers go as at the end of step 1 (postRoute, or postPlace with
+// partition-unrouted); a design without routing is written as with partition-unrouted.
+std::string GateMateImpl::preparePartitionWrite(bool check_only, bool *changes_design)
+{
+    if (changes_design)
+        *changes_design = false;
+    if (!as_partition)
+        return "the design is not set up as a partition: start nextpnr with --vopt as-partition (or --vopt "
+               "partition-unrouted) on the partition's JSON synthesized without IO pads, then pack and place it";
+    if (!ctx->settings.count(ctx->id("pack")))
+        return "the design is not packed yet";
+    for (auto &cell : ctx->cells)
+        if (cell.second->bel == BelId() && !cell.second->isPseudo())
+            return "cell '" + cell.first.str(ctx) + "' is not placed: a partition is written placed";
+    if (!partition_detached) {
+        if (changes_design)
+            *changes_design = true;
+        if (check_only)
+            return {};
+        detach_partition_ports();
+        bool routed = false;
+        for (auto &net : ctx->nets)
+            for (auto &wire : net.second->wires)
+                routed |= wire.second.pip != PipId();
+        // (routed by hand without Route, the import still takes the routing there is: the router completes it)
+        ctx->settings[ctx->id(routed ? "route" : "partition-unrouted")] = 1;
+        pip_masks_ready = false;
+    } else if (check_only) {
+        return {};
+    }
+    save_partition_attrs();
+    return {};
 }
 
 void GateMateImpl::save_partition_attrs()

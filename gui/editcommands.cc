@@ -421,6 +421,57 @@ std::string cellFixedReason(Context *ctx, const CellInfo *ci)
            " [FIXED: tied to its IO/RAM/clock site or routing] and cannot be moved";
 }
 
+std::vector<WireId> cellRouting(Context *ctx, const CellInfo *ci)
+{
+    std::vector<WireId> result;
+    if (ci == nullptr || ci->bel == BelId())
+        return result;
+    pool<WireId> seen;
+    dict<IdString, std::pair<pool<WireId>, dict<WireId, std::vector<WireId>>>> per_net;
+    for (auto &port : ci->ports) {
+        NetInfo *ni = port.second.net;
+        if (ni == nullptr || ni->wires.empty())
+            continue;
+        if (ni->driver.cell == ci && ni->driver.port == port.first) {
+            // The whole tree grows from the source wire at the cell's bel
+            for (auto &w : ni->wires)
+                if (seen.insert(w.first).second)
+                    result.push_back(w.first);
+            continue;
+        }
+        if (!port.second.user_idx)
+            continue;
+        auto fnd = per_net.find(ni->name);
+        if (fnd == per_net.end())
+            fnd = per_net.emplace(ni->name, std::make_pair(NetStatus::belowSinkWires(ctx, ni),
+                                                           NetStatus::downstream(ctx, ni)))
+                          .first;
+        const auto &below = fnd->second.first;
+        if (below.empty())
+            continue;
+        for (WireId sink : ctx->getNetinfoSinkWires(ni, ni->users.at(port.second.user_idx)))
+            for (WireId w : NetStatus::subtree(fnd->second.second, sink))
+                if (below.count(w) && seen.insert(w).second)
+                    result.push_back(w);
+    }
+    return result;
+}
+
+std::string addUnbindBel(EditBatch &b, BelId bel)
+{
+    Context *ctx = b.getContext();
+    CellInfo *ci = ctx->getBoundBelCell(bel);
+    if (ci != nullptr) {
+        // (also when locked: it belongs to the cell, not to the routing of the net above the sink wire)
+        for (WireId w : cellRouting(ctx, ci)) {
+            std::string err = b.add(std::make_unique<UnbindWireCmd>(w));
+            if (!err.empty())
+                return err;
+        }
+    }
+    return b.add(std::make_unique<UnbindBelCmd>(bel));
+}
+
 std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
 {
     Context *ctx = b.getContext();
@@ -501,7 +552,7 @@ std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
     if (other != nullptr) {
         other_name = other->name;
         other_strength = other->belStrength;
-        err = b.add(std::make_unique<UnbindBelCmd>(other->bel));
+        err = addUnbindBel(b, other->bel);
         if (!err.empty())
             return err;
     }
@@ -510,7 +561,7 @@ std::string addPlaceCell(EditBatch &b, IdString cell, BelId bel)
         CellInfo *c = t.first;
         strengths.push_back(c->bel != BelId() && isCellLocked(c) ? c->belStrength : STRENGTH_MANUAL);
         if (c->bel != BelId()) {
-            err = b.add(std::make_unique<UnbindBelCmd>(c->bel));
+            err = addUnbindBel(b, c->bel);
             if (!err.empty())
                 return err;
         }
@@ -614,7 +665,7 @@ std::string addMoveCells(EditBatch &b, const std::vector<IdString> &cells, int d
     std::string err;
     for (auto &t : targets) {
         strengths.push_back(isCellLocked(t.first) ? t.first->belStrength : STRENGTH_MANUAL);
-        err = b.add(std::make_unique<UnbindBelCmd>(t.first->bel));
+        err = addUnbindBel(b, t.first->bel);
         if (!err.empty())
             return err;
     }

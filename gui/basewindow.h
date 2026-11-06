@@ -62,6 +62,10 @@ class BaseMainWindow : public QMainWindow
     Context *getContext() { return ctx.get(); }
     EditStack *getEditStack() { return editStack; }
     void updateActions();
+    // File > Save as partition... without the file dialog: write the design as a partition file (see
+    // preparePartitionWrite); with ask, a message box asks first when that takes something out of the design.
+    // Returns "" or the error (also logged).
+    std::string savePartition(const QString &fileName, bool ask);
 
     void notifyChangeContext();
     // Starts the MCP server (see mcpserver.h) on that port; false if it cannot listen there
@@ -70,6 +74,9 @@ class BaseMainWindow : public QMainWindow
   protected:
     void closeEvent(QCloseEvent *event) override;
     void createMenusAndBars();
+    // Window geometry and dock / toolbar layout from the last session (QSettings)
+    void restoreWindowState();
+    void saveWindowState();
     void disableActions();
     void enableDisableDecals();
 
@@ -89,6 +96,11 @@ class BaseMainWindow : public QMainWindow
     virtual void beforeSave() {}
     // Saves the design to a JSON file, logging how it went
     bool writeJson(const std::string &filename);
+    // The architecture's part of savePartition (HimbaechelAPI::preparePartitionWrite); called with the context lock
+    virtual std::string preparePartitionWrite(bool check_only, bool *changes_design)
+    {
+        return "saving a partition is not supported for this architecture";
+    }
 
   protected Q_SLOTS:
     void writeInfo(std::string text);
@@ -99,6 +111,7 @@ class BaseMainWindow : public QMainWindow
     void open_json();
     void save_json();
     void pack();
+    void save_partition();
     void place();
     void options();
 
@@ -184,6 +197,7 @@ class BaseMainWindow : public QMainWindow
     QAction *actionNew;
     QAction *actionLoadJSON;
     QAction *actionSaveJSON;
+    QAction *actionSavePartition;
 
     QAction *actionPack;
     QAction *actionPlace;

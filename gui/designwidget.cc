@@ -1866,7 +1866,7 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
                         auto fnd = ctx->cells.find(name);
                         if (fnd == ctx->cells.end() || fnd->second->bel == BelId())
                             continue;
-                        std::string err = b.add(std::make_unique<UnbindBelCmd>(fnd->second->bel));
+                        std::string err = addUnbindBel(b, fnd->second->bel);
                         if (!err.empty())
                             return err;
                     }

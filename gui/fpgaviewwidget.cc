@@ -2166,7 +2166,7 @@ void FPGAViewWidget::addBelEditActions(QMenu &menu, BelId bel)
                 auto fnd = ctx_->cells.find(c);
                 if (fnd == ctx_->cells.end() || fnd->second->bel == BelId())
                     continue;
-                std::string err = b.add(std::make_unique<UnbindBelCmd>(fnd->second->bel));
+                std::string err = addUnbindBel(b, fnd->second->bel);
                 if (!err.empty())
                     return err;
             }
