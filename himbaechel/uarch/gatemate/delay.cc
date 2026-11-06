@@ -674,6 +674,11 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
         }
         if (name[0] == 'F')
             return TMG_IGNORE;
+        // Pins with no clock domain (ENA[1], ENA[3], ..., which nothing uses) are not timed. They can have a
+        // net: a design loaded placed and routed gets a net without a driver for each unconnected pin (as
+        // the JSON writes them).
+        if (fifo == ram_signal_clk.end())
+            return TMG_IGNORE;
         for (auto c : boost::adaptors::reverse(name)) {
             if (std::isdigit(c) || c == 'X' || c == '[' || c == ']')
                 continue;
