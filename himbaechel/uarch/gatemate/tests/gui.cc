@@ -100,8 +100,7 @@ class GateMateGuiTest : public GateMateTest
                                    ->getPort(id_Q));
         NetInfo *carry = input("ci");
         for (int i = 0; i < 6; i++) {
-            auto operand = [&]() { return any(); };
-            auto sum = addf("a" + std::to_string(i), operand(), operand(), carry);
+            auto sum = addf("a" + std::to_string(i), any(), any(), carry);
             nets.push_back(sum.first);
             carry = sum.second;
         }
@@ -192,7 +191,9 @@ TEST_F(GateMateGuiTest, routed_pips_are_drawn_on_the_chip)
             EXPECT_FALSE(g.empty()) << ctx->nameOfPip(pip);
             EXPECT_TRUE(on_chip(g)) << ctx->nameOfPip(pip);
             for (auto &e : g) {
-                EXPECT_EQ(e.style, GraphicElement::STYLE_ACTIVE) << ctx->nameOfPip(pip);
+                // (between tiles, used routing is less prominent than the tiles' contents)
+                EXPECT_TRUE(e.style == GraphicElement::STYLE_ACTIVE || e.style == GraphicElement::STYLE_ROUTING)
+                        << ctx->nameOfPip(pip);
                 EXPECT_LE(std::abs(e.x1 - e.x2) + std::abs(e.y1 - e.y2), 22.0f) << ctx->nameOfPip(pip);
                 // A line that leaves its tile runs horizontally or vertically (through the
                 // routing channels), not diagonally across other tiles' entities
@@ -398,7 +399,7 @@ TEST_F(GateMateGuiTest, level_of_detail)
 
 // Zoomed in, a tile shows the schematic of its CPE and routing muxes: every connection inside them
 // in dark grey, with the used ones drawn over it. So every line of a used pip inside a CPE lies on
-// a line of the schematic.
+// a line of the schematic, or of the CPE's LUT2 trees (which draw the ways between the LUT2s).
 TEST_F(GateMateGuiTest, used_cpe_paths_lie_on_the_schematic)
 {
     NetInfo *clk = global_clock("clk");
@@ -434,6 +435,10 @@ TEST_F(GateMateGuiTest, used_cpe_paths_lie_on_the_schematic)
                     for (auto &e : ctx->getDecalGraphics(d.first.decal))
                         if (e.type == GraphicElement::TYPE_LINE && e.style == GraphicElement::STYLE_INACTIVE)
                             schematic.push_back(e);
+            for (BelId bel : ctx->getBelsByTile(ctx->getPipLocation(pip).x, ctx->getPipLocation(pip).y))
+                for (auto &e : ctx->getDecalGraphics(ctx->getBelDecal(bel).decal))
+                    if (e.type == GraphicElement::TYPE_LINE)
+                        schematic.push_back(e);
             auto on_schematic = [&](const GraphicElement &e) {
                 const float eps = 1e-4f;
                 auto near = [&](float a, float b) { return std::abs(a - b) < eps; };

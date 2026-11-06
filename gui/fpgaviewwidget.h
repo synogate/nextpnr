@@ -104,6 +104,30 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     QSize minimumSizeHint() const override;
     QSize sizeHint() const override;
     void leaveEvent(QEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) Q_DECL_OVERRIDE;
+    void keyPressEvent(QKeyEvent *event) Q_DECL_OVERRIDE;
+
+  public:
+    // Rectangles drawn over the view (world coordinates), with a label in the upper left corner
+    struct Overlay
+    {
+        float x0, y0, x1, y1;
+        QColor color;
+        QString label;
+        bool fill = false;
+    };
+    void setOverlays(std::vector<Overlay> overlays);
+    // While picking, the left mouse button picks positions (the picked signal, with a PickEvent)
+    // instead of selecting; Escape cancels (pickCanceled)
+    enum PickEvent
+    {
+        PICK_MOVE,
+        PICK_PRESS,
+        PICK_DRAG,
+        PICK_RELEASE
+    };
+    void setPicking(bool on);
+    bool isPicking() const { return picking_; }
 
   public Q_SLOTS:
     void newContext(Context *ctx);
@@ -122,8 +146,14 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     void clickedBel(BelId bel, bool add);
     void clickedWire(WireId wire, bool add);
     void clickedPip(PipId pip, bool add);
+    void picked(int event, float x, float y);
+    void pickCanceled();
 
   private:
+    std::vector<Overlay> overlays_;
+    bool picking_ = false;
+    void drawOverlays();
+
     QString movieDir;
     long currentMovieFrame;
     long currentFrameSkip;
@@ -244,8 +274,9 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     // The range of an element, or -1 if it is never drawn
     static int lodRange(const GraphicElement &el);
     static bool lodVisible(int range, float scale);
-    // The styles of Arch graphics: STYLE_FRAME, STYLE_INACTIVE and STYLE_ACTIVE
-    static constexpr int ARCH_STYLES = 3;
+    // The styles of Arch graphics, in the order they are drawn: STYLE_FRAME, STYLE_INACTIVE,
+    // STYLE_ROUTING and STYLE_ACTIVE
+    static constexpr int ARCH_STYLES = 4;
     static int archStyle(GraphicElement::style_t style);
     // The finest levels of detail, from VIEW_LEVEL on, are drawn only for the area in view (and
     // around it), and drawn again when the view leaves that area: for the whole chip, there may be
@@ -286,6 +317,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         QColor hidden;
         QColor inactive;
         QColor active;
+        QColor routing;
         QColor selected;
         QColor hovered;
         QColor highlight[8];
@@ -372,6 +404,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
                     const PickQuadTree::BoundingBox &rect, int maxLevel);
     void populateQuadTree(RendererData *data, const DecalXY &decal, const PickedElement &element);
     boost::optional<PickedElement> pickElement(float worldx, float worldy);
+    void hoverAt(int x, int y);
     QVector4D mouseToWorldCoordinates(int x, int y);
     QVector4D mouseToWorldDimensions(float x, float y);
     QMatrix4x4 getProjection(void);

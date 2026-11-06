@@ -14,6 +14,8 @@ set(GUI_SOURCES
     line_editor.h
     lineshader.cc
     lineshader.h
+    pnroptions.cc
+    pnroptions.h
     pyconsole.cc
     pyconsole.h
     pythontab.cc
@@ -21,6 +23,8 @@ set(GUI_SOURCES
     quadtree.h
     textshader.cc
     textshader.h
+    timingwidget.cc
+    timingwidget.h
     treemodel.cc
     treemodel.h
     worker.cc
@@ -28,6 +32,13 @@ set(GUI_SOURCES
     ${family}/mainwindow.cc
     ${family}/mainwindow.h
 )
+
+if (family STREQUAL "himbaechel")
+    list(APPEND GUI_SOURCES
+        himbaechel/partitionwidget.cc
+        himbaechel/partitionwidget.h
+    )
+endif()
 
 qt6_add_resources(GUI_QT_RESOURCES
 	base.qrc
