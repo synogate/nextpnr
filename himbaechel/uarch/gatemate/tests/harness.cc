@@ -20,7 +20,10 @@
 // Checks of the test harness itself: the simulator must agree with the CC_* reference models
 // and must detect a wrong implementation.
 
+#include <atomic>
 #include <memory>
+#include <sstream>
+#include <thread>
 #include "netlist_eval.h"
 #include "testing.h"
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
@@ -109,4 +112,51 @@ TEST_F(GateMateTest, matching_register)
         CellInfo *ff = dff("ff", input("d"), input("clk"));
         output("q", ff->getPort(id_Q));
     }));
+}
+
+// The parallel test runner's warm-up builds contexts in several threads at once, and they log
+// (a race on the log streams and message counts crashed it now and then before any test ran):
+// logging from several threads keeps every message whole and counts each
+TEST(GateMateHarness, logging_from_several_threads)
+{
+    std::ostringstream out;
+    auto streams = log_streams;
+    auto counts = message_count_by_level;
+    log_streams = {std::make_pair(&out, LogLevel::LOG_MSG)};
+    message_count_by_level.clear();
+    const int threads = 8, messages = 2000;
+    std::atomic<int> waiting{threads};
+    std::vector<std::thread> pool;
+    for (int t = 0; t < threads; t++)
+        pool.emplace_back([&, t] {
+            // all start together
+            waiting--;
+            while (waiting > 0)
+                std::this_thread::yield();
+            for (int n = 0; n < messages; n++)
+                log_info("thread %d message %d\n", t, n);
+        });
+    for (auto &thread : pool)
+        thread.join();
+    int info = get_or_default(message_count_by_level, LogLevel::INFO_MSG, 0);
+    log_streams = streams;
+    message_count_by_level = counts;
+    EXPECT_EQ(info, threads * messages);
+    std::istringstream lines(out.str());
+    std::string line;
+    std::vector<int> seen(threads, 0);
+    int whole = 0, broken = 0;
+    while (std::getline(lines, line)) {
+        int t, n;
+        char rest;
+        if (sscanf(line.c_str(), "Info: thread %d message %d%c", &t, &n, &rest) == 2 && t >= 0 && t < threads &&
+            n == seen[t]) {
+            seen[t]++;
+            whole++;
+        } else {
+            broken++;
+        }
+    }
+    EXPECT_EQ(whole, threads * messages);
+    EXPECT_EQ(broken, 0);
 }

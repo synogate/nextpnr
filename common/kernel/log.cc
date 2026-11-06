@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,6 +42,9 @@ void (*log_error_atexit)() = NULL;
 
 dict<LogLevel, int, loglevel_hash_ops> message_count_by_level;
 static int log_newline_count = 0;
+// Contexts can log from several threads at once (e.g. built in parallel): the streams and counts
+// above are shared. Recursive, as logv() logs its leading newlines through log_always().
+static std::recursive_mutex log_mutex;
 bool had_nonfatal_error = false;
 bool log_warn_as_error = false;
 
@@ -88,6 +92,7 @@ std::string vstringf(const char *fmt, va_list ap)
 
 void logv(const char *format, va_list ap, LogLevel level = LogLevel::LOG_MSG)
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     //
     // Trim newlines from the beginning
     while (format[0] == '\n' && format[1] != 0) {
@@ -115,6 +120,7 @@ void logv(const char *format, va_list ap, LogLevel level = LogLevel::LOG_MSG)
 
 void log_with_level(LogLevel level, const char *format, ...)
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     message_count_by_level[level]++;
     va_list ap;
     va_start(ap, format);
@@ -212,6 +218,7 @@ std::ofstream open_ofstream_and_log_error(std::string filename, const char *file
 
 void log_break()
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     if (log_newline_count < 2)
         log("\n");
     if (log_newline_count < 2)
@@ -228,6 +235,7 @@ void log_nonfatal_error(const char *format, ...)
 
 void log_flush()
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     for (auto f : log_streams)
         f.first->flush();
 }

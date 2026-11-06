@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -290,6 +291,16 @@ std::vector<std::vector<std::string>> split_tests(std::vector<std::string> tests
     return shares;
 }
 
+// What warm_up_crashed() prints (set before the warm-up, as the handler cannot build it)
+std::string warm_up_crash_message;
+
+void warm_up_crashed(int)
+{
+    fputs(warm_up_crash_message.c_str(), stdout);
+    fflush(stdout);
+    std::_Exit(2);
+}
+
 int run_parallel(const std::string &executable, int jobs)
 {
     const bool keep_logs = getenv("NEXTPNR_TEST_KEEP_LOGS") && atoi(getenv("NEXTPNR_TEST_KEEP_LOGS"));
@@ -303,13 +314,17 @@ int run_parallel(const std::string &executable, int jobs)
     printf("[==========] Running %d tests in %d processes\n", int(tests.size()), jobs);
     fflush(stdout);
     {
-        // The warm-up logs into a file
+        // The warm-up logs into a file; if it crashes, it says so (it runs in this process)
         std::ofstream log(dir / "warm-up.log");
+        warm_up_crash_message = "[  FAILED  ] the warm-up crashed, see " + (dir / "warm-up.log").string() + "\n";
+        auto segv = std::signal(SIGSEGV, warm_up_crashed), abrt = std::signal(SIGABRT, warm_up_crashed);
         auto streams = log_streams;
         log_streams = {std::make_pair(&log, LogLevel::LOG_MSG)};
         for (size_t i = 0; i < warm_ups().size(); i++)
             warm_ups()[i].make((dir / ("warm-up-" + std::to_string(i))).string());
         log_streams = streams;
+        std::signal(SIGSEGV, segv);
+        std::signal(SIGABRT, abrt);
     }
     printf("[----------] Warm-up done after %.1fs\n", std::chrono::duration<double>(Clock::now() - start).count());
     fflush(stdout);
