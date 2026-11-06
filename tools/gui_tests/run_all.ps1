@@ -10,6 +10,7 @@
     counter_pnr   008-counter synthesized with yosys and placed and routed without the GUI (placer cells
                   WEAK, IO cells FIXED); built once into <OutDir>/designs
     counter_synth the synthesized 008-counter with its CCF (not packed; Pack in the GUI)
+    counter_synth_bit  the same, also writing the bitstream (-o out=bitstream.txt) when routed
   Results: <OutDir>/<script>/ (guitest.log, PNGs). Prints one line per script and returns the number of
   failed scripts.
 
@@ -44,7 +45,7 @@ function Get-Design([string]$name) {
         "dff_synth" {
             return @{ Json = "$Cases\035-dff-ffobf\dff-ffobf.json"; Extra = "-o ccf=$Cases\035-dff-ffobf\olimex.ccf" }
         }
-        { $_ -in "counter_pnr", "counter_synth" } {
+        { $_ -in "counter_pnr", "counter_synth", "counter_synth_bit" } {
             $synth = Join-Path $designs "counter.json"
             $pnr = Join-Path $designs "counter_pnr.json"
             if (-not (Test-Path $synth)) {
@@ -54,6 +55,8 @@ function Get-Design([string]$name) {
                 if (-not (Test-Path $synth)) { throw "could not synthesize $synth (see $designs\synth.log)" }
             }
             if ($name -eq "counter_synth") { return @{ Json = $synth; Extra = $counterCcf } }
+            # writes the bitstream (text config) into the test's output directory when routed
+            if ($name -eq "counter_synth_bit") { return @{ Json = $synth; Extra = "$counterCcf -o out=bitstream.txt" } }
             if (-not (Test-Path $pnr)) {
                 # without --gui no window opens; run it on the hidden desktop anyway (no console either)
                 & (Join-Path $root "tools\hidden_desktop.ps1") -Exe $exe -WorkDir $designs `

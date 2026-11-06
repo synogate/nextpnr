@@ -1,0 +1,84 @@
+# Phase 5a: hand work flows into a real result in one session. Synthesized counter: Pack, place two clusters
+# by hand and lock them, Place (the rest), route a net by hand and lock it, route a second net by hand
+# (unlocked), Route (the rest; writes the bitstream, -o out=bitstream.txt), Save JSON. Checks: the locked
+# cells stay on their bels, the locked routing is unchanged, every net is routed, flow_5a.json is saved
+# (check it with check_routed.py, see tools/gui_tests/check_flow.ps1).
+# design: counter_synth_bit
+resize 1400 1000
+action Pack
+waitidle
+py un=lambda: sum(1 for n, c in ctx.cells if c.bel is None); print("unplaced after pack:", un())
+py L="$abc$348$auto$blifparse.cc:397:parse_blif$384"; A="$auto$alumacc.cc:512:replace_alu$26.slice[1].addf_i"; at=lambda n: str(ctx.cells[n].bel)
+key E
+# --- place the LUT/FF cluster by hand and lock it
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+zoombel X40Y60/CPE_LT_L 1.2
+clickbel X40Y60/CPE_LT_L
+wait 200
+assert_py at(L) == "X40Y60/CPE_LT_L"
+key Esc
+clickbel X40Y60/CPE_LT_L right
+menu Lock
+wait 200
+assert_py int(ctx.cells[L].belStrength) == 6
+# --- the adder chain: placed as a whole, locked
+selectcell $auto$alumacc.cc:512:replace_alu$26.slice[1].addf_i
+zoombel X44Y60/CPE_LT_L 1.2
+clickbel X44Y60/CPE_LT_L
+wait 300
+assert_py at(A) == "X44Y60/CPE_LT_L"
+key Esc
+clickbel X44Y60/CPE_LT_L right
+menu Lock
+wait 200
+py H={n: (str(c.bel), int(c.belStrength)) for n, c in ctx.cells if c.bel is not None and int(c.belStrength) == 6}; print(len(H), "locked cells", sorted(H.items())[:4])
+assert_py len(H) > 30
+shot 01_hand_placed.png
+# --- Place: only the rest is placed, the locked cells stay
+key E
+action Place
+waitidle
+# (postPlace's repack merges the adder halves into the full CPE and removes the unused upper halves: compare
+# the tiles of the cells that are left)
+py C=lambda: {n: (str(c.bel).split("/")[0], int(c.belStrength)) for n, c in ctx.cells}; H={n: (b.split("/")[0], s) for n, (b, s) in H.items()}; moved=lambda: [(n, H[n], C().get(n)) for n in H if C().get(n) not in (H[n], None)]; print("unplaced after place:", un(), "moved:", moved(), "removed:", sum(1 for n in H if n not in C()))
+assert_py un() == 0
+assert_py not moved() and sum(1 for n in H if n in C()) > 15
+zoomfit
+shot 02_placed.png
+# --- route a net by hand (route mode, Route rest of net) and lock it
+py N1="counter[5]"; N2="counter[9]"; arcs=lambda n: [(u.cell.name, u.port) for u in ctx.nets[n].users]; print(N1, arcs(N1), N2, arcs(N2))
+key E
+selectnet counter[5]
+key R
+wait 300
+button Route rest
+wait 500
+status
+assert_status arcs routed
+button Lock
+wait 300
+key Esc
+py R1={str(w): str(m.pip) for w, m in ctx.nets[N1].wires}; print(len(R1), "locked wires", R1)
+assert_py len(R1) > 3 and all(int(m.strength) == 6 for w, m in ctx.nets[N1].wires)
+# --- a second net by hand, not locked (the router may keep it as a start)
+selectnet counter[9]
+key R
+wait 300
+button Route rest
+wait 500
+assert_status arcs routed
+key Esc
+py R2={str(w): str(m.pip) for w, m in ctx.nets[N2].wires}; print(len(R2), "wires (STRONG)")
+shot 03_hand_routed.png
+# --- Route: the rest is routed, the locked routing stays as it is
+key E
+action Route
+waitidle
+py print("N1 after route:", {str(w): str(m.pip) for w, m in ctx.nets[N1].wires} == R1, "N2 kept:", len(set(R2.items()) & set((str(w), str(m.pip)) for w, m in ctx.nets[N2].wires)), "of", len(R2))
+assert_py all(R1.get(str(w)) == str(m.pip) for w, m in ctx.nets[N1].wires if str(w) in R1) and all(w in [str(x) for x, m in ctx.nets[N1].wires] for w in R1)
+assert_py not moved()
+py import json; open("flow_5a_hand.json", "w").write(json.dumps({"cells": H, "locked_routing": {N1: R1}}))
+py bad=[n for n, ni in ctx.nets if len(ni.users) and not len(ni.wires) and ni.driver.cell is not None]; print("nets without routing:", bad[:5])
+zoomfit
+shot 04_routed.png
+savejson flow_5a.json
