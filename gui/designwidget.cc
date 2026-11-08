@@ -96,6 +96,8 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
     tabWidget->addTab(cellsPage, "Cells");
     tabWidget->addTab(treeView[4], "Nets");
     tabWidget->addTab(treeView[5], "Groups");
+    for (int i = 0; i < 6; i++)
+        treePage[i] = i == 3 ? cellsPage : treeView[i];
 
     // Add property view
     variantManager = new QtVariantPropertyManager(this);
@@ -123,9 +125,10 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
         history_ignore = true;
         history_index = 0;
         auto h = history.at(history_index);
-        if (tabWidget->currentIndex() != h.first) {
-            selectionModel[tabWidget->currentIndex()]->clearSelection();
-            tabWidget->setCurrentIndex(h.first);
+        if (currentTree() != h.first) {
+            if (currentTree() >= 0)
+                selectionModel[currentTree()]->clearSelection();
+            showTree(h.first);
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::Select);
         } else {
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::ClearAndSelect);
@@ -140,9 +143,10 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
         history_ignore = true;
         history_index--;
         auto h = history.at(history_index);
-        if (tabWidget->currentIndex() != h.first) {
-            selectionModel[tabWidget->currentIndex()]->clearSelection();
-            tabWidget->setCurrentIndex(h.first);
+        if (currentTree() != h.first) {
+            if (currentTree() >= 0)
+                selectionModel[currentTree()]->clearSelection();
+            showTree(h.first);
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::Select);
         } else {
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::ClearAndSelect);
@@ -157,9 +161,10 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
         history_ignore = true;
         history_index++;
         auto h = history.at(history_index);
-        if (tabWidget->currentIndex() != h.first) {
-            selectionModel[tabWidget->currentIndex()]->clearSelection();
-            tabWidget->setCurrentIndex(h.first);
+        if (currentTree() != h.first) {
+            if (currentTree() >= 0)
+                selectionModel[currentTree()]->clearSelection();
+            showTree(h.first);
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::Select);
         } else {
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::ClearAndSelect);
@@ -174,9 +179,10 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
         history_ignore = true;
         history_index = int(history.size() - 1);
         auto h = history.at(history_index);
-        if (tabWidget->currentIndex() != h.first) {
-            selectionModel[tabWidget->currentIndex()]->clearSelection();
-            tabWidget->setCurrentIndex(h.first);
+        if (currentTree() != h.first) {
+            if (currentTree() >= 0)
+                selectionModel[currentTree()]->clearSelection();
+            showTree(h.first);
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::Select);
         } else {
             selectionModel[h.first]->setCurrentIndex(h.second, QItemSelectionModel::ClearAndSelect);
@@ -190,8 +196,8 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
     connect(actionClear, &QAction::triggered, this, [this] {
         history_index = -1;
         history.clear();
-        int num = tabWidget->currentIndex();
-        if (selectionModel[num]->selectedIndexes().size() > 0) {
+        int num = currentTree();
+        if (num >= 0 && selectionModel[num]->selectedIndexes().size() > 0) {
             QModelIndex index = selectionModel[num]->selectedIndexes().at(0);
             if (index.isValid()) {
                 ElementType type = treeModel[num]->nodeFromIndex(index)->type();
@@ -621,8 +627,8 @@ void DesignWidget::onClickedBel(BelId bel, bool keep)
     int index = getIndexByElementType(ElementType::BEL);
     if (!keep)
         clearAllSelectionModels();
-    if (tabWidget->currentIndex() != index) {
-        tabWidget->setCurrentIndex(index);
+    if (currentTree() != index) {
+        showTree(index);
     }
     selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::BEL)->indexFromNode(*item),
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
@@ -649,8 +655,8 @@ void DesignWidget::onClickedWire(WireId wire, bool keep)
     int index = getIndexByElementType(ElementType::WIRE);
     if (!keep)
         clearAllSelectionModels();
-    if (tabWidget->currentIndex() != index)
-        tabWidget->setCurrentIndex(index);
+    if (currentTree() != index)
+        showTree(index);
     selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::WIRE)->indexFromNode(*item),
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
 }
@@ -674,8 +680,8 @@ void DesignWidget::onClickedPip(PipId pip, bool keep)
     int index = getIndexByElementType(ElementType::PIP);
     if (!keep)
         clearAllSelectionModels();
-    if (tabWidget->currentIndex() != index)
-        tabWidget->setCurrentIndex(index);
+    if (currentTree() != index)
+        showTree(index);
     selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::PIP)->indexFromNode(*item),
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
 }
@@ -702,8 +708,8 @@ template <typename T> bool DesignWidget::clickedNet(T element, bool keep)
     int index = getIndexByElementType(ElementType::NET);
     if (!keep)
         clearAllSelectionModels();
-    if (tabWidget->currentIndex() != index)
-        tabWidget->setCurrentIndex(index);
+    if (currentTree() != index)
+        showTree(index);
     selectionModel[index]->setCurrentIndex(getTreeByElementType(ElementType::NET)->indexFromNode(*item),
                                            keep ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect);
     return true;
@@ -731,8 +737,8 @@ void DesignWidget::showCell(IdString cell)
     int index = getIndexByElementType(ElementType::CELL);
     arm_ignore = true;
     clearAllSelectionModels();
-    if (tabWidget->currentIndex() != index)
-        tabWidget->setCurrentIndex(index);
+    if (currentTree() != index)
+        showTree(index);
     QModelIndex mi = getTreeByElementType(ElementType::CELL)->indexFromNode(*item);
     selectionModel[index]->setCurrentIndex(mi, QItemSelectionModel::ClearAndSelect);
     treeView[index]->scrollTo(mi);
@@ -754,8 +760,8 @@ void DesignWidget::showNet(IdString net)
     int index = getIndexByElementType(ElementType::NET);
     arm_ignore = true;
     clearAllSelectionModels();
-    if (tabWidget->currentIndex() != index)
-        tabWidget->setCurrentIndex(index);
+    if (currentTree() != index)
+        showTree(index);
     QModelIndex mi = getTreeByElementType(ElementType::NET)->indexFromNode(*item);
     selectionModel[index]->setCurrentIndex(mi, QItemSelectionModel::ClearAndSelect);
     treeView[index]->scrollTo(mi);
@@ -2107,8 +2113,8 @@ void DesignWidget::onItemDoubleClicked(QTreeWidgetItem *item, int column)
     if (it) {
         int num = getIndexByElementType(type);
         clearAllSelectionModels();
-        if (tabWidget->currentIndex() != num)
-            tabWidget->setCurrentIndex(num);
+        if (currentTree() != num)
+            showTree(num);
         selectionModel[num]->setCurrentIndex(getTreeByElementType(type)->indexFromNode(*it),
                                              QItemSelectionModel::ClearAndSelect);
     }
@@ -2116,9 +2122,29 @@ void DesignWidget::onItemDoubleClicked(QTreeWidgetItem *item, int column)
 
 void DesignWidget::onDoubleClicked(const QModelIndex &index) { Q_EMIT zoomSelected(); }
 
+int DesignWidget::currentTree() const
+{
+    for (int i = 0; i < 6; i++)
+        if (tabWidget->currentWidget() == treePage[i])
+            return i;
+    return -1;
+}
+
+void DesignWidget::showTree(int num) { tabWidget->setCurrentWidget(treePage[num]); }
+
+void DesignWidget::addPage(QWidget *page, const QString &title, int after)
+{
+    tabWidget->insertTab(tabWidget->indexOf(treePage[after]) + 1, page, title);
+}
+
+void DesignWidget::showPage(QWidget *page) { tabWidget->setCurrentWidget(page); }
+
 void DesignWidget::onSearchInserted()
 {
-    if (currentSearch == searchEdit->text() && currentIndexTab == tabWidget->currentIndex()) {
+    // (the Pins page has a filter of its own)
+    if (currentTree() < 0)
+        return;
+    if (currentSearch == searchEdit->text() && currentIndexTab == currentTree()) {
         currentIndex++;
         if (currentIndex >= currentSearchIndexes.size())
             currentIndex = 0;
@@ -2127,13 +2153,13 @@ void DesignWidget::onSearchInserted()
         std::lock_guard<std::mutex> lock(ctx->mutex);
 
         currentSearch = searchEdit->text();
-        currentSearchIndexes = treeModel[tabWidget->currentIndex()]->search(searchEdit->text());
+        currentSearchIndexes = treeModel[currentTree()]->search(searchEdit->text());
         currentIndex = 0;
-        currentIndexTab = tabWidget->currentIndex();
+        currentIndexTab = currentTree();
     }
     if (currentSearchIndexes.size() > 0 && currentIndex < currentSearchIndexes.size())
-        selectionModel[tabWidget->currentIndex()]->setCurrentIndex(currentSearchIndexes.at(currentIndex),
-                                                                   QItemSelectionModel::ClearAndSelect);
+        selectionModel[currentTree()]->setCurrentIndex(currentSearchIndexes.at(currentIndex),
+                                                       QItemSelectionModel::ClearAndSelect);
 }
 
 void DesignWidget::onHoverIndexChanged(int num, QModelIndex index)
@@ -2242,7 +2268,7 @@ void DesignWidget::selectElements(const std::vector<Element> &elements, std::vec
         clearAllSelectionModels();
         if (found.empty())
             return;
-        tabWidget->setCurrentIndex(found[0].first);
+        showTree(found[0].first);
         selectionModel[found[0].first]->setCurrentIndex(found[0].second, QItemSelectionModel::ClearAndSelect);
         return;
     }
@@ -2258,7 +2284,7 @@ void DesignWidget::selectElements(const std::vector<Element> &elements, std::vec
         selectionModel[i]->blockSignals(false);
         treeView[i]->viewport()->update();
     }
-    tabWidget->setCurrentIndex(found[0].first);
+    showTree(found[0].first);
     clearProperties();
     std::vector<DecalXY> decals;
     for (auto &f : found) {

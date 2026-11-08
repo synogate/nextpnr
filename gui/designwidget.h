@@ -63,6 +63,9 @@ class DesignWidget : public QWidget
     ~DesignWidget();
     // Command layer for manual edits (see editcommands.h); owned by BaseMainWindow.
     void setEditStack(EditStack *stack);
+    // Another page beside the trees, after the tab of tree number after (e.g. 4: Nets)
+    void addPage(QWidget *page, const QString &title, int after);
+    void showPage(QWidget *page);
 
     // An element of the trees, named as the Python bindings name it (for the MCP server)
     struct Element
@@ -187,6 +190,11 @@ class DesignWidget : public QWidget
     QTabWidget *tabWidget;
 
     TreeView *treeView[6];
+    // The tab page of each tree (the Cells tree sits in a page with its filter); other pages may be added
+    QWidget *treePage[6];
+    // The tree shown, -1 for another page
+    int currentTree() const;
+    void showTree(int num);
     QItemSelectionModel *selectionModel[6];
     TreeModel::Model *treeModel[6];
     QLineEdit *searchEdit;

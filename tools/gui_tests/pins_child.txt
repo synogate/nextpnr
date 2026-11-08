@@ -1,0 +1,32 @@
+# Pins page (beside Cells and Nets) on a design with a partition loaded into it (the 008-counter as the partition
+# u_core of a top level): before packing the ports of the blackbox instance u_core, once packed (the partition
+# loaded) per port the cells inside the partition and outside; kept through placing, routing and Save / Open JSON.
+# design: counter_wrap
+resize 1400 1000
+tab Pins
+label pinsSummary
+assert_label pinsSummary 1 partition to load (10 pins)
+assert_label pinsSummary 10 chip pins
+dock pinList
+action Pack
+waitidle
+assert_label pinsSummary 1 partition loaded (10 pins)
+dock pinList
+# an output of the partition: its driver inside (u_core.*), the output buffer outside
+dock pinList led[3]
+shot 01_packed.png
+action Place
+waitidle
+action Route
+waitidle
+action Finish
+waitidle
+assert_label pinsSummary 1 partition loaded (10 pins)
+dock pinList
+dock pinList rst
+shot 02_routed.png
+savejson routed.json
+openjson routed.json
+tab Pins
+assert_label pinsSummary 1 partition loaded (10 pins)
+dock pinList

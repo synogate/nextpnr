@@ -238,6 +238,7 @@ struct GateMateImpl : HimbaechelAPI
     std::vector<IdString> getPartitionInstances() const override;
     bool readPartitionFootprint(const std::string &filename, PartitionFootprint &footprint) const override;
     std::string partitionMoveProblem(const PartitionFootprint &footprint, int dx, int dy) const override;
+    std::vector<PartitionPin> getPartitionPins() const override;
     std::vector<std::pair<IdString, std::string>> getBelAttrs(BelId bel) const override;
     std::vector<std::pair<IdString, std::string>> getWireAttrs(WireId wire) const override;
     std::vector<std::pair<IdString, std::string>> getPipAttrs(PipId pip) const override;

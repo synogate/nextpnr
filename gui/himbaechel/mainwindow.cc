@@ -46,20 +46,33 @@ MainWindow::MainWindow(std::unique_ptr<Context> context, CommandHandler *handler
     connect(this, &BaseMainWindow::contextChanged, partitionview, &PartitionWidget::newContext);
     connect(this, &BaseMainWindow::updateTreeView, partitionview, &PartitionWidget::designChanged);
     // The Pins tab lists the ports of a partition in place of chip pins
-    pinsview->setPartitionMode([this] { return partitionview->isPartition(); });
-    pinsview->setPadName([this](BelId bel, std::vector<BelId> &io_bels) {
+    pinsview->setPartitionMode([this](Context *c) { return partitionview->isPartition(c); });
+    pinsview->setPadName([](Context *c, BelId bel, std::vector<BelId> &io_bels) {
         // The package data may name another bel of the IO's tile (GateMate: the IOSEL, which holds the settings, not
         // the GPIO); an IO tile has one pad
-        Loc loc = ctx->getBelLocation(bel);
+        Loc loc = c->getBelLocation(bel);
         std::string name;
-        for (BelId other : ctx->getBelsByTile(loc.x, loc.y))
-            if (const PadInfoPOD *pad = ctx->get_bel_package_pin(other))
-                name = IdString(pad->package_pin).str(ctx.get());
+        for (BelId other : c->getBelsByTile(loc.x, loc.y))
+            if (const PadInfoPOD *pad = c->get_bel_package_pin(other))
+                name = IdString(pad->package_pin).str(c);
         if (!name.empty())
-            for (BelId other : ctx->getBelsByTile(loc.x, loc.y))
+            for (BelId other : c->getBelsByTile(loc.x, loc.y))
                 if (other != bel)
                     io_bels.push_back(other);
         return name;
+    });
+    pinsview->setChildPins([](Context *c) {
+        std::vector<PinsWidget::ChildPin> pins;
+        for (auto &p : c->uarch->getPartitionPins()) {
+            PinsWidget::ChildPin pin;
+            pin.inst = p.inst;
+            pin.port = p.port;
+            pin.dir = p.dir;
+            pin.net = p.net;
+            pin.imported = p.imported;
+            pins.push_back(pin);
+        }
+        return pins;
     });
     connect(partitionview, &PartitionWidget::partitionModeChanged, pinsview, &PinsWidget::designChanged);
 

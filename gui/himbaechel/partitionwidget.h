@@ -46,8 +46,8 @@ class PartitionWidget : public QWidget
 
     // Sets the options of the uarch for packing; false with the reason if they are not complete
     bool apply(QString &error);
-    // Whether the design is implemented as a partition: as set here, or as it was packed
-    bool isPartition() const;
+    // Whether the design of c is implemented as a partition: as it was packed, or (not packed yet) as set here
+    bool isPartition(Context *c) const;
 
   Q_SIGNALS:
     void partitionModeChanged();

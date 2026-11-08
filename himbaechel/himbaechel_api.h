@@ -222,6 +222,16 @@ struct HimbaechelAPI
     {
         return "partitions are not supported";
     }
+    // The pins between the partitions imported into the design and the design around them: per partition
+    // instance its ports and the nets outside they join (before packing: the ports of the blackbox instances)
+    struct PartitionPin
+    {
+        IdString inst, port;
+        PortType dir = PORT_IN;
+        IdString net;
+        bool imported = false;
+    };
+    virtual std::vector<PartitionPin> getPartitionPins() const { return {}; }
 
     // For custom placer configuration
     virtual void configurePlacerHeap(PlacerHeapCfg &cfg) {};

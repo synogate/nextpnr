@@ -681,11 +681,11 @@ void PartitionWidget::highlightCells()
     }
 }
 
-bool PartitionWidget::isPartition() const
+bool PartitionWidget::isPartition(Context *c) const
 {
-    if (ctx && ctx->settings.count(ctx->id("pack")))
-        return ctx->settings.count(ctx->id("as-partition")) > 0;
-    return ctx && ctx->uarch->hasPartitions() && asPartition->isChecked();
+    if (c->settings.count(c->id("pack")))
+        return c->settings.count(c->id("as-partition")) > 0;
+    return c->uarch->hasPartitions() && asPartition->isChecked();
 }
 
 bool PartitionWidget::apply(QString &error)

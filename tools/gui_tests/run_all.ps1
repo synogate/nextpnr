@@ -14,6 +14,9 @@
     counter_synth_bit  the same, also writing the bitstream (-o out=bitstream.txt) when routed
     counter_part  008-counter as module core synthesized without IO pads, with --vopt as-partition
     mux_part      designs/mux_core.v synthesized without IO pads, with --vopt as-partition
+    counter_wrap  a top level instantiating the 008-counter (module core) as the blackbox u_core, with its CCF and
+                  the counter implemented as a partition (placed and routed without the GUI) loaded into u_core
+                  (--vopt partition=u_core:core_pnr.json; not packed)
     saveload_part_stage3  <OutDir>/saveload_part/stage3.json (saved by saveload_part.txt), without --vopt
   Results: <OutDir>/<script>/ (guitest.log, PNGs). Prints one line per script and returns the number of
   failed scripts.
@@ -88,6 +91,30 @@ function Get-Design([string]$name) {
                 if (-not (Test-Path $core)) { throw "could not synthesize $core (see $designs\core_synth.log)" }
             }
             return @{ Json = $core; Extra = "--vopt as-partition" }
+        }
+        "counter_wrap" {
+            $core = Join-Path $designs "core.json"
+            $corePnr = Join-Path $designs "core_pnr.json"
+            $wrap = Join-Path $designs "wrap.json"
+            if (-not (Test-Path $core)) { Get-Design "counter_part" | Out-Null }
+            if (-not (Test-Path $corePnr)) {
+                & (Join-Path $root "tools\hidden_desktop.ps1") -Exe $exe -WorkDir $designs `
+                    -Arguments "--device CCGM1A1 --json `"$core`" --vopt as-partition --write `"$corePnr`"" `
+                    -Stdout (Join-Path $designs "core_pnr.log") -Stderr (Join-Path $designs "core_pnr_err.log") -TimeoutSec 600 | Out-Null
+                if (-not (Test-Path $corePnr)) { throw "could not build $corePnr (see $designs\core_pnr.log)" }
+            }
+            if (-not (Test-Path $wrap)) {
+                @'
+module top (input clk, input rst, output [7:0] led);
+    core u_core (.clk(clk), .rst(rst), .led(led));
+endmodule
+'@ | Set-Content (Join-Path $designs "wrap.v")
+                Push-Location $designs
+                & $Yosys -ql wrap_synth.log -p "read_verilog -sv wrap.v core.v; blackbox core; setattr -set clkbuf_sink 1 =core/w:clk; synth_gatemate -luttree -top top; write_json wrap.json"
+                Pop-Location
+                if (-not (Test-Path $wrap)) { throw "could not synthesize $wrap (see $designs\wrap_synth.log)" }
+            }
+            return @{ Json = $wrap; Extra = "$counterCcf -o partition=u_core:$corePnr" }
         }
         "mux_part" {
             # designs/mux_core.v (counter, CC_MX4, LUT / register clusters) as a partition, with --vopt as-partition

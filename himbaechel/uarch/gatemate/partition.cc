@@ -32,6 +32,7 @@
 
 #include <fstream>
 #include <map>
+#include <tuple>
 #include <set>
 #include <regex>
 #include <sstream>
@@ -222,6 +223,7 @@ void GateMateImpl::import_partition(const std::string &spec)
     dict<int, NetInfo *> nets;
     std::vector<std::pair<NetInfo *, NetInfo *>> merge;
     pool<IdString> used_ports;
+    std::vector<std::tuple<IdString, PortType, int>> port_bits; // the ports joining a net outside
     for (auto &port : mod["ports"].object_items()) {
         const auto &bits = port.second["bits"].array_items();
         int offset = port.second["offset"].is_number() ? port.second["offset"].int_value() : 0;
@@ -243,6 +245,7 @@ void GateMateImpl::import_partition(const std::string &spec)
             NetInfo *outer = outer_nets.at(name);
             if (bit < 0 || !outer)
                 continue;
+            port_bits.emplace_back(name, type, bit);
             if (type == PORT_OUT && outer->driver.cell && outer->driver.cell != inst)
                 log_error("Output '%s' of partition '%s' drives net '%s', which has another driver.\n",
                           name.c_str(ctx), inst_name.c_str(), ctx->nameOf(outer));
@@ -280,6 +283,16 @@ void GateMateImpl::import_partition(const std::string &spec)
         for (auto &port : ctx->ports)
             if (port.second.net == from)
                 port.second.net = keep;
+        // (the pins of partitions imported before, see below)
+        IdString pins_key = ctx->id("GATEMATE_PARTITION_PINS");
+        auto from_pins = from->attrs.find(pins_key);
+        if (from_pins != from->attrs.end()) {
+            auto keep_pins = keep->attrs.find(pins_key);
+            keep->attrs[pins_key] = keep_pins != keep->attrs.end()
+                                            ? Property(keep_pins->second.as_string() + ";" + from_pins->second.as_string())
+                                            : from_pins->second;
+            from->attrs.erase(from_pins);
+        }
         for (auto &n : nets)
             if (n.second == from)
                 n.second = keep;
@@ -290,6 +303,15 @@ void GateMateImpl::import_partition(const std::string &spec)
                 later.second = keep;
         }
         // (from stays, empty, as names may refer to it)
+    }
+    // The pins between the partition and the design, kept on the nets outside (and so in a saved design) for the
+    // GUI: "<in|out>|<instance>|<port>", separated by ';' where ports of several partitions share a net
+    for (auto &pb : port_bits) {
+        NetInfo *net = nets.at(std::get<2>(pb));
+        std::string entry = stringf("%s|%s|%s", std::get<1>(pb) == PORT_IN ? "in" : "out", inst_name.c_str(),
+                                    std::get<0>(pb).c_str(ctx));
+        Property &pins = net->attrs[ctx->id("GATEMATE_PARTITION_PINS")];
+        pins = Property(pins.is_string && !pins.as_string().empty() ? pins.as_string() + ";" + entry : entry);
     }
 
     // The other nets get the partition's names, preferring names that are not hidden
@@ -1234,6 +1256,49 @@ std::vector<IdString> GateMateImpl::getPartitionInstances() const
     std::sort(instances.begin(), instances.end(),
               [&](IdString a, IdString b) { return a.str(ctx) < b.str(ctx); });
     return instances;
+}
+
+std::vector<HimbaechelAPI::PartitionPin> GateMateImpl::getPartitionPins() const
+{
+    std::vector<PartitionPin> pins;
+    if (!ctx->settings.count(ctx->id("pack"))) {
+        // Not imported yet: the ports of the blackbox instances
+        for (IdString inst : getPartitionInstances()) {
+            for (auto &port : ctx->cells.at(inst)->ports) {
+                PartitionPin pin;
+                pin.inst = inst;
+                pin.port = port.first;
+                pin.dir = port.second.type;
+                if (port.second.net)
+                    pin.net = port.second.net->name;
+                pins.push_back(pin);
+            }
+        }
+        return pins;
+    }
+    // As import_partition marked the nets outside
+    IdString key = ctx->id("GATEMATE_PARTITION_PINS");
+    for (auto &net : ctx->nets) {
+        auto found = net.second->attrs.find(key);
+        if (found == net.second->attrs.end() || !found->second.is_string)
+            continue;
+        std::vector<std::string> entries;
+        std::string value = found->second.as_string();
+        boost::split(entries, value, boost::is_any_of(";"));
+        for (auto &entry : entries) {
+            size_t a = entry.find('|'), b = a == std::string::npos ? a : entry.find('|', a + 1);
+            if (b == std::string::npos)
+                continue;
+            PartitionPin pin;
+            pin.dir = entry.substr(0, a) == "in" ? PORT_IN : PORT_OUT;
+            pin.inst = ctx->id(entry.substr(a + 1, b - a - 1));
+            pin.port = ctx->id(entry.substr(b + 1));
+            pin.net = net.first;
+            pin.imported = true;
+            pins.push_back(pin);
+        }
+    }
+    return pins;
 }
 
 bool GateMateImpl::readPartitionFootprint(const std::string &filename, PartitionFootprint &footprint) const

@@ -89,7 +89,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     rightTabWidget->setMinimumWidth(300);
     rightTabWidget->addTab(designview, "Design");
     rightTabWidget->addTab(timingview, "Paths");
-    rightTabWidget->addTab(pinsview, "Pins");
+    // The pins beside the cells and nets
+    designview->addPage(pinsview, "Pins", 4);
     splitter_h->addWidget(rightTabWidget);
 
     tabWidget = new QTabWidget();
@@ -197,7 +198,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(timingview, &TimingWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
     connect(pinsview, &PinsWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
     connect(pinsview, &PinsWidget::focusCell, this, &BaseMainWindow::focusCell);
-    connect(pinsview, &PinsWidget::focusNet, this, &BaseMainWindow::focusNet);
+    connect(pinsview, &PinsWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
     connect(this, &BaseMainWindow::updateTreeView, pinsview, &PinsWidget::designChanged);
     connect(editStack, &EditStack::designChanged, pinsview, &PinsWidget::designChanged);
 
