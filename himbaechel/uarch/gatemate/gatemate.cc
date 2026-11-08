@@ -471,6 +471,10 @@ void GateMateImpl::init(Context *ctx)
     // to the other input of the LUT2 through an input mux another net uses
     if (!ctx->settings.count(ctx->id("router2/wireConflictBaseCost")))
         ctx->settings[ctx->id("router2/wireConflictBaseCost")] = std::to_string(0.2f);
+    // A critical arc branching off its net's existing routing pays for the tree's delay up to the branch point,
+    // rather than hanging off a slow tree of a high-fanout net at no cost
+    if (!ctx->settings.count(ctx->id("router2/treeSeedCost")))
+        ctx->settings[ctx->id("router2/treeSeedCost")] = std::to_string(1.0f);
     for (const auto &pad : ctx->package_info->pads) {
         available_pads.emplace(IdString(pad.package_pin));
         BelId bel = ctx->getBelByName(IdStringList::concat(IdString(pad.tile), IdString(pad.bel)));
