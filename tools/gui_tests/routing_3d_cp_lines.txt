@@ -1,0 +1,67 @@
+# Phase 3d: route by hand through the carry logic of a CPE (CP lines), each pip clicked in the view:
+# from a register's output OUT1 into the carry logic (OUT1_IN_int), through the CX row's muxes (CX_OUT,
+# CX_VAL) out at COUTX and into the next CPE's CINX; the other rows' muxes are candidates on the way.
+# design: counter_pnr
+resize 1400 1000
+py N="counter[2]"; nw=lambda: len(ctx.nets[N].wires); W0=nw(); print(W0)
+key E
+# --- rip the net up (from its first pip in the CPE), route mode at its source, the register's output
+zoomwire X79Y117/CPE.CX_VAL 0.5
+clickpip X79Y117/CPE.OUT1_int/CPE.DOUT1_int right
+menu Unroute net
+wait 300
+# (the routing inside the sink CPE stays: part of its configuration in a design routed before)
+py W1=nw(); print(W1, [str(w) for w, p in ctx.nets[N].wires])
+assert_py W1 < W0
+selectnet counter[2]
+key R
+wait 300
+assert_status Routing counter[2] from X79Y117/CPE.DOUT1_int
+clickcand X79Y117/CPE.OUT1_int/CPE.DOUT1_int
+clickcand X79Y117/CPE.OUT1/CPE.OUT1_int
+# --- OUT1 goes into the routing (output muxes, switch boxes) and into the carry logic
+route
+assert_status from X79Y117/CPE.OUT1
+clickcand X79Y117/CPE.OUT1_IN_int/CPE.OUT1
+assert_status from X79Y117/CPE.OUT1_IN_int
+# --- from there to the first mux (_OUT) of each of the six rows; the CX row is taken
+route
+assert_py sum(1 for p in ctx.getPipsDownhill("X79Y117/CPE.OUT1_IN_int") if str(ctx.getPipDstWire(p)).endswith("_OUT")) == 6
+wait 300
+shot 01_carry_rows.png
+clickcand X79Y117/CPE.CX_OUT/CPE.OUT1_IN_int
+clickcand X79Y117/CPE.CX_VAL/CPE.CX_OUT
+clickcand X79Y117/CPE.COUTX/CPE.CX_VAL
+assert_status from X79Y117/CPE.COUTX
+# --- on along the carry line into the next CPE
+clickcand X80Y117/CPE.CINX/CPE.CINX_n
+assert_status from X80Y117/CPE.CINX
+route
+assert_py nw() == W1 + 7
+assert_py "X80Y117/CPE.CINX" in [str(w) for w, p in ctx.nets[N].wires]
+zoomwire X79Y117/CPE.COUTX 0.4
+wait 300
+shot 02_into_cinx.png
+# --- Backspace takes the last pip back, each pip is one undo entry
+focus view
+key Backspace
+wait 200
+assert_py nw() == W1 + 6
+assert_status from X79Y117/CPE.COUTX
+key Esc
+assert_status ended
+key Ctrl+Z
+assert_py nw() == W1 + 5
+key Ctrl+Y
+assert_py nw() == W1 + 6
+# --- undo the hand routing and the rip-up: the routing is as it was
+key Ctrl+Z
+key Ctrl+Z
+key Ctrl+Z
+key Ctrl+Z
+key Ctrl+Z
+key Ctrl+Z
+key Ctrl+Z
+wait 200
+py print(nw(), W0)
+assert_py nw() == W0

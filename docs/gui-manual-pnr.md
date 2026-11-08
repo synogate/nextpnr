@@ -55,6 +55,7 @@ is only reachable from its own CPE.
 | Show all open arcs | View > Show unrouted arcs (`U`). |
 | Rip up | Context menu of a wire / pip / net: Unroute net, Unroute arc (to one sink), Remove pip. The source wire stays. |
 | Route by hand | **Route net by hand** (`R`) on the selected net / wire. The head wire is shown with the pips downhill of it: green = free, orange = usable with conflicts, grey = not allowed. Click a pip to bind it (STRONG) and continue from its end; `Backspace` takes the last pip back, `Esc` ends. Right-click lists the candidates. |
+| Through a CPE | (GateMate) Every pip inside a CPE has a stretch of its own to click on. The carry and propagate (CP) lines: from OUT1 / OUT2, right of the outputs, into the carry logic (the CARRY block, one row per line: CY1, PY1, CY2, PY2 at the top go up to COUTY1 ... POUTY2, CX and PX at the bottom down to COUTX / POUTX on their bands), on into the next CPE's CINX / CINY..., and from there through the carry logic again or into a LUT2 input (C_I1..C_I4), the clock or the enable. |
 | Shortest path | In route mode `Ctrl`+click a wire: shortest free path from the head to it (waypoints). |
 | Route candidates dock | View > Route candidates: the same as lists (also for wires without graphics), the session's pips, the arcs of the net (double-click routes to that sink), "Route to" a wire by name, **Route arc** / **Route rest of net**, lock / unlock. |
 | Lock routing | Lock (USER, drawn thick orange) keeps it through Route; Unlock sets STRONG. |

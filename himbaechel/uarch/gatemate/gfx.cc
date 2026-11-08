@@ -47,7 +47,12 @@ NEXTPNR_NAMESPACE_BEGIN
 // the right half of the tile and follows the Project Peppercorn CPE schematic: inputs IN1..IN8
 // on the left (one per plane), the upper LUT tree (IN1..IN4) above the lower one (IN5..IN8), the
 // registers and output muxes to their right, and the carry and propagate lines in a column at
-// the right edge (carry in at the bottom, carry out at the top).
+// the right edge (carry in at the bottom, carry out at the top), with the carry logic that drives
+// them from the CPE's outputs beside them, over most of the CPE's height.
+//
+// The drawing is made for routing by hand: every pip has a stretch of its own, apart from the other
+// pips leaving the same wire, to click on (see the test cpe_pips_can_be_told_apart_by_a_click), and
+// every wire of the CPE is shown when it is selected.
 //
 // Only the routing that nets use is drawn (guiDrawsUnusedRouting() is false). A used pip inside
 // an entity (a mux) is a line from the input it selects to the output. A connection between
@@ -91,8 +96,8 @@ float om_centre(int plane) { return row(plane) - 0.032f; }
 //  - the output muxes (inputs: the LUT2 tree from above, the register, the carry output and the
 //    bridge from below), the outputs and their lanes, and the carry column.
 constexpr float CPE_PIN = 0.455f, CPE_INT = 0.46f, BRIDGE_LANE = 0.4625f;
-constexpr float TI_X0 = 0.481f, TI_X1 = 0.49f;
-constexpr float L1_X0 = 0.502f, L1_X1 = 0.544f, L2_X0 = 0.558f, L2_X1 = 0.6f, L20_X0 = 0.614f, L20_X1 = 0.652f;
+constexpr float TI_X0 = 0.485f, TI_X1 = 0.494f;
+constexpr float L1_X0 = 0.505f, L1_X1 = 0.544f, L2_X0 = 0.558f, L2_X1 = 0.6f, L20_X0 = 0.614f, L20_X1 = 0.652f;
 constexpr float COMBIN_X = 0.607f, BYPASS_X = 0.661f;
 // The 8:1 mux (MX8, its output MUXOUT), below the SR row: IN1..IN8 on its left (IN1 at the top), its
 // selects S0..S2 (CLK, EN and SR in an MX8; set by C_SN where it is a bridge, as nextpnr uses it) at
@@ -101,7 +106,7 @@ constexpr float MX8_X0 = 0.562f, MX8_X1 = 0.6f, MX8_Y = 0.29f, MX8_H_IN = 0.02f,
 float mx8_input(int i) { return MX8_Y + 0.0175f - (i - 1) * 0.005f; }
 float mx8_select_x(int k) { return MX8_X0 + 0.009f * (k + 1); }
 float mx8_bottom(float x) { return MX8_Y - MX8_H_IN + (x - MX8_X0) / (MX8_X1 - MX8_X0) * (MX8_H_IN - MX8_H_OUT); }
-constexpr float CLK_LANE = 0.668f, EN_LANE = 0.674f, SR_LANE = 0.68f, D_JOG = 0.686f;
+constexpr float CLK_LANE = 0.666f, EN_LANE = 0.671f, SR_LANE = 0.676f, D_JOG = 0.681f;
 constexpr float FF_X0 = 0.692f, FF_X1 = 0.737f;
 constexpr float CPOUT_JOG = 0.744f, MUXOUT_JOG = 0.749f, BYPASS_JOG = 0.753f;
 constexpr float OMUX_X0 = 0.758f, OMUX_X1 = 0.783f, OUT_X = 0.8f;
@@ -134,24 +139,25 @@ constexpr float CIN_TRACK_Y = 0.228f;
 // below that; its width each side of the line (reaching the line's _VAL) and the half width of its
 // output
 constexpr float CMUX_OUT_DY = 0.017f, CMUX_IN_DY = 0.007f, CMUX_W = 0.005f, CMUX_PAD = 0.0015f;
-// The carry logic (CPE_CPLINES), right of the output muxes, between OUT2 above and OUT1 below and
-// left of the Y lines: a row for each line, from the bottom PX, CX, PY2, CY2, PY1, CY1, so that the
-// ways out to the lines do not cross (right, and the X lines' down to their band, the Y lines' up
-// beside their line). In a row, two 2:1 muxes (_OUT: OUT1 above or OUT2; _OUT2: the comparator
-// above or a carry or propagate input) and the 2:1 mux choosing between them (_VAL). Their inputs
-// come along rails on the left: OUT2 from above, OUT1, the comparator's output, CINX and PINX from
-// below, and CIY12 and PIY12 from their muxes below the rows (C_Y12: CINY1 above or CINY2, PINY1
-// above or PINY2).
-constexpr float CL_RAIL_OUT2 = 0.846f, CL_RAIL_OUT1 = 0.85f, CL_RAIL_COMP = 0.854f, CL_RAIL_CINX = 0.858f,
-                CL_RAIL_PINX = 0.862f, CL_RAIL_CIY12 = 0.866f, CL_RAIL_PIY12 = 0.87f;
-constexpr float CL_SEL_X0 = 0.876f, CL_SEL_X1 = 0.884f, CL_VAL_X0 = 0.89f, CL_VAL_X1 = 0.898f;
-constexpr float CL_ROW0 = 0.65f, CL_ROW_DY = 0.03f, CL_SEL_DY = 0.008f, CL_IN_DY = 0.003f;
-constexpr float CL_X_DOWN_PX = 0.92f, CL_X_DOWN_CX = 0.93f; // where the X lines' ways go down
-constexpr float CIY12_X0 = 0.892f, CIY12_X1 = 0.882f, CIY12_Y = 0.6f, PIY12_X0 = 0.892f, PIY12_X1 = 0.882f,
-                PIY12_Y = 0.585f;
+// The carry logic (CPE_CPLINES), right of the output muxes and left of the Y lines, over most of the
+// CPE's height (it is where the routing by hand through the carry and propagate lines happens, so
+// each of its pips has room to be clicked): a row for each line, from the bottom PX, CX, PY2, CY2,
+// PY1, CY1, so that the ways out to the lines do not cross (right, and the X lines' down to their
+// band, the Y lines' up beside their line). In a row, two 2:1 muxes (_OUT above: OUT1 above or OUT2;
+// _OUT2 below: the comparator above or a carry or propagate input) and the 2:1 mux choosing between
+// them (_VAL). Their inputs come along rails on the left: OUT2 from above, OUT1 from between the
+// rows, the comparator's output, CINX and PINX from below, and CIY12 and PIY12 from their muxes
+// below the rows (C_Y12: CINY1 above or CINY2, PINY1 above or PINY2).
+constexpr float CL_RAIL_OUT2 = 0.846f, CL_RAIL_OUT1 = 0.851f, CL_RAIL_COMP = 0.856f, CL_RAIL_CINX = 0.861f,
+                CL_RAIL_PINX = 0.866f, CL_RAIL_CIY12 = 0.871f, CL_RAIL_PIY12 = 0.876f;
+constexpr float CL_SEL_X0 = 0.882f, CL_SEL_X1 = 0.894f, CL_VAL_X0 = 0.902f, CL_VAL_X1 = 0.914f;
+constexpr float CL_ROW0 = 0.345f, CL_ROW_DY = 0.1f, CL_SEL_DY = 0.025f, CL_IN_DY = 0.006f;
+constexpr float CL_X_DOWN_PX = 0.921f, CL_X_DOWN_CX = 0.929f; // where the X lines' ways go down
+constexpr float CIY12_X0 = 0.902f, CIY12_X1 = 0.89f, CIY12_Y = 0.27f, PIY12_X0 = 0.902f, PIY12_X1 = 0.89f,
+                PIY12_Y = 0.29f;
 // The 2:1 muxes where the X lines leave, on their band near the right edge (COUTX, POUTX at their
 // output); the carry logic comes in above the band
-constexpr float COUTX_X0 = 0.945f, COUTX_X1 = 0.955f, POUTX_X0 = 0.925f, POUTX_X1 = 0.935f, XMUX_IN_DY = 0.004f;
+constexpr float COUTX_X0 = 0.948f, COUTX_X1 = 0.96f, POUTX_X0 = 0.928f, POUTX_X1 = 0.94f, XMUX_IN_DY = 0.004f;
 // Block RAMs: each RAM column of the chip (beside a CPE column) is drawn as a column of its own,
 // right of that CPE column (see gui_column). In it, a RAM is a block 16 tiles high with its pins
 // on its left and their lanes in front of it.
@@ -813,10 +819,10 @@ struct CarryLane
     float x, track_y;
 };
 static const CarryLane carry_lanes[] = {{"PINY1", 0.465f, 0.21f},
-                                        {"CINX", 0.468f, 0},
-                                        {"PINX", 0.471f, 0},
-                                        {"CINY2", 0.474f, 0.216f},
-                                        {"PINY2", 0.477f, 0.222f}};
+                                        {"CINX", 0.469f, 0},
+                                        {"PINX", 0.473f, 0},
+                                        {"CINY2", 0.477f, 0.216f},
+                                        {"PINY2", 0.481f, 0.222f}};
 
 // The output of the first-level LUT2 L0k
 static float lut_output_y(int k)
@@ -870,12 +876,10 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         return n.size() == 9 && n[0] == 'D' && n[2] == '_' && ends_with(n, "_int");
     };
     // A second-level LUT2 input from a first-level one: the signal passes through that LUT2 (a
-    // LUT2 may take either input; postRoute permutes its function to match), so from its output.
-    // Only where it is used, not in the schematic: the LUT2 trees draw these ways, and a CPE in MX4
-    // mode has a mux in place of the second level.
+    // LUT2 may take either input; postRoute permutes its function to match), so from its output, the
+    // way the LUT2 trees draw it. Unused ones as well (in the schematic, and in route mode, where they
+    // are the way on through the LUT2).
     if (lut_input(dn) && dn[3] == '1' && lut_input(sn) && sn[3] == '0') {
-        if (style != GraphicElement::STYLE_ACTIVE)
-            return;
         float m = lut_output_y(sn[4] - '0');
         path({Pt{L1_X1, m}, Pt{L2_X0, m}});
         return;
@@ -2273,14 +2277,28 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
         break;
     }
     case id_CPE_CPLINES.index: {
-        // The carry logic (see CL_RAIL_OUT2), and the name of each row's line
-        float top = CL_ROW0 + 5 * CL_ROW_DY + 0.016f;
-        simple(CL_RAIL_OUT2 - 0.004f, CL_ROW0 - 0.016f, CL_VAL_X1 + 0.016f, top);
-        name(CL_RAIL_OUT2, top + 0.002f, CL_VAL_X1 + 0.012f, top + 0.01f, "CARRY", LOD_PORTS);
-        for (const char *line : {"PX", "CX", "PY2", "CY2", "PY1", "CY1"}) {
-            float r = carry_row(line);
-            port_name(CL_VAL_X1 + 0.002f, r + 0.001f, CL_VAL_X1 + 0.014f, r + 0.006f, line);
+        // The carry logic (see CL_RAIL_OUT2): in each row the name of its line above the _VAL mux,
+        // the configuration of the first muxes above them and of the _VAL mux below it; that of the
+        // C_Y12 muxes below the rows
+        float top = CL_ROW0 + 5 * CL_ROW_DY + CL_SEL_DY + CL_IN_DY + 0.012f;
+        float bottom = std::min(CIY12_Y, PIY12_Y) - CL_IN_DY - 0.003f;
+        simple(CL_RAIL_OUT2 - 0.004f, bottom, CL_VAL_X1 + 0.004f, top);
+        name(CL_RAIL_OUT2, top + 0.002f, CL_VAL_X1, top + 0.01f, "CARRY", LOD_TEXT);
+        const struct
+        {
+            const char *line, *select, *value;
+        } rows[] = {{"PX", "C_SELX", "C_SEL_P"},   {"CX", "C_SELX", "C_SEL_C"},   {"PY2", "C_SELY2", "C_SEL_P"},
+                    {"CY2", "C_SELY2", "C_SEL_C"}, {"PY1", "C_SELY1", "C_SEL_P"}, {"CY1", "C_SELY1", "C_SEL_C"}};
+        for (auto &row_names : rows) {
+            float r = carry_row(row_names.line), sel_top = r + CL_SEL_DY + CL_IN_DY + 0.0015f;
+            float val_h = CL_SEL_DY + 0.0015f;
+            port_name(CL_VAL_X0 - 0.002f, r + val_h + 0.002f, CL_VAL_X1 + 0.002f, r + val_h + 0.009f, row_names.line);
+            port_name(CL_SEL_X0 - 0.004f, sel_top + 0.001f, CL_SEL_X1 + 0.004f, sel_top + 0.006f, row_names.select);
+            port_name(CL_VAL_X0 - 0.004f, r - val_h - 0.007f, CL_VAL_X1 + 0.004f, r - val_h - 0.002f, row_names.value);
         }
+        // (C_Y12 above its muxes: below them, a multiplier names its inputs, see mult_cpe_outputs)
+        float c_y12 = std::max(CIY12_Y, PIY12_Y) + CL_IN_DY + 0.0015f;
+        port_name(CIY12_X1, c_y12 + 0.001f, CIY12_X0 + 0.004f, c_y12 + 0.006f, "C_Y12");
         break;
     }
     case id_CPE_COMP.index: {
@@ -2490,6 +2508,14 @@ void GateMateImpl::drawTileWire(std::vector<GraphicElement> &g, GraphicElement::
                                       ? GraphicElement::STYLE_INACTIVE
                                       : style,
                               rest, x, y)) {
+        lod(g, from, LOD_DETAIL);
+        return;
+    } else if ((here.a.entity == E_CPE || here.a.entity == E_CARRY) && style != GraphicElement::STYLE_ACTIVE) {
+        // Another wire of the CPE, unused: drawn only when it is selected or offered in route mode,
+        // as a small cross where it is (the pips show the used ones)
+        const float r = 0.0018f;
+        line(g, style, p.x - r, p.y - r, p.x + r, p.y + r);
+        line(g, style, p.x - r, p.y + r, p.x + r, p.y - r);
         lod(g, from, LOD_DETAIL);
         return;
     } else if (here.a.entity == E_OTHER) {

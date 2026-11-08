@@ -558,10 +558,20 @@ TEST_F(GateMateGuiTest, pip_drawings_are_simple_paths)
                         return true;
                 return false;
             };
+            // (and one passing through a first-level LUT2 into the second level runs from its output to
+            // where that goes in, in a tile whose LUT2s are not drawn as well)
+            auto is_lut_input = [&](int w) {
+                std::string n = IdString(tt.wires[w].name).str(ctx);
+                return n.size() == 13 && n.compare(0, 5, "CPE.D") == 0 && n.compare(9, 4, "_int") == 0;
+            };
+            const auto &pd = chip_pip_info(ctx->chip_info, pip);
+            bool through_lut = is_lut_input(pd.src_wire) && is_lut_input(pd.dst_wire);
             std::string problem;
-            if (!same_point(g.front().x1, g.front().y1, ends[0], ends[1]) && !on_box(g.front().x1, g.front().y1))
+            if (!same_point(g.front().x1, g.front().y1, ends[0], ends[1]) && !on_box(g.front().x1, g.front().y1) &&
+                !through_lut)
                 problem = "does not start at its source";
-            else if (!same_point(g.back().x2, g.back().y2, ends[2], ends[3]) && !on_box(g.back().x2, g.back().y2))
+            else if (!same_point(g.back().x2, g.back().y2, ends[2], ends[3]) && !on_box(g.back().x2, g.back().y2) &&
+                     !through_lut)
                 problem = "does not end at its destination";
             for (size_t k = 0; k < g.size() && problem.empty(); k++) {
                 const auto &e = g[k];
@@ -588,6 +598,89 @@ TEST_F(GateMateGuiTest, pip_drawings_are_simple_paths)
         }
     }
     EXPECT_GT(checked, 5000);
+}
+
+// Routing by hand, the GUI shows the pips leaving the head wire, and a click takes the one drawn
+// nearest. So in a CPE every pip has a stretch of its own, away from the other pips leaving the same
+// wire (those into the routing included), long enough to click: every way through the CPE, the carry
+// and propagate lines included, can be clicked pip by pip. (The two inputs of a LUT2 are one choice:
+// postRoute swaps them to where the signals are, so their pips may be drawn alike; a wire with one
+// pip leaving it needs only to show it.)
+TEST_F(GateMateGuiTest, cpe_pips_can_be_told_apart_by_a_click)
+{
+    int tile = -1;
+    for (int t = 0; t < ctx->chip_info->tile_insts.ssize() && tile < 0; t++) {
+        int x, y;
+        tile_xy(ctx->chip_info, t, x, y);
+        if (std::abs(x - ctx->getGridDimX() / 2) <= 2 && std::abs(y - ctx->getGridDimY() / 2) <= 2)
+            for (auto &w : chip_tile_info(ctx->chip_info, t).wires)
+                if (IdString(w.name).str(ctx) == "CPE.CX_VAL")
+                    tile = t;
+    }
+    ASSERT_GE(tile, 0);
+    // (in tile units: at the zoom that shows the CPE's port names, 1000 pixels per tile)
+    const float SEPARATION = 0.002f, MIN_LENGTH = 0.008f;
+    auto distance = [](float px, float py, const GraphicElement &s) {
+        float dx = s.x2 - s.x1, dy = s.y2 - s.y1, len2 = dx * dx + dy * dy;
+        float t = len2 < 1e-12f ? 0 : std::max(0.0f, std::min(1.0f, ((px - s.x1) * dx + (py - s.y1) * dy) / len2));
+        return std::hypot(px - (s.x1 + t * dx), py - (s.y1 + t * dy));
+    };
+    const auto &tt = chip_tile_info(ctx->chip_info, tile);
+    // The LUT2 whose input a wire is (CPE.D0_00_int and CPE.D1_00_int: "00"), or ""
+    auto lut_of = [&](WireId w) {
+        std::string n = ctx->nameOfWire(w);
+        n = n.substr(n.find('/') + 1);
+        return n.size() == 13 && n.compare(0, 5, "CPE.D") == 0 && n.compare(9, 4, "_int") == 0 ? n.substr(7, 2)
+                                                                                               : std::string();
+    };
+    int checked = 0;
+    std::vector<std::string> failures;
+    for (int i = 0; i < tt.wires.ssize(); i++) {
+        std::string name = IdString(tt.wires[i].name).str(ctx);
+        if (name.compare(0, 4, "CPE.") != 0 || name.compare(name.size() - 2, 2, "_n") == 0)
+            continue;
+        WireId wire = ctx->normalise_wire(tile, i);
+        std::vector<std::pair<PipId, std::vector<GraphicElement>>> pips;
+        for (PipId pip : ctx->getPipsDownhill(wire))
+            pips.push_back({pip, lines(ctx->getPipDecal(pip).decal)});
+        for (auto &p : pips) {
+            WireId dst = ctx->getPipDstWire(p.first);
+            std::string dst_name = ctx->nameOfWire(dst);
+            if (p.first.tile != tile || dst_name.find("/CPE.") == std::string::npos)
+                continue;
+            // The length of the pip's drawing that is further than SEPARATION from the others'
+            std::string lut = lut_of(dst);
+            float own = 0, length = 0;
+            int others = 0;
+            for (auto &e : p.second) {
+                float len = std::hypot(e.x2 - e.x1, e.y2 - e.y1);
+                length += len;
+                int steps = std::max(2, int(len / 0.0005f));
+                for (int k = 0; k < steps; k++) {
+                    float t = (k + 0.5f) / steps, px = e.x1 + t * (e.x2 - e.x1), py = e.y1 + t * (e.y2 - e.y1);
+                    bool apart = true;
+                    others = 0;
+                    for (auto &q : pips) {
+                        if (q.first == p.first || (!lut.empty() && lut_of(ctx->getPipDstWire(q.first)) == lut))
+                            continue;
+                        others++;
+                        for (auto &f : q.second)
+                            apart = apart && distance(px, py, f) >= SEPARATION;
+                    }
+                    if (apart)
+                        own += len / steps;
+                }
+            }
+            if (p.second.empty() || (others > 0 && own < MIN_LENGTH) || length < 0.003f)
+                failures.push_back(std::string(ctx->nameOfPip(p.first)) + ": " + std::to_string(own) + " of its own (" +
+                                   std::to_string(pips.size()) + " pips from " + name + ")");
+            checked++;
+        }
+    }
+    for (size_t k = 0; k < failures.size() && k < 60; k++)
+        ADD_FAILURE() << failures[k];
+    EXPECT_EQ(failures.size(), 0u);
+    EXPECT_GT(checked, 100);
 }
 
 // In routed designs, the drawings of a net's pips join up: a pip starts on the drawing of the pip
