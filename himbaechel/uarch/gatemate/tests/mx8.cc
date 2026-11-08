@@ -53,8 +53,9 @@ class GateMateMx8Test : public GateMateTest
         }
     }
 
-    // Each data input arrives as the multiplexer needs it: from the source, through the bridges on the way
-    // (cells of their own after routing), not inverted
+    // Each data input arrives as the multiplexer needs it: from the source, through the bridges and CP lines on the
+    // way (cells of their own after routing; a route from the CP lines back into the routing through CPOUT passes
+    // a CPE_CPLINES cell), not inverted
     void expect_inputs_arrive_as_needed(const std::vector<CellInfo *> &found)
     {
         int inputs = 0;
@@ -70,7 +71,7 @@ class GateMateMx8Test : public GateMateTest
                     WireId sink = ctx->getBelPinWire(cell->bel, port);
                     ASSERT_TRUE(n->wires.count(sink)) << mux->name.str(ctx) << ".IN" << i;
                     inverted ^= impl->routed_inverted(n, sink);
-                    if (!n->driver.cell || n->driver.cell->type != id_CPE_BRIDGE)
+                    if (!n->driver.cell || !n->driver.cell->type.in(id_CPE_BRIDGE, id_CPE_CPLINES))
                         break;
                     cell = n->driver.cell;
                     port = impl->pass_backtrace.at(cell->name).at(n->driver.port);
