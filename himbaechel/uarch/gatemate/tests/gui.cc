@@ -650,8 +650,9 @@ TEST_F(GateMateGuiTest, pip_drawings_are_simple_paths)
 // nearest. So in a CPE every pip has a stretch of its own, away from the other pips leaving the same
 // wire (those into the routing included), long enough to click: every way through the CPE, the carry
 // and propagate lines included, can be clicked pip by pip. (The two inputs of a LUT2 are one choice:
-// postRoute swaps them to where the signals are, so their pips may be drawn alike; a wire with one
-// pip leaving it needs only to show it.)
+// postRoute swaps them to where the signals are, so their pips may be drawn alike; so are the two
+// first-level LUT2s a physical input P*_0n_int can go into through the virtual subtree swap, where
+// postRoute moves the tables; a wire with one pip leaving it needs only to show it.)
 TEST_F(GateMateGuiTest, cpe_pips_can_be_told_apart_by_a_click)
 {
     int tile = -1;
@@ -672,12 +673,16 @@ TEST_F(GateMateGuiTest, cpe_pips_can_be_told_apart_by_a_click)
         return std::hypot(px - (s.x1 + t * dx), py - (s.y1 + t * dy));
     };
     const auto &tt = chip_tile_info(ctx->chip_info, tile);
-    // The LUT2 whose input a wire is (CPE.D0_00_int and CPE.D1_00_int: "00"), or ""
+    // The LUT2 whose input a wire is (the logical inputs CPE.D0_00_int and CPE.D1_00_int, or the physical
+    // first-level ones before the subtree swap, CPE.P0_00_int and CPE.P1_00_int: "00"), or ""
+    auto lut_input_name = [](const std::string &n) {
+        return n.size() == 13 && (n.compare(0, 5, "CPE.D") == 0 || n.compare(0, 5, "CPE.P") == 0) &&
+               n.compare(9, 4, "_int") == 0;
+    };
     auto lut_of = [&](WireId w) {
         std::string n = ctx->nameOfWire(w);
         n = n.substr(n.find('/') + 1);
-        return n.size() == 13 && n.compare(0, 5, "CPE.D") == 0 && n.compare(9, 4, "_int") == 0 ? n.substr(7, 2)
-                                                                                               : std::string();
+        return lut_input_name(n) ? n.substr(7, 2) : std::string();
     };
     int checked = 0;
     std::vector<std::string> failures;
@@ -694,8 +699,12 @@ TEST_F(GateMateGuiTest, cpe_pips_can_be_told_apart_by_a_click)
             std::string dst_name = ctx->nameOfWire(dst);
             if (p.first.tile != tile || dst_name.find("/CPE.") == std::string::npos)
                 continue;
-            // The length of the pip's drawing that is further than SEPARATION from the others'
-            std::string lut = lut_of(dst);
+            // The length of the pip's drawing that is further than SEPARATION from the others' (the pips of
+            // the same choice left out: into the same LUT2, or from a physical first-level input through the
+            // subtree swap into either LUT2)
+            bool from_physical = name.compare(0, 5, "CPE.P") == 0 && lut_input_name(name);
+            auto choice = [&](WireId d) { return from_physical && !lut_of(d).empty() ? std::string("swap") : lut_of(d); };
+            std::string lut = choice(dst);
             float own = 0, length = 0;
             int others = 0;
             for (auto &e : p.second) {
@@ -707,7 +716,7 @@ TEST_F(GateMateGuiTest, cpe_pips_can_be_told_apart_by_a_click)
                     bool apart = true;
                     others = 0;
                     for (auto &q : pips) {
-                        if (q.first == p.first || (!lut.empty() && lut_of(ctx->getPipDstWire(q.first)) == lut))
+                        if (q.first == p.first || (!lut.empty() && choice(ctx->getPipDstWire(q.first)) == lut))
                             continue;
                         others++;
                         for (auto &f : q.second)
