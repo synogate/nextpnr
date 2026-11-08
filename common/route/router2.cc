@@ -1127,6 +1127,16 @@ struct Router2
                             continue;
                         WireId next = ctx->getPipDstWire(dh);
                         int next_idx = wire_to_idx.at(next);
+                        auto &nwd = flat_wires.at(next_idx);
+                        // Before the wire is scored: another thread may be binding the wires and resources outside
+                        // this thread's box, which scoring reads
+                        if (!thread_test_wire(t, nwd))
+                            continue; // thread safety issue
+                        if (nwd.reserved_net == PerWireData::RESERVED_UNAVAILABLE)
+                            continue;
+                        // Reserved for another net
+                        if (nwd.reserved_net != -1 && nwd.reserved_net != net->udata)
+                            continue;
                         WireScore next_score;
                         next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, dh, crit_weight);
                         next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, dh, crit_weight);
@@ -1136,12 +1146,6 @@ struct Router2
                             // Don't expand the same node twice.
                             continue;
                         }
-                        auto &nwd = flat_wires.at(next_idx);
-                        if (nwd.reserved_net == PerWireData::RESERVED_UNAVAILABLE)
-                            continue;
-                        // Reserved for another net
-                        if (nwd.reserved_net != -1 && nwd.reserved_net != net->udata)
-                            continue;
                         // Don't allow the same wire to be bound to the same net with a different driving pip
                         auto fnd_wire = nd.wires.find(next);
                         if (fnd_wire != nd.wires.end() && fnd_wire->second.first != dh)
@@ -1156,8 +1160,6 @@ struct Router2
                             if (chain_resource_conflict(curr.wire, true, resource_key, ctx->getResourceValueForPip(dh)))
                                 continue;
                         }
-                        if (!thread_test_wire(t, nwd))
-                            continue; // thread safety issue
                         set_visited_fwd(t, next_idx, dh, next_score.cost);
                         t.fwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
                         if (was_visited_bwd(next_idx, std::numeric_limits<float>::max()))
@@ -1207,6 +1209,14 @@ struct Router2
                             continue;
                         WireId next = ctx->getPipSrcWire(uh);
                         int next_idx = wire_to_idx.at(next);
+                        auto &nwd = flat_wires.at(next_idx);
+                        if (!thread_test_wire(t, nwd))
+                            continue; // thread safety issue
+                        if (nwd.reserved_net == PerWireData::RESERVED_UNAVAILABLE)
+                            continue;
+                        // Reserved for another net
+                        if (nwd.reserved_net != -1 && nwd.reserved_net != net->udata)
+                            continue;
                         WireScore next_score;
                         // A pip is charged with the wire it drives, as in the forward search: the backward cost of a
                         // wire covers the wires after it up to the sink, and the two costs at a meeting point add
@@ -1221,12 +1231,6 @@ struct Router2
                             // Don't expand the same node twice.
                             continue;
                         }
-                        auto &nwd = flat_wires.at(next_idx);
-                        if (nwd.reserved_net == PerWireData::RESERVED_UNAVAILABLE)
-                            continue;
-                        // Reserved for another net
-                        if (nwd.reserved_net != -1 && nwd.reserved_net != net->udata)
-                            continue;
                         // Don't allow the same resource to be bound to the same net with a different value
                         auto resource_key = ctx->getResourceKeyForPip(uh);
                         if (resource_key != GroupId()) {
@@ -1237,8 +1241,6 @@ struct Router2
                             if (chain_resource_conflict(curr.wire, false, resource_key, ctx->getResourceValueForPip(uh)))
                                 continue;
                         }
-                        if (!thread_test_wire(t, nwd))
-                            continue; // thread safety issue
                         set_visited_bwd(t, next_idx, uh, next_score.cost);
                         t.bwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
                         if (!const_mode && was_visited_fwd(next_idx, std::numeric_limits<float>::max()))
