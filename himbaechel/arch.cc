@@ -316,10 +316,12 @@ bool Arch::route()
     } else {
         log_error("Himbächel architecture does not support router '%s'\n", router.c_str());
     }
-    if (defer_route_finish && uarch->hasRouteRepair())
+    if (defer_route_finish && uarch->hasRouteRepair()) {
         route_finish_pending = true;
-    else
+        uarch->notifyRoutingChanged();
+    } else {
         uarch->postRoute();
+    }
     getCtx()->settings[getCtx()->id("route")] = 1;
     archInfoToAttributes();
     set_fast_pip_delays(false);
@@ -352,6 +354,7 @@ bool Arch::repairRoute()
     {
         ContextLock lock(getCtx(), repair_locked);
         uarch->repairRoute();
+        uarch->notifyRoutingChanged();
     }
     archInfoToAttributes();
     set_fast_pip_delays(false);

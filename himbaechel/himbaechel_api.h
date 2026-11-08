@@ -193,6 +193,9 @@ struct HimbaechelAPI
     virtual bool hasRouteRepair() const { return false; }
     virtual void repairRoute() {};
     virtual void finishRoute() {};
+    // The routing changed without postRoute or finishRoute after it: routing whose finish is deferred, and
+    // repairRoute (e.g. to update what the GUI derives from the routing)
+    virtual void notifyRoutingChanged() {};
     // Called at the end of Arch::assignArchInfo, e.g. after a placed and routed design was loaded
     virtual void assignArchInfo() {};
 

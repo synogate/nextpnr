@@ -1298,6 +1298,211 @@ void GateMateImpl::repairRoute()
     }
 }
 
+namespace {
+
+// A LUT2's table with its two inputs swapped (bit permutation [3,1,2,0])
+int swap_lut2_inputs(int lut) { return (lut & 0b1001) | ((lut & 0b0010) << 1) | ((lut & 0b0100) >> 1); }
+
+// A first-level LUT whose two logical inputs (the same net) both reach the same of its two physical inputs: its
+// other input is not routed, so the table must not depend on it. Both inputs having the same value, the LUT
+// computes its entries 0b00 and 0b11 (the same with its inputs swapped), as a function of the input they reach
+// (0: IN1/3/5/7, 1: IN2/4/6/8 or the carry line taking its place).
+int fold_lut2(int lut, int input)
+{
+    int t0 = lut & 1, t3 = (lut >> 3) & 1;
+    return input == 0 ? (t0 | t3 << 1 | t0 << 2 | t3 << 3) : (t0 | t0 << 1 | t3 << 2 | t3 << 3);
+}
+
+int lut_input_of(IdString cpe_input) { return cpe_input.in(id_IN1, id_IN3, id_IN5, id_IN7) ? 0 : 1; }
+
+// The CPE input both logical inputs of a first-level LUT reach, if they do
+IdString same_input(const CellInfo *cell, IdString d0, IdString d1, const dict<IdString, IdString> &port_mapping)
+{
+    if (!cell->getPort(d0) || cell->getPort(d0) != cell->getPort(d1) || !port_mapping.count(d0) ||
+        !port_mapping.count(d1) || port_mapping.at(d0) != port_mapping.at(d1))
+        return IdString();
+    return port_mapping.at(d0);
+}
+
+} // namespace
+
+void GateMateImpl::trace_cpe_input(const CellInfo *cell, IdString port, bool merged, dict<IdString, int> &cfg,
+                                   dict<IdString, IdString> &port_mapping) const
+{
+    static dict<IdString, IdString> convert_port = {
+            {ctx->id("CPE.IN1"), id_IN1},     {ctx->id("CPE.IN2"), id_IN2},     {ctx->id("CPE.IN3"), id_IN3},
+            {ctx->id("CPE.IN4"), id_IN4},     {ctx->id("CPE.IN5"), id_IN1},     {ctx->id("CPE.IN6"), id_IN2},
+            {ctx->id("CPE.IN7"), id_IN3},     {ctx->id("CPE.IN8"), id_IN4},     {ctx->id("CPE.PINY1"), id_PINY1},
+            {ctx->id("CPE.PINY2"), id_PINY2}, {ctx->id("CPE.CINY2"), id_CINY2}, {ctx->id("CPE.CLK"), id_CLK},
+            {ctx->id("CPE.EN"), id_EN},       {ctx->id("CPE.CINX"), id_CINX},   {ctx->id("CPE.PINX"), id_PINX}};
+    static dict<IdString, IdString> convert_port_merged = {
+            {ctx->id("CPE.IN1"), id_IN1},     {ctx->id("CPE.IN2"), id_IN2},     {ctx->id("CPE.IN3"), id_IN3},
+            {ctx->id("CPE.IN4"), id_IN4},     {ctx->id("CPE.IN5"), id_IN5},     {ctx->id("CPE.IN6"), id_IN6},
+            {ctx->id("CPE.IN7"), id_IN7},     {ctx->id("CPE.IN8"), id_IN8},     {ctx->id("CPE.PINY1"), id_PINY1},
+            {ctx->id("CPE.PINY2"), id_PINY2}, {ctx->id("CPE.CINY2"), id_CINY2}, {ctx->id("CPE.CLK"), id_CLK},
+            {ctx->id("CPE.EN"), id_EN},       {ctx->id("CPE.CINX"), id_CINX},   {ctx->id("CPE.PINX"), id_PINX}};
+    const NetInfo *net = cell->getPort(port);
+    if (!net)
+        return;
+    WireId src = ctx->getBelPinWire(cell->bel, port);
+    // In current chip db real CPE input is max 5 pips away (pin, subtree swap, LUT2 input swap, TI, IN)
+    for (int i = 0; i < 6; i++) {
+        auto found = net->wires.find(src);
+        if (found == net->wires.end() || found->second.pip == PipId())
+            return;
+        PipId pip = found->second.pip;
+        src = ctx->getPipSrcWire(pip);
+        const auto &extra_data = *pip_extra_data(pip);
+        if (extra_data.type == PipExtra::PIP_EXTRA_MUX) {
+            cfg.emplace(IdString(extra_data.name), extra_data.value);
+            IdString cpe_input = ctx->getWireName(src)[1];
+            const auto &convert = merged ? convert_port_merged : convert_port;
+            auto to = convert.find(cpe_input);
+            if (to != convert.end()) {
+                port_mapping.emplace(port, to->second);
+                return;
+            }
+        }
+    }
+}
+
+GateMateImpl::RoutedLuts GateMateImpl::routed_luts(const CellInfo *cell) const
+{
+    RoutedLuts r;
+    auto &cfg = r.cfg;
+    auto &port_mapping = r.port_mapping;
+    auto set = [&](IdString mux) { return cfg.count(mux) && cfg.at(mux) == 1; };
+    // Once every input of the cell is routed, a table it does not have is 0 (finishRoute writes that); before,
+    // the routing may still take an input through that LUT2
+    auto inputs_routed = [&](std::initializer_list<IdString> ports) {
+        for (IdString port : ports) {
+            const NetInfo *net = cell->getPort(port);
+            if (net && !net->wires.count(ctx->getBelPinWire(cell->bel, port)))
+                return false;
+        }
+        return true;
+    };
+    if (cell->type == id_CPE_L2T4) {
+        int l00 = int_or_default(cell->params, id_INIT_L00, 0);
+        int l01 = int_or_default(cell->params, id_INIT_L01, 0);
+        int l10 = int_or_default(cell->params, id_INIT_L10, 0);
+        // (a table the cell does not have and the routing does not set stays unknown)
+        bool has_l00 = cell->params.count(id_INIT_L00), has_l01 = cell->params.count(id_INIT_L01);
+        bool has_l10 = cell->params.count(id_INIT_L10);
+        if (cell->bel != BelId() && inputs_routed({id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10}))
+            has_l00 = has_l01 = has_l10 = true;
+        for (IdString port : {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10})
+            trace_cpe_input(cell, port, false, cfg, port_mapping);
+        bool lower = cell->bel != BelId() && ctx->getBelLocation(cell->bel).z == CPE_LT_L_Z;
+        // The selects of the half: the input swaps of the physical first-level LUT2s (L00/L01, in the
+        // lower half L02/L03) and the swap of the two subtrees
+        const IdString lut_mux[2] = {lower ? id_LUT2_02 : id_LUT2_00, lower ? id_LUT2_03 : id_LUT2_01};
+        // The subtrees swapped: logical first-level LUT t sits at physical LUT t ^ x
+        int x = set(lower ? id_LUT2_11X : id_LUT2_10X) ? 1 : 0;
+        r.tree_swapped = x != 0;
+        const IdString tree_ports[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
+        bool tree[2];
+        for (int t = 0; t < 2; t++)
+            tree[t] = cell->getPort(tree_ports[t][0]) || cell->getPort(tree_ports[t][1]);
+        // The tables of the physical first-level LUTs; L10's physical inputs are physical L00 then L01
+        int first[2];
+        bool known[2];
+        first[x] = l00, known[x] = has_l00;
+        first[x ^ 1] = l01, known[x ^ 1] = has_l01;
+        for (int t = 0; t < 2; t++)
+            if (tree[t] && set(lut_mux[t ^ x]))
+                first[t ^ x] = swap_lut2_inputs(first[t ^ x]);
+        if (cell->getPort(id_D0_10) || cell->getPort(id_D1_10)) {
+            // A LUT2 alone in the half computes l10 from D0_10 (a) and D1_10 (b). Each input reaches the
+            // half through a physical first-level LUT j (L00/L02: 0, L01/L03: 1) at its physical input p
+            // (IN1/3/5/7: 0, TI2/4/6/8: 1); read both from the routing. Both through the same LUT: that LUT
+            // computes and L10 passes it on. Otherwise each passes its input on and L10 computes.
+            // The LUT is the one of the last LUT2 input wire on the way: the physical P*_0j_int behind the
+            // subtree swap, or in a chip database without it the logical D*_0j_int, which is the physical.
+            auto lut_input_wire = [](const std::string &s, char kind) {
+                // CPE.D0_01_int, CPE.P1_02_int, ...
+                return s.size() == 13 && s.compare(0, 4, "CPE.") == 0 && s[4] == kind && isdigit(s[5]) &&
+                       s[6] == '_' && s[7] == '0' && isdigit(s[8]) && s.compare(9, 4, "_int") == 0;
+            };
+            auto trace = [&](IdString port, int &j, int &p) {
+                j = p = -1;
+                const NetInfo *net = cell->getPort(port);
+                if (!net)
+                    return;
+                WireId w = ctx->getBelPinWire(cell->bel, port);
+                int lut = -1;
+                for (int step = 0; step < 6 && net->wires.count(w) && net->wires.at(w).pip != PipId(); step++) {
+                    PipId pip = net->wires.at(w).pip;
+                    std::string src = ctx->getPipName(pip)[2].str(ctx);
+                    if (lut_input_wire(src, 'D') || lut_input_wire(src, 'P')) {
+                        lut = (src[8] - '0') & 1;
+                    } else if (lut >= 0) {
+                        // The physical input of that LUT
+                        j = lut;
+                        p = src.compare(0, 6, "CPE.TI") == 0 ? 1 : 0;
+                        return;
+                    }
+                    w = ctx->getPipSrcWire(pip);
+                }
+            };
+            int ja, pa, jb, pb;
+            trace(id_D0_10, ja, pa);
+            trace(id_D1_10, jb, pb);
+            auto pass = [](int p) { return p == 1 ? 0b1100 : 0b1010; }; // LUT_D1 : LUT_D0
+            if (ja >= 0 && ja == jb && pa == pb) {
+                // Both the same net, through the same pin of the same LUT
+                first[ja] = fold_lut2(l10, pa), known[ja] = true;
+                l10 = pass(ja), has_l10 = true;
+            } else if (ja >= 0 && ja == jb) {
+                first[ja] = pa == 0 ? l10 : swap_lut2_inputs(l10), known[ja] = true;
+                l10 = pass(ja), has_l10 = true;
+            } else {
+                if (ja >= 0)
+                    first[ja] = pass(pa), known[ja] = true;
+                if (jb >= 0)
+                    first[jb] = pass(pb), known[jb] = true;
+                // Swapped where a comes through L01 or b through L00 (the subtree a first-level LUT
+                // computing beside, from place-repair's fusing, sits where the other one is not)
+                if (ja == 1 || jb == 0)
+                    l10 = swap_lut2_inputs(l10);
+            }
+            for (int t = 0; t < 2; t++)
+                r.conflict |= tree[t] && (ja == (t ^ x) || jb == (t ^ x));
+        } else if (x) {
+            l10 = swap_lut2_inputs(l10);
+        }
+        for (int t = 0; t < 2; t++) {
+            IdString pin = same_input(cell, tree_ports[t][0], tree_ports[t][1], port_mapping);
+            if (pin != IdString())
+                first[t ^ x] = fold_lut2(first[t ^ x], lut_input_of(pin));
+        }
+        r.luts = {known[0] ? first[0] : -1, known[1] ? first[1] : -1, -1, -1};
+        r.l10 = has_l10 ? l10 : -1;
+    } else if (cell->type.in(id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
+        const IdString lut_ports[4][2] = {
+                {id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}, {id_D0_02, id_D1_02}, {id_D0_03, id_D1_03}};
+        const IdString inits[4] = {id_INIT_L00, id_INIT_L01, id_INIT_L02, id_INIT_L03};
+        const IdString swaps[4] = {id_LUT2_00, id_LUT2_01, id_LUT2_02, id_LUT2_03};
+        for (auto &ports : lut_ports)
+            for (IdString port : ports)
+                trace_cpe_input(cell, port, true, cfg, port_mapping);
+        bool routed = cell->bel != BelId() && inputs_routed({id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_02,
+                                                             id_D1_02, id_D0_03, id_D1_03});
+        for (int k = 0; k < 4; k++) {
+            if (!routed && !cell->params.count(inits[k]))
+                continue;
+            int lut = int_or_default(cell->params, inits[k], 0);
+            if (set(swaps[k]))
+                lut = swap_lut2_inputs(lut);
+            IdString pin = same_input(cell, lut_ports[k][0], lut_ports[k][1], port_mapping);
+            if (pin != IdString())
+                lut = fold_lut2(lut, lut_input_of(pin));
+            r.luts[k] = lut;
+        }
+    }
+    return r;
+}
+
 void GateMateImpl::finishRoute()
 {
     if (as_partition) {
@@ -1454,245 +1659,40 @@ void GateMateImpl::finishRoute()
         else if (cell->ports.count(port) && !cell->ports.at(port).net)
             cell->ports.erase(port);
     };
-    // A first-level LUT whose two logical inputs (the same net) both reach the same of its two physical inputs: its
-    // other input is not routed, so the table must not depend on it. Both inputs having the same value, the LUT
-    // computes its entries 0b00 and 0b11 (the same with its inputs swapped), as a function of the input they reach
-    // (0: IN1/3/5/7, 1: IN2/4/6/8 or the carry line taking its place).
-    auto fold_lut2 = [](int lut, int input) -> int {
-        int t0 = lut & 1, t3 = (lut >> 3) & 1;
-        return input == 0 ? (t0 | t3 << 1 | t0 << 2 | t3 << 3) : (t0 | t0 << 1 | t3 << 2 | t3 << 3);
-    };
-    auto lut_input_of = [](IdString cpe_input) { return cpe_input.in(id_IN1, id_IN3, id_IN5, id_IN7) ? 0 : 1; };
-    // The CPE input both logical inputs of a first-level LUT reach, if they do
-    auto same_input = [&](CellInfo *cell, IdString d0, IdString d1) -> IdString {
-        if (!cell->getPort(d0) || cell->getPort(d0) != cell->getPort(d1) || !port_mapping.count(d0) ||
-            !port_mapping.count(d1) || port_mapping.at(d0) != port_mapping.at(d1))
-            return IdString();
-        return port_mapping.at(d0);
-    };
-    auto add_input = [&](IdString orig_port, IdString port, bool merged) -> bool {
-        static dict<IdString, IdString> convert_port = {
-                {ctx->id("CPE.IN1"), id_IN1},     {ctx->id("CPE.IN2"), id_IN2},     {ctx->id("CPE.IN3"), id_IN3},
-                {ctx->id("CPE.IN4"), id_IN4},     {ctx->id("CPE.IN5"), id_IN1},     {ctx->id("CPE.IN6"), id_IN2},
-                {ctx->id("CPE.IN7"), id_IN3},     {ctx->id("CPE.IN8"), id_IN4},     {ctx->id("CPE.PINY1"), id_PINY1},
-                {ctx->id("CPE.PINY2"), id_PINY2}, {ctx->id("CPE.CINY2"), id_CINY2}, {ctx->id("CPE.CLK"), id_CLK},
-                {ctx->id("CPE.EN"), id_EN},       {ctx->id("CPE.CINX"), id_CINX},   {ctx->id("CPE.PINX"), id_PINX}};
-        static dict<IdString, IdString> convert_port_merged = {
-                {ctx->id("CPE.IN1"), id_IN1},     {ctx->id("CPE.IN2"), id_IN2},     {ctx->id("CPE.IN3"), id_IN3},
-                {ctx->id("CPE.IN4"), id_IN4},     {ctx->id("CPE.IN5"), id_IN5},     {ctx->id("CPE.IN6"), id_IN6},
-                {ctx->id("CPE.IN7"), id_IN7},     {ctx->id("CPE.IN8"), id_IN8},     {ctx->id("CPE.PINY1"), id_PINY1},
-                {ctx->id("CPE.PINY2"), id_PINY2}, {ctx->id("CPE.CINY2"), id_CINY2}, {ctx->id("CPE.CLK"), id_CLK},
-                {ctx->id("CPE.EN"), id_EN},       {ctx->id("CPE.CINX"), id_CINX},   {ctx->id("CPE.PINX"), id_PINX}};
-        if (convert_port.count(port)) {
-            port_mapping.emplace(orig_port, merged ? convert_port_merged[port] : convert_port[port]);
-            return true;
-        };
-        return false;
-    };
     auto check_input = [&](CellInfo *cell, IdString port, bool merged) {
-        if (cell->getPort(port)) {
-            NetInfo *net = cell->getPort(port);
-            WireId src = ctx->getBelPinWire(cell->bel, port);
-            // In current chip db real CPE input is max 5 pips away (pin, subtree swap, LUT2 input swap, TI, IN)
-            for (int i = 0; i < 6; i++) {
-                if (net->wires.count(src)) {
-                    auto &p = net->wires.at(src);
-                    src = ctx->getPipSrcWire(p.pip);
-                    const auto &extra_data = *pip_extra_data(p.pip);
-                    if (extra_data.type == PipExtra::PIP_EXTRA_MUX) {
-                        cfg.emplace(IdString(extra_data.name), extra_data.value);
-                        if (add_input(port, ctx->getWireName(src)[1], merged))
-                            break;
-                    }
-                }
-            }
-        }
-    };
-    auto swap_lut2_inputs = [&](int lut) -> int {
-        // bit permutation: [3,1,2,0]
-        return ((lut & 0b1000)) |      // b3 -> bit 3
-               ((lut & 0b0010) << 1) | // b1 -> bit 2
-               ((lut & 0b0100) >> 1) | // b2 -> bit 1
-               ((lut & 0b0001));       // b0 -> bit 0
+        trace_cpe_input(cell, port, merged, cfg, port_mapping);
     };
 
     log_info("Update configuration based on routing..\n");
     int tree_swaps = 0;
     for (auto &cell : ctx->cells) {
-        if (cell.second->type.in(id_CPE_L2T4)) {
-            cfg.clear();
-            port_mapping.clear();
-
-            int l00 = int_or_default(cell.second->params, id_INIT_L00, 0);
-            int l01 = int_or_default(cell.second->params, id_INIT_L01, 0);
-            int l10 = int_or_default(cell.second->params, id_INIT_L10, 0);
-
-            check_input(cell.second.get(), id_D0_00, false);
-            check_input(cell.second.get(), id_D1_00, false);
-            check_input(cell.second.get(), id_D0_01, false);
-            check_input(cell.second.get(), id_D1_01, false);
-            check_input(cell.second.get(), id_D0_10, false);
-            check_input(cell.second.get(), id_D1_10, false);
+        if (cell.second->type.in(id_CPE_L2T4, id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
+            // The LUT2 tables as the routing configures them (see routed_luts), and the inputs renamed to the
+            // CPE inputs the routing reaches
             CellInfo *ci = cell.second.get();
-            bool lower = ctx->getBelLocation(ci->bel).z == CPE_LT_L_Z;
-            // The selects of the half: the input swaps of the physical first-level LUT2s (L00/L01, in the
-            // lower half L02/L03) and the swap of the two subtrees
-            const IdString lut_mux[2] = {lower ? id_LUT2_02 : id_LUT2_00, lower ? id_LUT2_03 : id_LUT2_01};
-            auto set = [&](IdString mux) { return cfg.count(mux) && cfg.at(mux) == 1; };
-            // The subtrees swapped: logical first-level LUT t sits at physical LUT t ^ x
-            int x = set(lower ? id_LUT2_11X : id_LUT2_10X) ? 1 : 0;
-            tree_swaps += x;
-            const IdString tree_ports[2][2] = {{id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}};
-            bool tree[2];
-            for (int t = 0; t < 2; t++)
-                tree[t] = ci->getPort(tree_ports[t][0]) || ci->getPort(tree_ports[t][1]);
-            // The tables of the physical first-level LUTs; L10's physical inputs are physical L00 then L01
-            int first[2];
-            first[x] = l00;
-            first[x ^ 1] = l01;
-            for (int t = 0; t < 2; t++)
-                if (tree[t] && set(lut_mux[t ^ x]))
-                    first[t ^ x] = swap_lut2_inputs(first[t ^ x]);
-            if (ci->getPort(id_D0_10) || ci->getPort(id_D1_10)) {
-                // A LUT2 alone in the half computes l10 from D0_10 (a) and D1_10 (b). Each input reaches the
-                // half through a physical first-level LUT j (L00/L02: 0, L01/L03: 1) at its physical input p
-                // (IN1/3/5/7: 0, TI2/4/6/8: 1); read both from the routing. Both through the same LUT: that LUT
-                // computes and L10 passes it on. Otherwise each passes its input on and L10 computes.
-                // The LUT is the one of the last LUT2 input wire on the way: the physical P*_0j_int behind the
-                // subtree swap, or in a chip database without it the logical D*_0j_int, which is the physical.
-                auto lut_input_wire = [](const std::string &s, char kind) {
-                    // CPE.D0_01_int, CPE.P1_02_int, ...
-                    return s.size() == 13 && s.compare(0, 4, "CPE.") == 0 && s[4] == kind && isdigit(s[5]) &&
-                           s[6] == '_' && s[7] == '0' && isdigit(s[8]) && s.compare(9, 4, "_int") == 0;
-                };
-                auto trace = [&](IdString port, int &j, int &p) {
-                    j = p = -1;
-                    NetInfo *net = ci->getPort(port);
-                    if (!net)
-                        return;
-                    WireId w = ctx->getBelPinWire(ci->bel, port);
-                    int lut = -1;
-                    for (int step = 0; step < 6 && net->wires.count(w) && net->wires.at(w).pip != PipId(); step++) {
-                        PipId pip = net->wires.at(w).pip;
-                        std::string src = ctx->getPipName(pip)[2].str(ctx);
-                        if (lut_input_wire(src, 'D') || lut_input_wire(src, 'P')) {
-                            lut = (src[8] - '0') & 1;
-                        } else if (lut >= 0) {
-                            // The physical input of that LUT
-                            j = lut;
-                            p = src.compare(0, 6, "CPE.TI") == 0 ? 1 : 0;
-                            return;
-                        }
-                        w = ctx->getPipSrcWire(pip);
-                    }
-                };
-                int ja, pa, jb, pb;
-                trace(id_D0_10, ja, pa);
-                trace(id_D1_10, jb, pb);
-                auto pass = [](int p) { return p == 1 ? 0b1100 : 0b1010; }; // LUT_D1 : LUT_D0
-                if (ja >= 0 && ja == jb && pa == pb) {
-                    // Both the same net, through the same pin of the same LUT
-                    first[ja] = fold_lut2(l10, pa);
-                    l10 = pass(ja);
-                } else if (ja >= 0 && ja == jb) {
-                    first[ja] = pa == 0 ? l10 : swap_lut2_inputs(l10);
-                    l10 = pass(ja);
-                } else {
-                    if (ja >= 0)
-                        first[ja] = pass(pa);
-                    if (jb >= 0)
-                        first[jb] = pass(pb);
-                    // Swapped where a comes through L01 or b through L00 (the subtree a first-level LUT
-                    // computing beside, from place-repair's fusing, sits where the other one is not)
-                    if (ja == 1 || jb == 0)
-                        l10 = swap_lut2_inputs(l10);
-                }
-                for (int t = 0; t < 2; t++)
-                    NPNR_ASSERT(!tree[t] || (ja != (t ^ x) && jb != (t ^ x)));
-            } else if (x) {
-                l10 = swap_lut2_inputs(l10);
+            RoutedLuts routed = routed_luts(ci);
+            cfg = routed.cfg;
+            port_mapping = routed.port_mapping;
+            if (ci->type == id_CPE_L2T4) {
+                NPNR_ASSERT(!routed.conflict);
+                tree_swaps += routed.tree_swapped;
+                ci->params[id_INIT_L00] = Property(std::max(routed.luts[0], 0), 4);
+                ci->params[id_INIT_L01] = Property(std::max(routed.luts[1], 0), 4);
+                ci->params[id_INIT_L10] = Property(std::max(routed.l10, 0), 4);
+                for (IdString port : {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10})
+                    if (ci->getPort(port) && port_mapping.count(port))
+                        rename_input(ci, port, port_mapping.at(port));
+            } else {
+                const IdString inits[4] = {id_INIT_L00, id_INIT_L01, id_INIT_L02, id_INIT_L03};
+                for (int k = 0; k < 4; k++)
+                    ci->params[inits[k]] = Property(std::max(routed.luts[k], 0), 4);
+                for (IdString port :
+                     {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_02, id_D1_02, id_D0_03, id_D1_03})
+                    rename_routed(ci, port);
             }
-            for (int t = 0; t < 2; t++) {
-                IdString pin = same_input(ci, tree_ports[t][0], tree_ports[t][1]);
-                if (pin != IdString())
-                    first[t ^ x] = fold_lut2(first[t ^ x], lut_input_of(pin));
-            }
-            cell.second->params[id_INIT_L00] = Property(first[0], 4);
-            cell.second->params[id_INIT_L01] = Property(first[1], 4);
-            cell.second->params[id_INIT_L10] = Property(l10, 4);
-
-            for (IdString port : {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10})
-                if (ci->getPort(port) && port_mapping.count(port))
-                    rename_input(ci, port, port_mapping.at(port));
-            if (cfg.count(id_C_I1) && cfg.at(id_C_I1) == 1)
-                cell.second->params[id_C_I1] = Property(1, 1);
-            if (cfg.count(id_C_I2) && cfg.at(id_C_I2) == 1)
-                cell.second->params[id_C_I2] = Property(1, 1);
-            if (cfg.count(id_C_I3) && cfg.at(id_C_I3) == 1)
-                cell.second->params[id_C_I3] = Property(1, 1);
-            if (cfg.count(id_C_I4) && cfg.at(id_C_I4) == 1)
-                cell.second->params[id_C_I4] = Property(1, 1);
-        }
-        if (cell.second->type.in(id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
-            cfg.clear();
-            port_mapping.clear();
-
-            int l00 = int_or_default(cell.second->params, id_INIT_L00, 0);
-            int l01 = int_or_default(cell.second->params, id_INIT_L01, 0);
-            int l02 = int_or_default(cell.second->params, id_INIT_L02, 0);
-            int l03 = int_or_default(cell.second->params, id_INIT_L03, 0);
-
-            check_input(cell.second.get(), id_D0_00, true);
-            check_input(cell.second.get(), id_D1_00, true);
-            check_input(cell.second.get(), id_D0_01, true);
-            check_input(cell.second.get(), id_D1_01, true);
-            check_input(cell.second.get(), id_D0_02, true);
-            check_input(cell.second.get(), id_D1_02, true);
-            check_input(cell.second.get(), id_D0_03, true);
-            check_input(cell.second.get(), id_D1_03, true);
-
-            if (cfg.count(id_LUT2_00) && cfg.at(id_LUT2_00) == 1)
-                l00 = swap_lut2_inputs(l00);
-            if (cfg.count(id_LUT2_01) && cfg.at(id_LUT2_01) == 1)
-                l01 = swap_lut2_inputs(l01);
-            if (cfg.count(id_LUT2_02) && cfg.at(id_LUT2_02) == 1)
-                l02 = swap_lut2_inputs(l02);
-            if (cfg.count(id_LUT2_03) && cfg.at(id_LUT2_03) == 1)
-                l03 = swap_lut2_inputs(l03);
-            {
-                CellInfo *ci = cell.second.get();
-                int *luts[4] = {&l00, &l01, &l02, &l03};
-                const IdString lut_ports[4][2] = {
-                        {id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}, {id_D0_02, id_D1_02}, {id_D0_03, id_D1_03}};
-                for (int k = 0; k < 4; k++) {
-                    IdString pin = same_input(ci, lut_ports[k][0], lut_ports[k][1]);
-                    if (pin != IdString())
-                        *luts[k] = fold_lut2(*luts[k], lut_input_of(pin));
-                }
-            }
-
-            cell.second->params[id_INIT_L00] = Property(l00, 4);
-            cell.second->params[id_INIT_L01] = Property(l01, 4);
-            cell.second->params[id_INIT_L02] = Property(l02, 4);
-            cell.second->params[id_INIT_L03] = Property(l03, 4);
-
-            rename_routed(cell.second.get(), id_D0_00);
-            rename_routed(cell.second.get(), id_D1_00);
-            rename_routed(cell.second.get(), id_D0_01);
-            rename_routed(cell.second.get(), id_D1_01);
-            rename_routed(cell.second.get(), id_D0_02);
-            rename_routed(cell.second.get(), id_D1_02);
-            rename_routed(cell.second.get(), id_D0_03);
-            rename_routed(cell.second.get(), id_D1_03);
-
-            if (cfg.count(id_C_I1) && cfg.at(id_C_I1) == 1)
-                cell.second->params[id_C_I1] = Property(1, 1);
-            if (cfg.count(id_C_I2) && cfg.at(id_C_I2) == 1)
-                cell.second->params[id_C_I2] = Property(1, 1);
-            if (cfg.count(id_C_I3) && cfg.at(id_C_I3) == 1)
-                cell.second->params[id_C_I3] = Property(1, 1);
-            if (cfg.count(id_C_I4) && cfg.at(id_C_I4) == 1)
-                cell.second->params[id_C_I4] = Property(1, 1);
+            for (IdString sel : {id_C_I1, id_C_I2, id_C_I3, id_C_I4})
+                if (cfg.count(sel) && cfg.at(sel) == 1)
+                    ci->params[sel] = Property(1, 1);
         }
         if (cell.second->type.in(id_CPE_FF, id_CPE_FF_L, id_CPE_FF_U, id_CPE_LATCH)) {
             cfg.clear();

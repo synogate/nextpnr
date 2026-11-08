@@ -285,6 +285,52 @@ TEST_F(GateMateGuiTest, lut_function_and_inputs)
     EXPECT_TRUE(found) << "no LUT2 computing a & b";
 }
 
+// The GUI routes without finishing the routing (Arch::defer_route_finish): the cells keep their logical LUT2
+// tables until finishRoute writes the ones the routing configures. The drawing shows those already, so that the
+// LUT2s match the routing drawn into the CPE: e.g. the CPE of an output takes its signal on D0_10, which the
+// router brings through L02 or L03 (in a lower half), and that LUT2 passes it on, not L11 its other input. The
+// labels and the LUT2 functions of a selected bel are the same before and after finishing.
+TEST_F(GateMateGuiTest, lut_drawing_does_not_change_when_the_routing_is_finished)
+{
+    routed_mix(5);
+    ctx->defer_route_finish = true;
+    place_and_route();
+    ASSERT_TRUE(ctx->route_finish_pending);
+    auto functions = [&](BelId bel) {
+        std::map<std::string, std::string> f;
+        for (auto &kv : props(ctx->getBelAttrs(bel)))
+            if (kv.first.size() > 9 && kv.first.compare(kv.first.size() - 9, 9, " function") == 0)
+                f.insert(kv);
+        return f;
+    };
+    std::map<BelId, std::pair<std::vector<std::string>, std::map<std::string, std::string>>> before;
+    int through_first_level = 0;
+    for (auto &cell : ctx->cells) {
+        BelId bel = cell.second->bel;
+        if (bel == BelId() || !ctx->getBelType(bel).in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL))
+            continue;
+        before[bel] = {impl->gui_labels(bel), functions(bel)};
+        through_first_level += cell.second->getPort(id_D0_10) != nullptr || cell.second->getPort(id_D1_10) != nullptr;
+    }
+    // (the case the test is about came up)
+    EXPECT_GT(through_first_level, 0);
+    ctx->finishRoute();
+    for (auto &b : before) {
+        const CellInfo *cell = ctx->getBoundBelCell(b.first);
+        ASSERT_NE(cell, nullptr) << ctx->nameOfBel(b.first);
+        auto now = impl->gui_labels(b.first);
+        std::string all_before, all_now;
+        for (auto &l : b.second.first)
+            all_before += " '" + l + "'";
+        for (auto &l : now)
+            all_now += " '" + l + "'";
+        EXPECT_EQ(b.second.first, now) << ctx->nameOfBel(b.first) << " " << cell->name.c_str(ctx) << ":" << all_before
+                                       << " routed, finished:" << all_now;
+        EXPECT_EQ(b.second.second, functions(b.first)) << ctx->nameOfBel(b.first) << describe(b.second.second)
+                                                        << "\nfinished:" << describe(functions(b.first));
+    }
+}
+
 TEST_F(GateMateGuiTest, register_modes)
 {
     NetInfo *clk = global_clock("clk"), *en = input("en"), *rst = input("rst");

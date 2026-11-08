@@ -67,6 +67,8 @@ struct GateMateImpl : HimbaechelAPI
     bool hasRouteRepair() const override { return true; }
     void repairRoute() override;
     void finishRoute() override;
+    // The GUI's labels show the LUT2 tables the routing configures (see routed_luts)
+    void notifyRoutingChanged() override { update_gui_labels(); }
     void assignArchInfo() override;
 
     virtual std::string getDefaultRouter() const override { return "router2"; };
@@ -75,8 +77,13 @@ struct GateMateImpl : HimbaechelAPI
     void expandBoundingBox(BoundingBox &bb) const override;
     bool checkPipAvail(PipId pip) const override;
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override;
-    // Placement or routing changed by hand: the pip masks are recomputed (with the routing) when next needed
-    void notifyDesignEdited() override { pip_masks_ready = false; }
+    // Placement or routing changed by hand: the pip masks are recomputed (with the routing) when next needed; the
+    // GUI's labels at once (they show the LUT2 tables the routing configures)
+    void notifyDesignEdited() override
+    {
+        pip_masks_ready = false;
+        update_gui_labels();
+    }
     std::string preparePartitionWrite(bool check_only, bool *changes_design) override;
     // Saving a packed design part way through the flow and loading it again (partition.cc): what the packer
     // worked out beyond the netlist (clusters, regions, multiplier and partition roles, ...) as attributes
@@ -303,6 +310,28 @@ struct GateMateImpl : HimbaechelAPI
     const GateMateTileExtraDataPOD *tile_extra_data(int tile) const;
     const GateMateBelExtraDataPOD *bel_extra_data(BelId bel) const;
     const GateMatePipExtraDataPOD *pip_extra_data(PipId pip) const;
+    // The CPE input a cell's input port reaches through its routing (into port_mapping), and the CPE muxes on the
+    // way with their settings (into cfg); nothing for an input not routed (yet)
+    void trace_cpe_input(const CellInfo *cell, IdString port, bool merged, dict<IdString, int> &cfg,
+                         dict<IdString, IdString> &port_mapping) const;
+    // The LUT2 tables of a LUT tree cell as its routing configures them: the router may swap the inputs of a
+    // first-level LUT2 or the two subtrees of a half and take a half's D0_10 / D1_10 through a first-level
+    // LUT2, which then passes it on. finishRoute writes these tables into the cell; until then (and in a
+    // partition, which is never finished) the cell has its logical ones, and the GUI shows these.
+    struct RoutedLuts
+    {
+        // CPE_L2T4: its L00 and L01 (in a lower half: L02 and L03), and L10 (L11); CPE_MX4 / ADDF / ADDF2:
+        // L00 to L03. -1: not a table of the cell, or one it does not have while an input of it is not routed (0
+        // in the bitstream).
+        std::array<int, 4> luts = {-1, -1, -1, -1};
+        int l10 = -1;
+        bool tree_swapped = false;
+        // D0_10 or D1_10 taken through a first-level LUT2 that computes a subtree of the cell
+        bool conflict = false;
+        dict<IdString, int> cfg;
+        dict<IdString, IdString> port_mapping;
+    };
+    RoutedLuts routed_luts(const CellInfo *cell) const;
     // Whether a placed carry logic cell (CPE_CPLINES) is set to pass its input on to the output
     bool cplines_connects(const CellInfo *cell, IdString fromPort, IdString toPort) const;
 

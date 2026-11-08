@@ -105,7 +105,8 @@ std::string with_net(const std::string &what, const std::string &net)
     return net.empty() ? what : what + " (" + net + ")";
 }
 
-void describe_cpe_logic(const Context *ctx, const CellInfo *cell, IdString bel_type, int tile, AttrWriter &w)
+void describe_cpe_logic(const Context *ctx, const CellInfo *cell, IdString bel_type, int tile,
+                        const GateMateImpl::RoutedLuts &routed, AttrWriter &w)
 {
     static const char *functions[] = {"LUT tree",
                                       "adder (ADDF)",
@@ -118,10 +119,11 @@ void describe_cpe_logic(const Context *ctx, const CellInfo *cell, IdString bel_t
     int function = param(cell, id_C_FUNCTION, 0);
     w.add("Function", function >= 0 && function < 8 ? functions[function] : std::to_string(function));
 
-    // The cell's LUT2s and their inputs in the CPE. After routing, nextpnr gives the LUT2 contents in
-    // terms of the physical inputs (postRoute resolves the input swaps the router may use): A of
-    // L00 is IN1, B is IN2 or the carry line selected by C_I1, and so on. A cell on a half bel names
-    // its LUT2s as the upper half does (L00, L01, L10, and L20 for the combining LUT2).
+    // The cell's LUT2s and their inputs in the CPE. The LUT2 contents in terms of the physical inputs,
+    // as the routing configures them (the input swaps the router may use, see routed_luts; finishRoute
+    // writes them into the cell): A of L00 is IN1, B is IN2 or the carry line selected by C_I1, and so
+    // on. A cell on a half bel names its LUT2s as the upper half does (L00, L01, L10, and L20 for the
+    // combining LUT2).
     struct Lut
     {
         const char *param;
@@ -153,9 +155,19 @@ void describe_cpe_logic(const Context *ctx, const CellInfo *cell, IdString bel_t
     else if (bel_type == id_CPE_LT_L)
         luts = {std::begin(lower), std::end(lower)};
     std::map<std::string, std::pair<int, const Lut *>> used; // physical name -> INIT, LUT2
+    auto routed_init = [&](const std::string &name) {
+        static const char *firsts[4] = {"INIT_L00", "INIT_L01", "INIT_L02", "INIT_L03"};
+        for (int k = 0; k < 4; k++)
+            if (name == firsts[k])
+                return routed.luts[k];
+        return name == "INIT_L10" && cell->type == id_CPE_L2T4 ? routed.l10 : -1;
+    };
     for (auto &lut : luts) {
         IdString id = ctx->id(lut.param);
-        if (cell->params.count(id))
+        int init = routed_init(lut.param);
+        if (init >= 0)
+            used[lut.physical] = {init, &lut};
+        else if (cell->params.count(id))
             used[lut.physical] = {param(cell, id, 0), &lut};
     }
     // What drives an input: a net, or the output of another LUT2; through a LUT2 that only passes
@@ -422,7 +434,7 @@ Attrs GateMateImpl::getBelAttrs(BelId bel) const
         return attrs;
     int tile = bel.tile;
     if (type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL))
-        describe_cpe_logic(ctx, cell, type, tile, w);
+        describe_cpe_logic(ctx, cell, type, tile, routed_luts(cell), w);
     else if (type.in(id_CPE_FF_U, id_CPE_FF_L))
         describe_ff(ctx, cell, type == id_CPE_FF_U, tile, w);
     else if (type == id_CPE_CPLINES)
@@ -540,17 +552,25 @@ void GateMateImpl::update_gui_labels()
             return ci->params.count(id) ? lut2_short(param(ci, id, 0)) : "";
         };
         if (type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL)) {
-            // The LUT2s by position in the CPE: L00, L01, L02, L03, L10, L11, L20; then the mode
+            // The LUT2s by position in the CPE: L00, L01, L02, L03, L10, L11, L20; then the mode. The tables
+            // the routing configures (as finishRoute writes them), so that the drawing matches the routing
+            // drawn into the CPE also before the routing is finished
             l.assign(7, "");
+            RoutedLuts routed = routed_luts(ci);
+            auto table = [&](int routed_init, const char *name) {
+                return routed_init >= 0 ? std::string(lut2_short(routed_init)) : lut(name);
+            };
             if (type == id_CPE_LT_U) {
-                l[0] = lut("INIT_L00"), l[1] = lut("INIT_L01"), l[4] = lut("INIT_L10");
+                l[0] = table(routed.luts[0], "INIT_L00"), l[1] = table(routed.luts[1], "INIT_L01");
+                l[4] = table(routed.l10, "INIT_L10");
             } else if (type == id_CPE_LT_L) {
-                l[2] = lut("INIT_L00"), l[3] = lut("INIT_L01"), l[5] = lut("INIT_L10"), l[6] = lut("INIT_L20");
+                l[2] = table(routed.luts[0], "INIT_L00"), l[3] = table(routed.luts[1], "INIT_L01");
+                l[5] = table(routed.l10, "INIT_L10"), l[6] = lut("INIT_L20");
             } else {
                 const char *names[7] = {"INIT_L00", "INIT_L01", "INIT_L02", "INIT_L03",
                                         "INIT_L10", "INIT_L11", "INIT_L20"};
                 for (int i = 0; i < 7; i++)
-                    l[i] = lut(names[i]);
+                    l[i] = table(i < 4 ? routed.luts[i] : -1, names[i]);
             }
             std::string mode = ci->type.str(ctx);
             if (mode.compare(0, 4, "CPE_") == 0)
