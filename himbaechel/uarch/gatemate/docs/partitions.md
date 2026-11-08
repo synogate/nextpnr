@@ -80,6 +80,8 @@ pressed; those given on the command line are filled in at the start):
   tiles of its cells, in red where it can not go. With Pick, the partition follows the mouse, snapped to the
   nearest offset it can be moved by without landing on the cells of another partition; a click puts it there.
   Once packed, the cells of each partition are highlighted in its colour.
+- The Pins tab lists the ports of a design implemented as a partition (instead of the chip pins of a top-level
+  design): per port the cells inside it reaches and, until the partition is saved, its stand-in and where it is.
 
 ## Options
 

@@ -1,0 +1,33 @@
+# Pins tab on a top-level design (the synthesized 008-counter with its CCF): the chip pins before packing (the IO
+# buffers, not placed yet), after packing (each on the pad of the CCF, with the cells of its IO and their settings)
+# and after placing. Implementing the design as a partition (Partitions tab) lists partition ports instead. A pin
+# activated in the list (double click) selects its IO cell, a cell row that cell.
+# design: counter_synth
+resize 1400 1000
+tab Pins
+assert_label pinsSummary Chip pins
+assert_label pinsSummary 10 pins, 2 inputs, 8 outputs; 0 placed
+dock pinList
+check Implement this design as a partition on
+assert_label pinsSummary Partition ports
+check Implement this design as a partition off
+assert_label pinsSummary Chip pins
+action Pack
+waitidle
+assert_label pinsSummary 10 pins, 2 inputs, 8 outputs; 10 placed
+dock pinList
+# the pads of the CCF
+dock pinList IO_SB_A8
+assert_status CELL $iopadmap$top.clk
+dock pinList IO_EA_A7
+assert_status CELL $iopadmap$top.led_7
+# the IO's settings (GateMate: on the IOSEL in the pad's tile)
+dock pinList $iopadmap$top.clk$iosel
+assert_status CELL $iopadmap$top.clk$iosel
+shot 01_packed.png
+action Place
+waitidle
+assert_label pinsSummary 10 placed
+dock pinList led[7]
+assert_status CELL $iopadmap$top.led_7
+shot 02_placed.png

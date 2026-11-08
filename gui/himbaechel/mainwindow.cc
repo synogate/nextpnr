@@ -21,6 +21,7 @@
 
 #include <QMessageBox>
 #include "../fpgaviewwidget.h"
+#include "../pinswidget.h"
 #include "../timingwidget.h"
 #include "partitionwidget.h"
 
@@ -44,6 +45,23 @@ MainWindow::MainWindow(std::unique_ptr<Context> context, CommandHandler *handler
     rightTabWidget->addTab(partitionview, "Partitions");
     connect(this, &BaseMainWindow::contextChanged, partitionview, &PartitionWidget::newContext);
     connect(this, &BaseMainWindow::updateTreeView, partitionview, &PartitionWidget::designChanged);
+    // The Pins tab lists the ports of a partition in place of chip pins
+    pinsview->setPartitionMode([this] { return partitionview->isPartition(); });
+    pinsview->setPadName([this](BelId bel, std::vector<BelId> &io_bels) {
+        // The package data may name another bel of the IO's tile (GateMate: the IOSEL, which holds the settings, not
+        // the GPIO); an IO tile has one pad
+        Loc loc = ctx->getBelLocation(bel);
+        std::string name;
+        for (BelId other : ctx->getBelsByTile(loc.x, loc.y))
+            if (const PadInfoPOD *pad = ctx->get_bel_package_pin(other))
+                name = IdString(pad->package_pin).str(ctx.get());
+        if (!name.empty())
+            for (BelId other : ctx->getBelsByTile(loc.x, loc.y))
+                if (other != bel)
+                    io_bels.push_back(other);
+        return name;
+    });
+    connect(partitionview, &PartitionWidget::partitionModeChanged, pinsview, &PinsWidget::designChanged);
 
     createMenu();
 }

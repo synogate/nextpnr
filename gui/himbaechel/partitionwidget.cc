@@ -175,6 +175,7 @@ PartitionWidget::PartitionWidget(FPGAViewWidget *view, QWidget *parent) : QWidge
     outer->addWidget(scroll);
 
     connect(asPartition, &QGroupBox::toggled, this, &PartitionWidget::updateOverlays);
+    connect(asPartition, &QGroupBox::toggled, this, &PartitionWidget::partitionModeChanged);
     connect(useRegion, &QCheckBox::toggled, this, &PartitionWidget::updateOverlays);
     for (auto *s : {regionX0, regionY0, regionX1, regionY1})
         connect(s, QOverload<int>::of(&QSpinBox::valueChanged), this, [this] {
@@ -678,6 +679,13 @@ void PartitionWidget::highlightCells()
         }
         view->onHighlightGroupChanged(decals, i);
     }
+}
+
+bool PartitionWidget::isPartition() const
+{
+    if (ctx && ctx->settings.count(ctx->id("pack")))
+        return ctx->settings.count(ctx->id("as-partition")) > 0;
+    return ctx && ctx->uarch->hasPartitions() && asPartition->isChecked();
 }
 
 bool PartitionWidget::apply(QString &error)

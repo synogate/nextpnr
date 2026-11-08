@@ -40,6 +40,8 @@ set(GUI_SOURCES
     quadtree.h
     textshader.cc
     textshader.h
+    pinswidget.cc
+    pinswidget.h
     timingwidget.cc
     timingwidget.h
     timingdock.cc

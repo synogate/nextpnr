@@ -81,7 +81,7 @@
  *                              (other dialogs: the values, separated by blanks, go into its spin
  *                              boxes in order, e.g. dialog 2 -1 for "Move selection by")
  *   dialog_cancel              reject the open dialog
- *   check <text> on|off        set a checkable button (e.g. a checkbox) starting with text
+ *   check <text> on|off        set a checkable button (e.g. a checkbox) or group box starting with text
  *   savejson <file.json>       write the design as JSON (like File > Save), e.g. to check it without the
  *                              GUI afterwards
  *   openjson <file.json>       load a design as File > Open JSON does (without the file dialog), in place of
@@ -98,6 +98,7 @@
  *                              double-click) or click the session pip row containing text (steps);
  *                              any other tree by object name (checkList, timingClocks, timingPath;
  *                              nested rows included)
+ *   tab <text>                 show the tab with this title (e.g. Pins, Paths, Partitions)
  *   label <objectName>         log the text of a label (e.g. checkHeader, timingHeader);
  *                              assert_label / assert_nolabel <objectName> <substring>: it contains /
  *                              does not contain substring

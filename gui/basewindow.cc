@@ -37,6 +37,7 @@
 #include "editcommands.h"
 #include "fpgaviewwidget.h"
 #include "timingwidget.h"
+#include "pinswidget.h"
 #include "guitest.h"
 #include "json_frontend.h"
 #include "jsonwrite.h"
@@ -83,10 +84,12 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
 
     designview = new DesignWidget();
     timingview = new TimingWidget();
+    pinsview = new PinsWidget();
     rightTabWidget = new QTabWidget();
     rightTabWidget->setMinimumWidth(300);
     rightTabWidget->addTab(designview, "Design");
     rightTabWidget->addTab(timingview, "Paths");
+    rightTabWidget->addTab(pinsview, "Pins");
     splitter_h->addWidget(rightTabWidget);
 
     tabWidget = new QTabWidget();
@@ -142,6 +145,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(this, &BaseMainWindow::contextChanged, fpgaView, &FPGAViewWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, designview, &DesignWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, timingview, &TimingWidget::newContext);
+    connect(this, &BaseMainWindow::contextChanged, pinsview, &PinsWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, editStack, &EditStack::setContext);
 
     // Edit command layer
@@ -191,6 +195,11 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(designview, &DesignWidget::hover, fpgaView, &FPGAViewWidget::onHoverItemChanged);
     connect(timingview, &TimingWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
     connect(timingview, &TimingWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
+    connect(pinsview, &PinsWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
+    connect(pinsview, &PinsWidget::focusCell, this, &BaseMainWindow::focusCell);
+    connect(pinsview, &PinsWidget::focusNet, this, &BaseMainWindow::focusNet);
+    connect(this, &BaseMainWindow::updateTreeView, pinsview, &PinsWidget::designChanged);
+    connect(editStack, &EditStack::designChanged, pinsview, &PinsWidget::designChanged);
 
     // Click event on device view
     connect(fpgaView, &FPGAViewWidget::clickedBel, designview, &DesignWidget::onClickedBel);

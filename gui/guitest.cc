@@ -25,6 +25,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -37,6 +38,7 @@
 #include <QPointer>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeView>
@@ -1089,6 +1091,18 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
             log("  '" + plain(b->text()) + "' " + (b->isChecked() ? "on" : "off"));
             return true;
         }
+        // A group box with a check box in its title (e.g. Partitions: Implement this design as a partition)
+        for (QGroupBox *g : win_->findChildren<QGroupBox *>()) {
+            if (!g->isCheckable() || !plain(g->title()).startsWith(want, Qt::CaseInsensitive))
+                continue;
+            if (!g->isEnabled()) {
+                error_ = "group box '" + plain(g->title()) + "' is disabled";
+                return false;
+            }
+            g->setChecked(on);
+            log("  '" + plain(g->title()) + "' " + (g->isChecked() ? "on" : "off"));
+            return true;
+        }
         error_ = "no checkable button '" + want + "'";
         return false;
     }
@@ -1236,6 +1250,19 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
             return false;
         }
         return true;
+    }
+    if (cmd == "tab") {
+        if (!need(1))
+            return false;
+        QString want = QStringList(w.mid(1)).join(' ');
+        for (QTabWidget *tabs : win_->findChildren<QTabWidget *>())
+            for (int i = 0; i < tabs->count(); i++)
+                if (tabs->tabText(i).remove('&').compare(want, Qt::CaseInsensitive) == 0) {
+                    tabs->setCurrentIndex(i);
+                    return true;
+                }
+        error_ = "no tab " + want;
+        return false;
     }
     if (cmd == "label" || cmd == "assert_label" || cmd == "assert_nolabel") {
         if (!need(cmd == "label" ? 1 : 2))

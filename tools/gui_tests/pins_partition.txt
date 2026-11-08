@@ -1,0 +1,27 @@
+# Pins tab on a design implemented as a partition (008-counter as module core without IO pads, --vopt
+# as-partition): the ports between the partition and the design importing it, before packing (the cells inside
+# each port reaches), after packing and placing (with the stand-in for the outside on each port but the clock), and
+# after Save as partition (the stand-ins gone, the ports unrouted nets to the cells inside).
+# design: counter_part
+resize 1400 1000
+tab Pins
+assert_label pinsSummary Partition ports
+assert_label pinsSummary 10 ports, 2 inputs, 8 outputs.
+dock pinList
+action Pack
+waitidle
+assert_label pinsSummary 9 with a stand-in for the outside
+action Place
+waitidle
+dock pinList
+dock pinList led[3]
+assert_status NET led[3]
+dock pinList led[3]$partition_port
+assert_status CELL led[3]$partition_port
+shot 01_placed.png
+savepartition core_part.json
+assert_nolabel pinsSummary stand-in
+dock pinList
+# the clock port reaches the registers directly once its global buffer is gone
+dock pinList $auto$ff.cc:337:slice$106.CLK_INT
+assert_status CELL $auto$ff.cc:337:slice$106

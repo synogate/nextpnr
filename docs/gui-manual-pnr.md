@@ -67,6 +67,13 @@ is only reachable from its own CPE.
   ripped up is routed; locked routing stays). A failed pass does not end the GUI.
 - **Design check** dock (View menu): unplaced cells, open / partial arcs, conflicts, dangling routing,
   invalid locations. Double-click zooms to the element.
+- **Pins** tab (beside Design and Paths): the top-level ports. In a top-level design these are the chip pins:
+  direction, pad (from the CCF once packed), the net inside and the IO settings, and below each pin its cells
+  (GateMate: the IO buffer and the IOSEL with the settings). In a design implemented as a partition (Partitions
+  tab, or `--vopt as-partition`) these are the ports between the partition and the design that imports it: below
+  each port the cells inside it reaches and, until the partition is saved, the stand-in for the outside. Clicking a
+  row selects its cells in the device view; a double click zooms to the IO cell (a chip pin not placed yet: the
+  next click on a bel places it) or to the port's net, on a cell row to that cell.
 - **Timing** dock (`T` runs the analysis): Fmax per clock and the critical path on the design as it is
   (unplaced cells left out, open arcs with estimated delays); "Highlight critical path" draws it.
 - **File > Save JSON** writes the design at any stage (packed, partly placed, partly routed, with the locks)
