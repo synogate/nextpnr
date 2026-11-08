@@ -32,6 +32,27 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+// The logic of a cell for the logic check (logic_check.h, ArchAPI::evaluateCell): the values of its inputs, 64
+// patterns at once (bit i of each word is pattern i).
+struct CellEvalInputs
+{
+    virtual ~CellEvalInputs() = default;
+    // The value of an input port; *connected (if given) tells whether a net is on it (the value is then 0)
+    virtual uint64_t value(IdString port, bool *connected = nullptr) const = 0;
+};
+
+// What ArchAPI::evaluateCell computes for a cell.
+struct CellEvalResult
+{
+    // Combinational outputs: each a function of the inputs only. An output port missing here is a free variable of the
+    // check (a register or RAM output, a top-level input): it is the same in two netlists where cell and port names are.
+    dict<IdString, uint64_t> outputs;
+    // What the cell consumes in a way the check compares between two netlists (a register's data, clock, enable,
+    // set/reset, a RAM's or an output buffer's inputs), under names that stay the same over the arch's own conversions
+    // (e.g. "CLK" whichever pin the clock arrives on, its polarity applied). Combinational cells have none.
+    dict<IdString, uint64_t> sinks;
+};
+
 // The specification of the Arch API (pure virtual)
 template <typename R> struct ArchAPI : BaseCtx
 {
@@ -112,6 +133,11 @@ template <typename R> struct ArchAPI : BaseCtx
     // attributesToArchInfo, before the cells are bound)
     virtual void archStateToAttributes() = 0;
     virtual void attributesToArchState() = 0;
+    // The logic check (logic_check.h): evaluate a cell for 64 input patterns at once. It may only use the cell's type,
+    // parameters, attributes and the names and directions of its ports (in a reference netlist the ports have no
+    // nets: connection goes through `inputs`). Returns false where the arch does not know the cell's logic; the check
+    // then compares every input of it under its port name and takes every output as a free variable.
+    virtual bool evaluateCell(const CellInfo *cell, const CellEvalInputs &inputs, CellEvalResult &result) const = 0;
     virtual WireId getPipSrcWire(PipId pip) const = 0;
     virtual WireId getPipDstWire(PipId pip) const = 0;
     virtual DelayQuad getPipDelay(PipId pip) const = 0;

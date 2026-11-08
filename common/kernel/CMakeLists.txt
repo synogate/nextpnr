@@ -29,6 +29,8 @@ target_sources(nextpnr_kernel PUBLIC
     idstringlist.h
     indexed_store.h
     log.cc
+    logic_check.cc
+    logic_check.h
     log.h
     nextpnr_assertions.cc
     nextpnr_assertions.h

@@ -68,6 +68,8 @@ class BaseMainWindow : public QMainWindow
     std::string savePartition(const QString &fileName, bool ask);
 
     void notifyChangeContext();
+    // After a design file was loaded (Open JSON, --json): its logic reference, see CheckDock
+    void afterDesignLoaded(const std::string &filename);
     // Starts the MCP server (see mcpserver.h) on that port; false if it cannot listen there
     bool startMcpServer(int port);
 

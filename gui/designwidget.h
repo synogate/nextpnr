@@ -21,6 +21,7 @@
 #define DESIGNWIDGET_H
 
 #include <QCheckBox>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QTabWidget>
 #include <QTreeView>
@@ -177,6 +178,8 @@ class DesignWidget : public QWidget
     // value may be there (the property browser gets very slow with thousands of entries)
     static constexpr int MAX_LISTED = 100;
     static constexpr size_t MAX_VALUE_LENGTH = 200;
+    // The Logic submenu of a cell's context menu: new cell like it, parameters, pins, remove
+    void addLogicActions(QMenu &menu, IdString cell, bool can_edit, const QString &why);
 
     Context *ctx;
     EditStack *editStack = nullptr;

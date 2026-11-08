@@ -793,6 +793,10 @@ struct Arch : BaseArch<ArchRanges>
         return uarch->prepareCellForMove(cell, check_only);
     }
     void archStateToAttributes() override { uarch->archStateToAttributes(); }
+    bool evaluateCell(const CellInfo *cell, const CellEvalInputs &inputs, CellEvalResult &result) const override
+    {
+        return uarch->evaluateCell(cell, inputs, result);
+    }
     void attributesToArchState() override { uarch->attributesToArchState(); }
     std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return uarch->getDetailDecals(); }
     std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override

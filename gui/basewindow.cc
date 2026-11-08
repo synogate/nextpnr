@@ -550,7 +550,56 @@ void BaseMainWindow::createMenusAndBars()
     menuBar->addAction(menuEdit->menuAction());
     menuBar->addAction(menuView->menuAction());
     menuBar->addAction(menuDesign->menuAction());
+    QMenu *menuLogic = new QMenu("&Logic", menuBar);
+    menuBar->addAction(menuLogic->menuAction());
     menuBar->addAction(menuHelp->menuAction());
+
+    // Logic menu: the reference of the logic check (see checkdock.h, logic_check.h)
+    {
+        auto showCheck = [this] {
+            checkDock->show();
+            checkDock->raise();
+        };
+        QAction *take = menuLogic->addAction("Take logic reference");
+        take->setStatusTip("Copy the netlist as it is now as the reference the logic check compares the design with "
+                           "(also taken after placement when there is none)");
+        connect(take, &QAction::triggered, this, [this, showCheck] {
+            if (taskRunning)
+                return;
+            editStack->notify(checkDock->takeLogicReference());
+            showCheck();
+        });
+        QAction *check = menuLogic->addAction("Check logic now");
+        check->setStatusTip("Compare the logic with the reference now, however long it takes");
+        connect(check, &QAction::triggered, this, [this, showCheck] {
+            showCheck();
+            checkDock->refreshAll();
+        });
+        QAction *clear = menuLogic->addAction("Clear logic reference");
+        connect(clear, &QAction::triggered, this, [this] {
+            checkDock->clearLogicReference();
+            editStack->notify("Logic reference cleared");
+        });
+        menuLogic->addSeparator();
+        QAction *save = menuLogic->addAction("Save logic reference...");
+        connect(save, &QAction::triggered, this, [this] {
+            QString fn = QFileDialog::getSaveFileName(this, "Save logic reference", QString(), "*.logicref.json");
+            if (fn.isEmpty())
+                return;
+            std::string err = checkDock->saveLogicReference(fn.toStdString());
+            editStack->notify(err.empty() ? "Logic reference saved" : QString::fromStdString(err));
+        });
+        QAction *load = menuLogic->addAction("Load logic reference...");
+        connect(load, &QAction::triggered, this, [this, showCheck] {
+            QString fn = QFileDialog::getOpenFileName(this, "Load logic reference", QString(), "*.logicref.json");
+            if (fn.isEmpty())
+                return;
+            std::string err = checkDock->loadLogicReference(fn.toStdString());
+            editStack->notify(err.empty() ? "Logic reference loaded" : QString::fromStdString(err));
+            if (err.empty())
+                showCheck();
+        });
+    }
 
     // Add File menu actions
     menuFile->addAction(actionNew);
@@ -826,8 +875,29 @@ bool BaseMainWindow::loadJson(const std::string &filename)
     Q_EMIT updateTreeView();
     ctx->refreshUi();
     log(ok ? "Loading design successful.\n" : "Loading design failed.\n");
+    if (ok)
+        afterDesignLoaded(filename);
     updateActions();
     return ok;
+}
+
+void BaseMainWindow::afterDesignLoaded(const std::string &filename)
+{
+    // The logic reference: the one saved with the design, else the design as loaded if it is placed (packed
+    // designs get theirs after placement)
+    std::string ref_file = CheckDock::logicReferenceFile(filename);
+    if (std::ifstream(ref_file)) {
+        std::string err = checkDock->loadLogicReference(ref_file);
+        log("%s", (err.empty() ? "Logic reference loaded from " + ref_file + ".\n"
+                               : "Logic reference not loaded: " + err + "\n")
+                          .c_str());
+    } else {
+        bool placed = false;
+        for (auto &cell : ctx->cells)
+            placed |= cell.second->bel != BelId();
+        if (placed)
+            log("%s from the design as loaded.\n", checkDock->takeLogicReference().toStdString().c_str());
+    }
 }
 
 void BaseMainWindow::save_json()
@@ -851,6 +921,13 @@ bool BaseMainWindow::writeJson(const std::string &filename)
         ok = write_json_file(f, fn, ctx.get());
     }
     log(ok ? "Saving JSON successful.\n" : "Saving JSON failed.\n");
+    if (ok && checkDock->hasLogicReference()) {
+        std::string ref_file = CheckDock::logicReferenceFile(fn);
+        std::string err = checkDock->saveLogicReference(ref_file);
+        log("%s", (err.empty() ? "Logic reference saved to " + ref_file + ".\n"
+                               : "Logic reference not saved: " + err + "\n")
+                          .c_str());
+    }
     return ok;
 }
 
@@ -1001,6 +1078,10 @@ void BaseMainWindow::place_finished(bool status)
     disableActions();
     if (status) {
         log("Placing design successful.\n");
+        // The logic reference, when there is none: after placement, as the arch's packing ends there (GateMate:
+        // repack merges the halves of a CPE)
+        if (!checkDock->hasLogicReference())
+            log("%s after placement.\n", checkDock->takeLogicReference().toStdString().c_str());
         Q_EMIT updateTreeView();
     } else {
         log("Placing design failed.\n");

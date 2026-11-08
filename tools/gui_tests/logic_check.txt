@@ -1,0 +1,90 @@
+# Changing the logic by hand and the logic check (Design check dock, Logic menu, a cell's Logic submenu): the
+# reference is taken from the design as loaded (it is placed), a changed LUT table shows as a difference with a
+# counterexample, undo makes it equal again; a new cell like another, connected to nothing, changes nothing and goes
+# again; disconnecting a pin shows; the reference is saved with the design and loaded with it.
+# design: counter_pnr
+resize 1400 1000
+action Design check
+wait 800
+label checkLogic
+assert_label checkLogic proven equal
+assert_nolabel checkLogic DIFFERENT
+assert_nolabel checkLogic no reference
+key E
+# A LUT table changed: AND becomes OR
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$382
+treemenu
+assert_menu Logic
+menu Logic > Set parameter
+dialog INIT_L10=1110
+wait 800
+assert_py ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$382"].params["INIT_L10"] == "1110"
+label checkLogic
+assert_label checkLogic DIFFERENT
+dock checkList
+shot 01_differs.png
+key Ctrl+Z
+wait 800
+assert_py ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$382"].params["INIT_L10"] == "1000"
+assert_nolabel checkLogic DIFFERENT
+assert_label checkLogic proven equal
+# A new cell like it: unplaced, unconnected, armed for placement; it changes nothing
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$382
+treemenu
+menu Logic > New cell like
+dialog lc_new
+wait 500
+key Esc
+assert_py "lc_new" in ctx.cells and ctx.cells["lc_new"].bel is None
+assert_py ctx.cells["lc_new"].params["INIT_L10"] == "1000"
+wait 800
+assert_nolabel checkLogic DIFFERENT
+# Its pins: connect one to a new net, then remove the cell (and the empty net)
+selectcell lc_new
+treemenu
+menu Logic > Connect pin
+dialog IN1 lc_net
+wait 300
+assert_py ctx.cells["lc_new"].ports["IN1"].net.name == "lc_net"
+selectcell lc_new
+treemenu
+menu Logic > Remove cell
+wait 500
+assert_py "lc_new" not in ctx.cells
+assert_py not any(True for u in ctx.nets["lc_net"].users)
+selectnet lc_net
+treemenu
+menu Remove net
+wait 300
+assert_py "lc_net" not in ctx.nets
+# Undo the last two: the cell is back with its pin on the net; then the connection and the new cell
+key Ctrl+Z
+key Ctrl+Z
+wait 300
+assert_py "lc_new" in ctx.cells and ctx.cells["lc_new"].ports["IN1"].net.name == "lc_net"
+key Ctrl+Z
+key Ctrl+Z
+wait 500
+assert_py "lc_new" not in ctx.cells
+# Disconnecting an input of the LUT shows
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$382
+treemenu
+menu Logic > Disconnect pin > IN3
+wait 800
+assert_label checkLogic DIFFERENT
+key Ctrl+Z
+wait 800
+assert_nolabel checkLogic DIFFERENT
+# The reference goes with the design file
+savejson logic_check_saved.json
+assert_py __import__("os").path.exists("logic_check_saved.logicref.json")
+openjson logic_check_saved.json
+wait 1000
+assert_label checkLogic proven equal
+shot 02_reloaded.png
+action Clear logic reference
+wait 600
+assert_label checkLogic no reference
+action Take logic reference
+wait 600
+assert_label checkLogic proven equal

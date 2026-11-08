@@ -79,6 +79,33 @@ is only reachable from its own CPE.
   partition** (session started with `--vopt as-partition`) writes a GateMate partition to import with
   `--vopt partition=<instance>:<file>`. The bitstream is written by Route when `-o out=<file>` was given.
 
+## Changing the logic by hand
+
+Good routing sometimes needs other logic: two LUTs merged into one tree, an MX8 instead of MX4s, the L30
+comparator LUT2 of a CPE, inputs through the CP lines. The netlist can be edited in the GUI, and a logic check says
+whether the design still computes what it did.
+
+- **Logic** submenu of a cell's context menu (Cells tree, edit mode): **New cell like X** (same type, ports and
+  parameters, unconnected, armed for placement), **Set parameter** (`NAME=VALUE`, e.g. `INIT_L10=0110`; `0x..`
+  hexadecimal, binary as the property view shows it, decimal, else a string; an empty value removes it), **Connect
+  pin** (`PIN NET`: the pin is added as an input if the cell lacks it, the net is created if there is none),
+  **Disconnect pin**, **Remove cell** (unplaced with its routing and disconnected first). An empty net can be removed
+  from its context menu. Every edit is one undo step; disconnecting removes the routing that served the pin.
+- **Logic reference**: a copy of the netlist the check compares with. It is taken after Place when there is none
+  (GateMate packing ends there: repack merges the halves of a CPE), from a placed design when it is loaded, by hand
+  with **Logic > Take logic reference**, and is saved next to the design (`<name>.logicref.json`, written by Save
+  JSON, read by Open JSON). Logic > Save / Load logic reference for other files, Clear to drop it.
+- **Logic check** (Design check dock, line "Logic: ..."): every register input (data, clock, enable, set, reset as
+  they take effect), RAM, IO and other non-logic cell input is compared between design and reference, as functions
+  of the register / RAM / input outputs (matched by cell and pin names). Both netlists are simulated with random
+  values; a difference is listed under "Logic differs from the reference" with a counterexample (the values of the
+  nets around the change). Then each sink is proven equal through the cones back to nets already proven, which
+  covers unchanged logic in one step per cell and changed logic as a whole up to 16 inputs; what is only simulated
+  is listed separately. Removed or new registers and free variables the reference does not have are listed too.
+  The check runs after every edit while it takes less than a second, else with Refresh / Logic > Check logic now.
+  It compares the logical netlist: GateMate's routing renames (LUT inputs on the pins the routing reached, carry
+  line inputs, CP-line cells) are followed, but a routed path itself is not checked.
+
 ## Shortcuts
 
 | Key | Action |

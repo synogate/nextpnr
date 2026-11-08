@@ -16,6 +16,7 @@ set(SOURCES
     fuse.cc
     lookahead.cc
     lookahead.h
+    logic_eval.cc
     lut_swap.cc
     gui_attrs.cc
     pack.cc
@@ -39,6 +40,7 @@ set(TEST_SOURCES
     tests/bram.cc
     tests/bram_semantics.cc
     tests/bridges.cc
+    tests/cell_compare.h
     tests/ccf.cc
     tests/clocking.cc
     tests/config_output.cc
@@ -54,6 +56,8 @@ set(TEST_SOURCES
     tests/fuse.cc
     tests/lut_swap.cc
     tests/lut_semantics.cc
+    tests/logic_check.cc
+    tests/logic_eval.cc
     tests/mult.cc
     tests/mx8.cc
     tests/netlist_eval.cc

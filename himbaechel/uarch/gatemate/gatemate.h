@@ -86,6 +86,9 @@ struct GateMateImpl : HimbaechelAPI
     // register's clock / enable renamed to the CPE inputs the routing reached, carry-line selects; inputs fed
     // through CP-line cells reconnected to the net those pass on)
     std::string prepareCellForMove(CellInfo *cell, bool check_only) override;
+    // The logic check: the logic of a cell for 64 input patterns, the same before and after routing and
+    // prepareCellForMove (logic_eval.cc)
+    bool evaluateCell(const CellInfo *cell, const CellEvalInputs &inputs, CellEvalResult &result) const override;
     // Whether a pip is usable at all with the chosen options, regardless of placement
     bool pip_allowed_by_options(PipId pip) const;
 

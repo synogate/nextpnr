@@ -26,6 +26,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QInputDialog>
 #include <QGridLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -1874,6 +1875,8 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
                 });
             });
         }
+        if (cells.size() == 1)
+            addLogicActions(menu, cells.front(), can_edit, why);
     }
     // Rip-up on nets
     if (editStack != nullptr && !editStack->busy()) {
@@ -1945,10 +1948,151 @@ void DesignWidget::prepareMenuTree(int num, const QPoint &pos)
                         sub->addAction(QString("... %1 more").arg(arcs.size() - max_arcs))->setEnabled(false);
                 }
                 addAutoRouteActions(menu, editStack, net);
+                NetInfo *rni = ctx->nets.at(net).get();
+                if (rni->driver.cell == nullptr && rni->users.entries() == 0) {
+                    QAction *remove = menu.addAction(QString("Remove net %1").arg(net.c_str(ctx)));
+                    remove->setEnabled(can_edit);
+                    connect(remove, &QAction::triggered, this, [this, net] {
+                        editStack->run(QString("Remove net %1").arg(net.c_str(ctx)), [&](EditBatch &b) -> std::string {
+                            NetInfo *ni = ctx->nets.at(net).get();
+                            std::vector<WireId> wires;
+                            for (auto &w : ni->wires)
+                                wires.push_back(w.first);
+                            for (WireId w : wires) {
+                                std::string err = b.add(std::make_unique<UnbindWireCmd>(w));
+                                if (!err.empty())
+                                    return err;
+                            }
+                            return b.add(std::make_unique<RemoveNetCmd>(net));
+                        });
+                    });
+                }
             }
         }
     }
     menu.exec(treeView[num]->mapToGlobal(pos));
+}
+
+namespace {
+// A parameter value as typed: 0x.. hexadecimal, 0b.. or only 0/1/x/z binary (as the property view shows numbers),
+// other digits decimal, anything else a string. Numbers keep the width of the old value (else 32 bits).
+Property parsePropertyValue(const std::string &text, const Property *old)
+{
+    int width = (old != nullptr && !old->is_string) ? int(old->str.size()) : 32;
+    auto all = [&](size_t from, const char *chars) {
+        return text.size() > from && text.find_first_not_of(chars, from) == std::string::npos;
+    };
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') && all(2, "0123456789abcdefABCDEF"))
+        return Property(int64_t(std::stoull(text.substr(2), nullptr, 16)), width);
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'b' || text[1] == 'B') && all(2, "01xz"))
+        return Property::from_string(text.substr(2));
+    if (all(0, "01xz"))
+        return Property::from_string(text);
+    if (all(0, "0123456789"))
+        return Property(int64_t(std::stoull(text)), width);
+    return Property(text);
+}
+} // namespace
+
+void DesignWidget::addLogicActions(QMenu &menu, IdString cell, bool can_edit, const QString &why)
+{
+    // Changing the logic by hand (see logic_check.h: the Design check compares it with the logic reference)
+    QMenu *logic = menu.addMenu("Logic");
+    logic->setToolTipsVisible(true);
+    logic->setEnabled(can_edit);
+    if (!can_edit)
+        logic->setToolTip(why);
+    QString name = cell.c_str(ctx);
+    CellInfo *ci = ctx->cells.at(cell).get();
+
+    QAction *like = logic->addAction(QString("New cell like %1...").arg(name));
+    like->setToolTip("A new unplaced, unconnected cell with this cell's type, ports and parameters, armed for "
+                     "placement");
+    connect(like, &QAction::triggered, this, [this, cell, name] {
+        QString def = QString::fromStdString(unusedCellName(ctx, cell.str(ctx) + "$copy").str(ctx));
+        bool ok = false;
+        QString text = QInputDialog::getText(this, "New cell", QString("Name of the new cell like %1:").arg(name),
+                                             QLineEdit::Normal, def, &ok)
+                               .trimmed();
+        if (!ok || text.isEmpty())
+            return;
+        IdString new_cell = ctx->id(text.toStdString());
+        std::string err = editStack->run(QString("New cell %1 like %2").arg(text).arg(name),
+                                         [&](EditBatch &b) { return addCreateCellLike(b, new_cell, cell); });
+        if (err.empty())
+            Q_EMIT armCellRequested(new_cell);
+    });
+
+    QAction *param = logic->addAction("Set parameter...");
+    param->setToolTip("NAME=VALUE (an empty value removes it): 0x.. hexadecimal, binary as shown (e.g. 0110), "
+                      "decimal, or a string");
+    connect(param, &QAction::triggered, this, [this, cell, name] {
+        bool ok = false;
+        QString text = QInputDialog::getText(this, "Set parameter",
+                                             QString("Parameter of %1, NAME=VALUE (empty value removes it):").arg(name),
+                                             QLineEdit::Normal, QString(), &ok)
+                               .trimmed();
+        int eq = text.indexOf('=');
+        if (!ok || eq <= 0)
+            return;
+        std::string key = text.left(eq).trimmed().toStdString(), value = text.mid(eq + 1).trimmed().toStdString();
+        IdString key_id = ctx->id(key);
+        std::optional<Property> prop;
+        if (!value.empty()) {
+            auto &params = ctx->cells.at(cell)->params;
+            auto old = params.find(key_id);
+            prop = parsePropertyValue(value, old == params.end() ? nullptr : &old->second);
+        }
+        editStack->execute(std::make_unique<SetCellParamCmd>(cell, key_id, prop));
+    });
+
+    QAction *conn = logic->addAction("Connect pin...");
+    conn->setToolTip("PIN NET: connect the pin (added as an input if the cell has no such pin) to the net (created "
+                     "if there is none), off its net first");
+    connect(conn, &QAction::triggered, this, [this, cell, name] {
+        bool ok = false;
+        QString text = QInputDialog::getText(this, "Connect pin", QString("Pin of %1 and net, PIN NET:").arg(name),
+                                             QLineEdit::Normal, QString(), &ok)
+                               .simplified();
+        QStringList w = text.split(' ');
+        if (!ok || w.size() != 2)
+            return;
+        IdString port = ctx->id(w[0].toStdString()), net = ctx->id(w[1].toStdString());
+        editStack->run(QString("Connect %1.%2 to %3").arg(name).arg(w[0]).arg(w[1]), [&](EditBatch &b) -> std::string {
+            if (!ctx->nets.count(net)) {
+                std::string err = b.add(std::make_unique<CreateNetCmd>(net));
+                if (!err.empty())
+                    return err;
+            }
+            return addConnectPort(b, cell, port, net, PORT_IN);
+        });
+    });
+
+    std::vector<std::pair<IdString, IdString>> connected;
+    for (auto &p : ci->ports)
+        if (p.second.net)
+            connected.emplace_back(p.first, p.second.net->name);
+    std::sort(connected.begin(), connected.end(),
+              [&](const std::pair<IdString, IdString> &a, const std::pair<IdString, IdString> &b) {
+                  return a.first.str(ctx) < b.first.str(ctx);
+              });
+    QMenu *disc = logic->addMenu("Disconnect pin");
+    disc->setEnabled(!connected.empty());
+    for (auto &pn : connected) {
+        IdString port = pn.first;
+        QAction *a = disc->addAction(QString("%1 (%2)").arg(port.c_str(ctx)).arg(pn.second.c_str(ctx)));
+        connect(a, &QAction::triggered, this, [this, cell, port, name] {
+            editStack->run(QString("Disconnect %1.%2").arg(name).arg(port.c_str(ctx)),
+                           [&](EditBatch &b) { return addDisconnectPort(b, cell, port); });
+        });
+    }
+
+    logic->addSeparator();
+    QAction *remove = logic->addAction(QString("Remove cell %1").arg(name));
+    remove->setToolTip("Unplace it with its routing, disconnect all its pins and remove it");
+    connect(remove, &QAction::triggered, this, [this, cell, name] {
+        editStack->run(QString("Remove cell %1").arg(name), [&](EditBatch &b) { return addRemoveCell(b, cell); });
+    });
 }
 
 void DesignWidget::onItemDoubleClicked(QTreeWidgetItem *item, int column)

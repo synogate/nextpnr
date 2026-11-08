@@ -21,9 +21,11 @@
 // compared against the reference models after packing and placement.
 
 #include <algorithm>
+#include <iostream>
 #include <random>
 #include <set>
 #include "known_bugs.h"
+#include "logic_check.h"
 #include "netlist_eval.h"
 #include "testing.h"
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
@@ -374,6 +376,31 @@ class GateMateRandomLogicTest : public GateMateTest, public ::testing::WithParam
 TEST_P(GateMateRandomLogicTest, matches_reference)
 {
     EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 300, GetParam().seed));
+}
+
+// The logic check (logic_check.h) of the routed design against a reference taken after placement (after repack):
+// postRoute's renames keep the logic, so nothing differs, and the proof gets through nearly everything.
+TEST_P(GateMateRandomLogicTest, logic_check_proves_routed_design)
+{
+    init_context();
+    build();
+    ASSERT_TRUE(packs());
+    ctx->place();
+    LogicSnapshot ref = LogicSnapshot::take(ctx);
+    try {
+        ctx->route();
+    } catch (const log_execution_error_exception &) {
+        GTEST_SKIP() << "the design does not route";
+    }
+    LogicCheckResult res = checkLogic(ctx, ref);
+    std::string issues;
+    for (auto &i : res.issues)
+        if (i.kind != LogicIssue::UNPROVEN)
+            issues += "\n  " + i.message;
+    EXPECT_EQ(res.mismatched, 0) << res.summary() << issues;
+    EXPECT_GE(res.proven * 10, res.sinks * 9) << res.summary() << issues;
+    std::cerr << "logic check: " << res.summary() << stringf(", %d nets proven, %.2f s", res.nets_proven, res.seconds)
+              << issues << "\n";
 }
 
 // --vopt lut-input-swap: swapping the input pairs of every LUT tree keeps the function. (The full

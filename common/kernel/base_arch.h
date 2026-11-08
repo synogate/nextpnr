@@ -335,6 +335,11 @@ template <typename R> struct BaseArch : ArchAPI<R>
     virtual void notifyDesignEdited() override {}
     virtual std::string prepareCellForMove(CellInfo * /*cell*/, bool /*check_only*/) override { return {}; }
     virtual void archStateToAttributes() override {}
+    virtual bool evaluateCell(const CellInfo * /*cell*/, const CellEvalInputs & /*inputs*/,
+                              CellEvalResult & /*result*/) const override
+    {
+        return false;
+    }
     virtual void attributesToArchState() override {}
     virtual std::vector<std::pair<DecalXY, BoundingBox>> getDetailDecals() const override { return {}; }
     virtual std::vector<PipId> getDetailPips(DecalId decal, float x, float y) const override { return {}; }

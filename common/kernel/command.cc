@@ -620,6 +620,7 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
 
                 customAfterLoad(w.getContext());
                 w.notifyChangeContext();
+                w.afterDesignLoaded(filename);
                 w.updateActions();
             } else
                 w.notifyChangeContext();

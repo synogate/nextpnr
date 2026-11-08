@@ -17,6 +17,8 @@
 
 #include "checkdock.h"
 #include <QElapsedTimer>
+#include <QPalette>
+#include <fstream>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -46,16 +48,24 @@ enum Category
     CAT_CONFLICT,
     CAT_DANGLING,
     CAT_INVALID,
+    CAT_LOGIC,
+    CAT_LOGIC_UNPROVEN,
     CAT_COUNT
 };
-const char *categoryName[CAT_COUNT] = {"Unplaced cells", "Nets not fully routed", "Conflicts", "Dangling routing",
-                                       "Cells on invalid locations"};
+const char *categoryName[CAT_COUNT] = {"Unplaced cells",
+                                       "Nets not fully routed",
+                                       "Conflicts",
+                                       "Dangling routing",
+                                       "Cells on invalid locations",
+                                       "Logic differs from the reference",
+                                       "Logic only simulated, not proven"};
 
 struct Entry
 {
     Kind kind;
     QString name; // of the element (cell, net, wire, pip)
     QString text, detail;
+    QString tooltip; // (default: text / detail)
 };
 } // namespace
 
@@ -72,11 +82,20 @@ CheckDock::CheckDock(EditStack *es, QWidget *parent) : QDockWidget("Design check
     header->setWordWrap(true);
     header->setTextInteractionFlags(Qt::TextSelectableByMouse);
     btnRefresh = new QPushButton("Refresh", w);
-    btnRefresh->setToolTip("Check the design again now (it is also checked shortly after every edit)");
+    btnRefresh->setToolTip("Check the design again now, with the logic check (it is also checked shortly after every "
+                           "edit, the logic only while that takes less than a second)");
     top->addWidget(header, 1);
     top->addWidget(btnRefresh, 0, Qt::AlignTop);
     layout->addLayout(top);
-    connect(btnRefresh, &QPushButton::clicked, this, &CheckDock::refresh);
+    connect(btnRefresh, &QPushButton::clicked, this, &CheckDock::refreshAll);
+
+    logicHeader = new QLabel(w);
+    logicHeader->setObjectName("checkLogic");
+    logicHeader->setWordWrap(true);
+    logicHeader->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    logicHeader->setToolTip("The logic check compares what the registers, RAMs and outputs get with a reference copy "
+                            "of the netlist (Logic menu)");
+    layout->addWidget(logicHeader);
 
     list = new QTreeWidget(w);
     list->setObjectName("checkList");
@@ -92,6 +111,7 @@ CheckDock::CheckDock(EditStack *es, QWidget *parent) : QDockWidget("Design check
 
     setWidget(w);
     expanded.assign(CAT_COUNT, false);
+    prevCount.assign(CAT_COUNT, 0);
 
     timer = new QTimer(this);
     timer->setSingleShot(true);
@@ -106,10 +126,82 @@ CheckDock::CheckDock(EditStack *es, QWidget *parent) : QDockWidget("Design check
 
 void CheckDock::setContext(Context *c)
 {
+    // (the reference's cells and names belong to the old context)
+    if (c != ctx) {
+        logicRef.reset();
+        logicResult = LogicCheckResult();
+        logicAuto = true;
+        logicChecked = false;
+    }
     ctx = c;
     firstFill = true;
     scheduleRefresh();
 }
+
+QString CheckDock::takeLogicReference()
+{
+    if (ctx == nullptr)
+        return "No design";
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        logicRef = std::make_unique<LogicSnapshot>(LogicSnapshot::take(ctx));
+    }
+    logicAuto = true;
+    scheduleRefresh();
+    return QString("Logic reference taken (%1 cells)").arg(logicRef->cells.size());
+}
+
+void CheckDock::clearLogicReference()
+{
+    logicRef.reset();
+    logicResult = LogicCheckResult();
+    logicChecked = false;
+    scheduleRefresh();
+}
+
+std::string CheckDock::saveLogicReference(const std::string &file) const
+{
+    if (logicRef == nullptr)
+        return "there is no logic reference";
+    std::ofstream out(file);
+    if (!out)
+        return "cannot write " + file;
+    logicRef->write(out);
+    return out ? std::string() : "cannot write " + file;
+}
+
+std::string CheckDock::loadLogicReference(const std::string &file)
+{
+    if (ctx == nullptr)
+        return "no design";
+    std::ifstream in(file);
+    if (!in)
+        return "cannot read " + file;
+    auto snap = std::make_unique<LogicSnapshot>();
+    std::string err;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        err = snap->read(ctx, in);
+    }
+    if (!err.empty())
+        return file + ": " + err;
+    logicRef = std::move(snap);
+    logicAuto = true;
+    scheduleRefresh();
+    return {};
+}
+
+std::string CheckDock::logicReferenceFile(const std::string &design_file)
+{
+    std::string base = design_file;
+    if (base.size() > 5 && base.compare(base.size() - 5, 5, ".json") == 0)
+        base.resize(base.size() - 5);
+    return base + ".logicref.json";
+}
+
+void CheckDock::refreshAll() { refreshImpl(true); }
 
 void CheckDock::scheduleRefresh()
 {
@@ -118,7 +210,9 @@ void CheckDock::scheduleRefresh()
         timer->start();
 }
 
-void CheckDock::refresh()
+void CheckDock::refresh() { refreshImpl(false); }
+
+void CheckDock::refreshImpl(bool force_logic)
 {
     timer->stop();
     if (ctx == nullptr) {
@@ -262,6 +356,41 @@ void CheckDock::refresh()
                 }
             }
         }
+        // The logic against the reference
+        logicChecked = false;
+        if (logicRef != nullptr && (force_logic || logicAuto)) {
+            logicResult = checkLogic(ctx, *logicRef);
+            logicChecked = true;
+            logicAuto = logicResult.seconds < LOGIC_AUTO_SECONDS;
+            for (auto &issue : logicResult.issues) {
+                int cat = issue.kind == LogicIssue::UNPROVEN ? CAT_LOGIC_UNPROVEN : CAT_LOGIC;
+                QString cell = issue.cell.c_str(ctx);
+                QString text = cell;
+                if (issue.kind == LogicIssue::NEW_VARIABLE)
+                    text = issue.net.c_str(ctx);
+                else if (issue.sink != IdString())
+                    text += " " + QString(issue.sink.c_str(ctx));
+                Kind kind = KIND_NONE;
+                QString name;
+                if (issue.cell != IdString() && ctx->cells.count(issue.cell)) {
+                    kind = KIND_CELL;
+                    name = cell;
+                } else if (issue.net != IdString() && ctx->nets.count(issue.net)) {
+                    kind = KIND_NET;
+                    name = issue.net.c_str(ctx);
+                }
+                QString tip = QString::fromStdString(issue.message);
+                if (!issue.cone.empty()) {
+                    QStringList cone;
+                    for (IdString c : issue.cone)
+                        cone << c.c_str(ctx);
+                    tip += "\nCells from the proven nets up to here: " + cone.join(", ");
+                }
+                count[cat]++;
+                if (int(entries[cat].size()) < MAX_ENTRIES)
+                    entries[cat].push_back(Entry{kind, name, text, QString::fromStdString(issue.message), tip});
+            }
+        }
     }
     qint64 ms = clock.elapsed();
 
@@ -279,13 +408,14 @@ void CheckDock::refresh()
         f.setBold(count[i] > 0);
         cat->setFont(0, f);
         if (count[i] > 0 && i != CAT_UNPLACED)
-            cat->setForeground(0, QBrush(QColor(i == CAT_UNROUTED ? "#d08000" : "#e04040")));
+            cat->setForeground(
+                    0, QBrush(QColor(i == CAT_UNROUTED || i == CAT_LOGIC_UNPROVEN ? "#d08000" : "#e04040")));
         for (auto &e : entries[i]) {
             QTreeWidgetItem *item = new QTreeWidgetItem(cat);
             item->setText(0, e.text);
             item->setText(1, e.detail);
-            item->setToolTip(0, e.text);
-            item->setToolTip(1, e.detail);
+            item->setToolTip(0, e.tooltip.isEmpty() ? e.text : e.tooltip);
+            item->setToolTip(1, e.tooltip.isEmpty() ? e.detail : e.tooltip);
             item->setData(0, KindRole, int(e.kind));
             item->setData(0, NameRole, e.name);
         }
@@ -294,8 +424,10 @@ void CheckDock::refresh()
             more->setText(0, QString("... and %1 more").arg(count[i] - int(entries[i].size())));
             more->setData(0, KindRole, int(KIND_NONE));
         }
-        if (firstFill)
+        // (expanded on the first fill, and when it gets entries, if not too many)
+        if (firstFill || (prevCount[i] == 0 && count[i] > 0))
             expanded[i] = count[i] > 0 && count[i] <= 50;
+        prevCount[i] = count[i];
         cat->setExpanded(expanded[i]);
     }
     list->setUpdatesEnabled(true);
@@ -306,8 +438,22 @@ void CheckDock::refresh()
           << QString("Conflicts: %1").arg(count[CAT_CONFLICT]) << QString("Dangling: %1").arg(count[CAT_DANGLING])
           << QString("Invalid locations: %1").arg(count[CAT_INVALID]);
     bool clean = true;
-    for (int i = 0; i < CAT_COUNT; i++)
+    for (int i = 0; i < CAT_LOGIC; i++)
         clean &= count[i] == 0;
+    if (logicRef == nullptr)
+        logicHeader->setText("Logic: no reference (Logic > Take logic reference; taken after placement when there "
+                             "is none)");
+    else if (logicChecked)
+        logicHeader->setText(QString("Logic: %1 (%2 s)")
+                                     .arg(QString::fromStdString(logicResult.summary()))
+                                     .arg(logicResult.seconds, 0, 'f', 2));
+    else
+        logicHeader->setText(QString("Logic: not checked with every edit (the last check took %1 s): press Refresh")
+                                     .arg(logicResult.seconds, 0, 'f', 1));
+    QPalette pal = logicHeader->palette();
+    bool differs = logicRef != nullptr && logicResult.mismatched + count[CAT_LOGIC] > 0;
+    pal.setColor(QPalette::WindowText, differs ? QColor("#e04040") : palette().color(QPalette::WindowText));
+    logicHeader->setPalette(pal);
     header->setText(QString("%1%2\n%3 cells, %4 nets checked in %5 ms")
                             .arg(clean ? "All placed and routed. " : "")
                             .arg(parts.join(", "))

@@ -57,6 +57,8 @@ struct Context;
 struct PlacerHeapCfg;
 struct PlacerStaticCfg;
 struct Router2Cfg;
+struct CellEvalInputs;
+struct CellEvalResult;
 
 namespace po = boost::program_options;
 
@@ -106,6 +108,11 @@ struct HimbaechelAPI
     // See ArchAPI::archStateToAttributes / attributesToArchState
     virtual void archStateToAttributes() {}
     virtual void attributesToArchState() {}
+    // See ArchAPI::evaluateCell
+    virtual bool evaluateCell(const CellInfo *cell, const CellEvalInputs &inputs, CellEvalResult &result) const
+    {
+        return false;
+    }
     // GUI, File > Save as partition: make the design what a partition file holds (as the arch's own partition flow
     // writes it). With check_only nothing changes. Returns "" or why it can not be saved as a partition;
     // *changes_design tells whether it takes something out of the design (the GUI asks first).

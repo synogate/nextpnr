@@ -900,6 +900,457 @@ void prepareDesignForWrite(Context *ctx)
 }
 
 // ---------------------------------------------------------------------------
+// Netlist edits
+
+std::string CreateCellCmd::checkApply(Context *ctx)
+{
+    if (cell == IdString())
+        return "a new cell needs a name";
+    if (findCell(ctx, cell))
+        return "cell " + q(cell.str(ctx)) + " exists already";
+    return {};
+}
+
+void CreateCellCmd::apply(Context *ctx)
+{
+    CellInfo *ci = ctx->createCell(cell, type);
+    for (auto &p : ports) {
+        ci->ports[p.name].name = p.name;
+        ci->ports[p.name].type = p.type;
+    }
+    ci->params = params;
+    ci->attrs = attrs;
+    ctx->assignArchInfo();
+}
+
+std::string CreateCellCmd::checkRevert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    if (ci->bel != BelId())
+        return "cell " + q(cell.str(ctx)) + " is placed";
+    for (auto &p : ci->ports)
+        if (p.second.net)
+            return "port " + q(p.first.str(ctx)) + " of " + q(cell.str(ctx)) + " is connected";
+    return {};
+}
+
+void CreateCellCmd::revert(Context *ctx)
+{
+    ctx->cells.erase(cell);
+    ctx->assignArchInfo();
+}
+
+std::string CreateCellCmd::describe(Context *ctx) const
+{
+    return "Create cell " + cell.str(ctx) + " (" + type.str(ctx) + ")";
+}
+
+std::string RemoveCellCmd::checkApply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    if (ci->bel != BelId())
+        return "cell " + q(cell.str(ctx)) + " is placed";
+    if (ci->cluster != ClusterId())
+        return "cell " + q(cell.str(ctx)) + " is part of a cluster";
+    for (auto &p : ci->ports)
+        if (p.second.net)
+            return "port " + q(p.first.str(ctx)) + " of " + q(cell.str(ctx)) + " is connected";
+    return {};
+}
+
+void RemoveCellCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    type = ci->type;
+    hierpath = ci->hierpath;
+    params = ci->params;
+    attrs = ci->attrs;
+    ports.clear();
+    for (auto &p : ci->ports)
+        ports.push_back({p.first, p.second.type});
+    ctx->cells.erase(cell);
+    ctx->assignArchInfo();
+}
+
+std::string RemoveCellCmd::checkRevert(Context *ctx)
+{
+    if (findCell(ctx, cell))
+        return "cell " + q(cell.str(ctx)) + " exists again";
+    return {};
+}
+
+void RemoveCellCmd::revert(Context *ctx)
+{
+    CellInfo *ci = ctx->createCell(cell, type);
+    ci->hierpath = hierpath;
+    for (auto &p : ports) {
+        ci->ports[p.name].name = p.name;
+        ci->ports[p.name].type = p.type;
+    }
+    ci->params = params;
+    ci->attrs = attrs;
+    ctx->assignArchInfo();
+}
+
+std::string RemoveCellCmd::describe(Context *ctx) const { return "Remove cell " + cell.str(ctx); }
+
+std::string CreateNetCmd::checkApply(Context *ctx)
+{
+    if (net == IdString())
+        return "a new net needs a name";
+    if (findNet(ctx, net) || ctx->net_aliases.count(net))
+        return "net " + q(net.str(ctx)) + " exists already";
+    return {};
+}
+
+void CreateNetCmd::apply(Context *ctx)
+{
+    ctx->createNet(net);
+    ctx->assignArchInfo();
+}
+
+std::string CreateNetCmd::checkRevert(Context *ctx)
+{
+    NetInfo *ni = findNet(ctx, net);
+    if (ni == nullptr)
+        return "net " + q(net.str(ctx)) + " does not exist";
+    if (ni->driver.cell || ni->users.entries() > 0 || !ni->wires.empty())
+        return "net " + q(net.str(ctx)) + " is in use";
+    return {};
+}
+
+void CreateNetCmd::revert(Context *ctx)
+{
+    ctx->nets.erase(net);
+    ctx->net_aliases.erase(net); // (createNet adds the net as its own alias)
+    ctx->assignArchInfo();
+}
+
+std::string CreateNetCmd::describe(Context *ctx) const { return "Create net " + net.str(ctx); }
+
+std::string RemoveNetCmd::checkApply(Context *ctx)
+{
+    NetInfo *ni = findNet(ctx, net);
+    if (ni == nullptr)
+        return "net " + q(net.str(ctx)) + " does not exist";
+    if (ni->driver.cell || ni->users.entries() > 0)
+        return "net " + q(net.str(ctx)) + " is still connected";
+    if (!ni->wires.empty())
+        return "net " + q(net.str(ctx)) + " still has routing";
+    return {};
+}
+
+void RemoveNetCmd::apply(Context *ctx)
+{
+    attrs = findNet(ctx, net)->attrs;
+    ctx->nets.erase(net);
+    ctx->net_aliases.erase(net); // (createNet adds the net as its own alias)
+    ctx->assignArchInfo();
+}
+
+std::string RemoveNetCmd::checkRevert(Context *ctx)
+{
+    if (findNet(ctx, net))
+        return "net " + q(net.str(ctx)) + " exists again";
+    return {};
+}
+
+void RemoveNetCmd::revert(Context *ctx)
+{
+    ctx->createNet(net)->attrs = attrs;
+    ctx->assignArchInfo();
+}
+
+std::string RemoveNetCmd::describe(Context *ctx) const { return "Remove net " + net.str(ctx); }
+
+std::string ConnectPortCmd::checkApply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    NetInfo *ni = findNet(ctx, net);
+    if (ni == nullptr)
+        return "net " + q(net.str(ctx)) + " does not exist";
+    auto port_it = ci->ports.find(port);
+    PortType t = port_it == ci->ports.end() ? type : port_it->second.type;
+    if (port_it != ci->ports.end() && port_it->second.net)
+        return "port " + q(port.str(ctx)) + " of " + q(cell.str(ctx)) + " is connected to " +
+               q(port_it->second.net->name.str(ctx));
+    if (t == PORT_OUT) {
+        if (ni->driver.cell)
+            return "net " + q(net.str(ctx)) + " is driven by " + q(ni->driver.cell->name.str(ctx)) + " already";
+        if (!ni->wires.empty())
+            return "net " + q(net.str(ctx)) + " has routing: remove it before giving the net a new driver";
+    }
+    return {};
+}
+
+void ConnectPortCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    added_port = !ci->ports.count(port);
+    if (added_port) {
+        ci->ports[port].name = port;
+        ci->ports[port].type = type;
+    }
+    ci->connectPort(port, findNet(ctx, net));
+    ctx->assignArchInfo();
+}
+
+std::string ConnectPortCmd::checkRevert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    auto port_it = ci->ports.find(port);
+    if (port_it == ci->ports.end() || port_it->second.net == nullptr || port_it->second.net->name != net)
+        return "port " + q(port.str(ctx)) + " of " + q(cell.str(ctx)) + " is no longer on " + q(net.str(ctx));
+    if (port_it->second.type == PORT_OUT && !port_it->second.net->wires.empty())
+        return "net " + q(net.str(ctx)) + " has routing from " + q(cell.str(ctx)) + "." + q(port.str(ctx));
+    return {};
+}
+
+void ConnectPortCmd::revert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    ci->disconnectPort(port);
+    if (added_port) {
+        ci->ports.erase(port);
+        ci->cell_bel_pins.erase(port);
+    }
+    ctx->assignArchInfo();
+}
+
+std::string ConnectPortCmd::describe(Context *ctx) const
+{
+    return "Connect " + cell.str(ctx) + "." + port.str(ctx) + " to " + net.str(ctx);
+}
+
+std::string DisconnectPortCmd::checkApply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    auto port_it = ci->ports.find(port);
+    if (port_it == ci->ports.end())
+        return "cell " + q(cell.str(ctx)) + " has no port " + q(port.str(ctx));
+    NetInfo *ni = port_it->second.net;
+    if (ni == nullptr && !remove_port)
+        return "port " + q(port.str(ctx)) + " of " + q(cell.str(ctx)) + " is not connected";
+    if (ni != nullptr && ni->driver.cell == ci && ni->driver.port == port && !ni->wires.empty())
+        return "net " + q(ni->name.str(ctx)) + " has routing: remove it before disconnecting its driver";
+    return {};
+}
+
+void DisconnectPortCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    PortInfo &pi = ci->ports.at(port);
+    prev_net = pi.net ? pi.net->name : IdString();
+    prev_type = pi.type;
+    ci->disconnectPort(port);
+    if (remove_port) {
+        ci->ports.erase(port);
+        ci->cell_bel_pins.erase(port);
+    }
+    ctx->assignArchInfo();
+}
+
+std::string DisconnectPortCmd::checkRevert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    auto port_it = ci->ports.find(port);
+    if (remove_port ? port_it != ci->ports.end() : (port_it == ci->ports.end() || port_it->second.net))
+        return "port " + q(port.str(ctx)) + " of " + q(cell.str(ctx)) + " has changed";
+    if (prev_net != IdString()) {
+        NetInfo *ni = findNet(ctx, prev_net);
+        if (ni == nullptr)
+            return "net " + q(prev_net.str(ctx)) + " does not exist";
+        if (prev_type == PORT_OUT && ni->driver.cell)
+            return "net " + q(prev_net.str(ctx)) + " has another driver";
+    }
+    return {};
+}
+
+void DisconnectPortCmd::revert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (remove_port) {
+        ci->ports[port].name = port;
+        ci->ports[port].type = prev_type;
+    }
+    if (prev_net != IdString())
+        ci->connectPort(port, findNet(ctx, prev_net));
+    ctx->assignArchInfo();
+}
+
+std::string DisconnectPortCmd::describe(Context *ctx) const
+{
+    return (remove_port ? "Remove port " : "Disconnect ") + cell.str(ctx) + "." + port.str(ctx);
+}
+
+std::string SetCellParamCmd::checkApply(Context *ctx)
+{
+    if (findCell(ctx, cell) == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    return {};
+}
+
+void SetCellParamCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    auto &map = is_attr ? ci->attrs : ci->params;
+    auto found = map.find(key);
+    prev = found == map.end() ? std::nullopt : std::optional<Property>(found->second);
+    if (value)
+        map[key] = *value;
+    else
+        map.erase(key);
+    ctx->assignArchInfo();
+}
+
+std::string SetCellParamCmd::checkRevert(Context *ctx) { return checkApply(ctx); }
+
+void SetCellParamCmd::revert(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    auto &map = is_attr ? ci->attrs : ci->params;
+    if (prev)
+        map[key] = *prev;
+    else
+        map.erase(key);
+    ctx->assignArchInfo();
+}
+
+std::string SetCellParamCmd::describe(Context *ctx) const
+{
+    std::string what = is_attr ? "attribute " : "parameter ";
+    if (!value)
+        return "Remove " + what + key.str(ctx) + " of " + cell.str(ctx);
+    return "Set " + what + key.str(ctx) + " of " + cell.str(ctx) + " to " + value->to_string();
+}
+
+std::string addDisconnectPort(EditBatch &b, IdString cell, IdString port, bool remove_port)
+{
+    Context *ctx = b.getContext();
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    auto port_it = ci->ports.find(port);
+    if (port_it == ci->ports.end())
+        return "cell " + q(cell.str(ctx)) + " has no port " + q(port.str(ctx));
+    NetInfo *ni = port_it->second.net;
+    if (ni != nullptr) {
+        if (ni->driver.cell == ci && ni->driver.port == port) {
+            // All of the routing grows from this driver, its source wire too
+            std::vector<WireId> wires;
+            for (auto &w : ni->wires)
+                wires.push_back(w.first);
+            std::string err = unbindWires(b, wires);
+            if (!err.empty())
+                return err;
+        } else if (port_it->second.user_idx) {
+            PortRef ref;
+            ref.cell = ci;
+            ref.port = port;
+            std::vector<WireId> sinks;
+            for (WireId w : ctx->getNetinfoSinkWires(ni, ref))
+                sinks.push_back(w);
+            for (WireId w : sinks) {
+                if (!ni->wires.count(w))
+                    continue;
+                // (nothing goes where other arcs need the same wires: nothing serves only this arc then)
+                NetStatus::Status st = NetStatus::compute(ctx, ni);
+                std::vector<WireId> only = NetStatus::arcOnlyWires(ctx, ni, st, w);
+                std::string err = unbindWires(b, only);
+                if (!err.empty())
+                    return err;
+            }
+        }
+    }
+    return b.add(std::make_unique<DisconnectPortCmd>(cell, port, remove_port));
+}
+
+std::string addConnectPort(EditBatch &b, IdString cell, IdString port, IdString net, PortType type)
+{
+    Context *ctx = b.getContext();
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    auto port_it = ci->ports.find(port);
+    if (port_it != ci->ports.end() && port_it->second.net) {
+        if (port_it->second.net->name == net)
+            return {};
+        std::string err = addDisconnectPort(b, cell, port);
+        if (!err.empty())
+            return err;
+    }
+    return b.add(std::make_unique<ConnectPortCmd>(cell, port, net, type));
+}
+
+std::string addRemoveCell(EditBatch &b, IdString cell)
+{
+    Context *ctx = b.getContext();
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    if (ci->cluster != ClusterId())
+        return "cell " + q(cell.str(ctx)) + " is part of a cluster: it can not be removed on its own";
+    std::string err = cellFixedReason(ctx, ci);
+    if (!err.empty())
+        return err;
+    if (ci->bel != BelId()) {
+        err = addUnbindBel(b, ci->bel);
+        if (!err.empty())
+            return err;
+    }
+    std::vector<IdString> ports;
+    for (auto &p : ci->ports)
+        if (p.second.net)
+            ports.push_back(p.first);
+    for (IdString p : ports) {
+        err = addDisconnectPort(b, cell, p);
+        if (!err.empty())
+            return err;
+    }
+    return b.add(std::make_unique<RemoveCellCmd>(cell));
+}
+
+std::string addCreateCellLike(EditBatch &b, IdString cell, IdString like)
+{
+    Context *ctx = b.getContext();
+    CellInfo *tmpl = findCell(ctx, like);
+    if (tmpl == nullptr)
+        return "cell " + q(like.str(ctx)) + " does not exist";
+    std::vector<CreateCellCmd::Port> ports;
+    for (auto &p : tmpl->ports)
+        ports.push_back({p.first, p.second.type});
+    return b.add(std::make_unique<CreateCellCmd>(cell, tmpl->type, ports, tmpl->params));
+}
+
+IdString unusedCellName(Context *ctx, const std::string &base)
+{
+    IdString name = ctx->id(base);
+    for (int i = 1; findCell(ctx, name); i++)
+        name = ctx->idf("%s$%d", base.c_str(), i);
+    return name;
+}
+
+IdString unusedNetName(Context *ctx, const std::string &base)
+{
+    IdString name = ctx->id(base);
+    for (int i = 1; findNet(ctx, name); i++)
+        name = ctx->idf("%s$%d", base.c_str(), i);
+    return name;
+}
+
+// ---------------------------------------------------------------------------
 // EditBatch
 
 std::string EditBatch::add(std::unique_ptr<EditCommand> cmd)

@@ -72,6 +72,7 @@
 #include <QUndoStack>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include "nextpnr.h"
@@ -265,6 +266,147 @@ class SetNetStrengthCmd : public EditCommand
     std::vector<std::pair<WireId, PlaceStrength>> prev;
 };
 
+// --- Netlist edits (changing the logic by hand, see logic_check.h for checking the result) ---
+// All of them call ctx->assignArchInfo() after the change (cell / net indices, default bel pin mapping).
+
+// Create a cell (unplaced, unconnected) with the given ports and parameters. Revert removes it again; the cell must
+// then be unplaced and unconnected (later commands of the batch are reverted first, so it is).
+class CreateCellCmd : public EditCommand
+{
+  public:
+    struct Port
+    {
+        IdString name;
+        PortType type;
+    };
+    CreateCellCmd(IdString cell, IdString type, std::vector<Port> ports, dict<IdString, Property> params = {},
+                  dict<IdString, Property> attrs = {})
+            : cell(cell), type(type), ports(std::move(ports)), params(std::move(params)), attrs(std::move(attrs))
+    {
+    }
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString cell, type;
+    std::vector<Port> ports;
+    dict<IdString, Property> params, attrs;
+};
+
+// Remove a cell. It must be unplaced, have no port connected and not be part of a cluster (see addRemoveCell, which
+// unplaces and disconnects it first). Revert creates it again with its type, ports, parameters and attributes.
+class RemoveCellCmd : public EditCommand
+{
+  public:
+    explicit RemoveCellCmd(IdString cell) : cell(cell) {}
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString cell, type, hierpath;
+    std::vector<CreateCellCmd::Port> ports;
+    dict<IdString, Property> params, attrs;
+};
+
+// Create an empty net.
+class CreateNetCmd : public EditCommand
+{
+  public:
+    explicit CreateNetCmd(IdString net) : net(net) {}
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString net;
+};
+
+// Remove a net without driver, users and routing.
+class RemoveNetCmd : public EditCommand
+{
+  public:
+    explicit RemoveNetCmd(IdString net) : net(net) {}
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString net;
+    dict<IdString, Property> attrs;
+};
+
+// Connect a cell port to a net. A port the cell does not have is added with `type` (and removed again on revert).
+// An output may only drive a net without driver and without routing.
+class ConnectPortCmd : public EditCommand
+{
+  public:
+    ConnectPortCmd(IdString cell, IdString port, IdString net, PortType type = PORT_IN)
+            : cell(cell), port(port), net(net), type(type)
+    {
+    }
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString cell, port, net;
+    PortType type;
+    bool added_port = false;
+};
+
+// Disconnect a cell port from its net. The routing that served it must be gone (see addDisconnectPort): all of the
+// net's routing for its driver, the routing of the arc for a sink. With remove_port the port itself goes too.
+class DisconnectPortCmd : public EditCommand
+{
+  public:
+    DisconnectPortCmd(IdString cell, IdString port, bool remove_port = false)
+            : cell(cell), port(port), remove_port(remove_port)
+    {
+    }
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString cell, port, prev_net;
+    PortType prev_type = PORT_IN;
+    bool remove_port;
+};
+
+// Set (value given) or remove (no value) a parameter or, with is_attr, an attribute of a cell.
+class SetCellParamCmd : public EditCommand
+{
+  public:
+    SetCellParamCmd(IdString cell, IdString key, std::optional<Property> value, bool is_attr = false)
+            : cell(cell), key(key), value(std::move(value)), is_attr(is_attr)
+    {
+    }
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString cell, key;
+    std::optional<Property> value, prev;
+    bool is_attr;
+};
+
 // Placement strengths of manual edits. A cell placed or moved by hand gets STRENGTH_MANUAL: the
 // placers may still move it (they keep only cells above STRENGTH_STRONG). "Lock" sets
 // STRENGTH_MANUAL_LOCKED, "Unlock" STRENGTH_MANUAL. A cell counts as locked when its strength is
@@ -319,6 +461,20 @@ std::string addUnrouteNet(EditBatch &b, IdString net);
 std::string addUnrouteArc(EditBatch &b, IdString net, WireId sink);
 // Remove a bound pip, its destination wire and everything of the net downstream of it.
 std::string addRemovePip(EditBatch &b, PipId pip);
+
+// Netlist edits with what they need first. Disconnecting a port removes the routing that served it (all of the net's
+// routing for its driver, the arc's for a sink; locked routing is refused).
+std::string addDisconnectPort(EditBatch &b, IdString cell, IdString port, bool remove_port = false);
+// Connect a port (added with `type` if the cell lacks it) to a net, disconnecting it from its current net first.
+std::string addConnectPort(EditBatch &b, IdString cell, IdString port, IdString net, PortType type = PORT_IN);
+// Remove a cell: unplace it (with its routing, addUnbindBel), disconnect all its ports, remove it. Refused for cells
+// of a cluster and for fixed cells.
+std::string addRemoveCell(EditBatch &b, IdString cell);
+// Create a cell with the type, ports and parameters of `like` (unconnected, unplaced; attributes are not copied)
+std::string addCreateCellLike(EditBatch &b, IdString cell, IdString like);
+// A cell / net name not used yet, from `base` ("base", "base$1", ...)
+IdString unusedCellName(Context *ctx, const std::string &base);
+IdString unusedNetName(Context *ctx, const std::string &base);
 
 // Before writing the design (File > Save JSON): store the current placement and routing in the
 // attributes the JSON carries (archInfoToAttributes, which only the placer / router call), and drop
