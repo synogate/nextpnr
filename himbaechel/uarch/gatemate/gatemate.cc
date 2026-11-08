@@ -1427,12 +1427,44 @@ void GateMateImpl::finishRoute()
     // to the empty name before, a port no JSON reader takes)
     // An input with a net its routing does not reach (unrouted by hand before Route runs again, which finishes the
     // routing there is first) keeps its name: the router routes it as before routing
+    // Two logical inputs on one net can reach the same CPE input: the LUT2 input swap is virtual (its two selects
+    // are not one configuration bit, the passes below rewrite the table), so the router can take both inputs of a
+    // first-level LUT from one of its pins, and both carry-line selects of a whole CPE (C_I1, C_I3) take the one
+    // PINY1. The port renamed first stays and the other goes (renamed onto it, the net would keep a user without a
+    // port).
+    auto rename_input = [&](CellInfo *cell, IdString port, IdString to) {
+        if (port == to)
+            return;
+        if (cell->ports.count(to) && cell->ports.at(to).net) {
+            NPNR_ASSERT(cell->ports.at(to).net == cell->getPort(port));
+            cell->disconnectPort(port);
+            cell->ports.erase(port);
+            return;
+        }
+        cell->renamePort(port, to);
+    };
     auto rename_routed = [&](CellInfo *cell, IdString port) {
         IdString to = port_mapping[port];
         if (to != IdString())
-            cell->renamePort(port, to);
+            rename_input(cell, port, to);
         else if (cell->ports.count(port) && !cell->ports.at(port).net)
             cell->ports.erase(port);
+    };
+    // A first-level LUT whose two logical inputs (the same net) both reach the same of its two physical inputs: its
+    // other input is not routed, so the table must not depend on it. Both inputs having the same value, the LUT
+    // computes its entries 0b00 and 0b11 (the same with its inputs swapped), as a function of the input they reach
+    // (0: IN1/3/5/7, 1: IN2/4/6/8 or the carry line taking its place).
+    auto fold_lut2 = [](int lut, int input) -> int {
+        int t0 = lut & 1, t3 = (lut >> 3) & 1;
+        return input == 0 ? (t0 | t3 << 1 | t0 << 2 | t3 << 3) : (t0 | t0 << 1 | t3 << 2 | t3 << 3);
+    };
+    auto lut_input_of = [](IdString cpe_input) { return cpe_input.in(id_IN1, id_IN3, id_IN5, id_IN7) ? 0 : 1; };
+    // The CPE input both logical inputs of a first-level LUT reach, if they do
+    auto same_input = [&](CellInfo *cell, IdString d0, IdString d1) -> IdString {
+        if (!cell->getPort(d0) || cell->getPort(d0) != cell->getPort(d1) || !port_mapping.count(d0) ||
+            !port_mapping.count(d1) || port_mapping.at(d0) != port_mapping.at(d1))
+            return IdString();
+        return port_mapping.at(d0);
     };
     auto add_input = [&](IdString orig_port, IdString port, bool merged) -> bool {
         static dict<IdString, IdString> convert_port = {
@@ -1554,8 +1586,11 @@ void GateMateImpl::finishRoute()
                 trace(id_D0_10, ja, pa);
                 trace(id_D1_10, jb, pb);
                 auto pass = [](int p) { return p == 1 ? 0b1100 : 0b1010; }; // LUT_D1 : LUT_D0
-                if (ja >= 0 && ja == jb) {
-                    NPNR_ASSERT(pa != pb);
+                if (ja >= 0 && ja == jb && pa == pb) {
+                    // Both the same net, through the same pin of the same LUT
+                    first[ja] = fold_lut2(l10, pa);
+                    l10 = pass(ja);
+                } else if (ja >= 0 && ja == jb) {
                     first[ja] = pa == 0 ? l10 : swap_lut2_inputs(l10);
                     l10 = pass(ja);
                 } else {
@@ -1573,13 +1608,18 @@ void GateMateImpl::finishRoute()
             } else if (x) {
                 l10 = swap_lut2_inputs(l10);
             }
+            for (int t = 0; t < 2; t++) {
+                IdString pin = same_input(ci, tree_ports[t][0], tree_ports[t][1]);
+                if (pin != IdString())
+                    first[t ^ x] = fold_lut2(first[t ^ x], lut_input_of(pin));
+            }
             cell.second->params[id_INIT_L00] = Property(first[0], 4);
             cell.second->params[id_INIT_L01] = Property(first[1], 4);
             cell.second->params[id_INIT_L10] = Property(l10, 4);
 
             for (IdString port : {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10})
                 if (ci->getPort(port) && port_mapping.count(port))
-                    ci->renamePort(port, port_mapping.at(port));
+                    rename_input(ci, port, port_mapping.at(port));
             if (cfg.count(id_C_I1) && cfg.at(id_C_I1) == 1)
                 cell.second->params[id_C_I1] = Property(1, 1);
             if (cfg.count(id_C_I2) && cfg.at(id_C_I2) == 1)
@@ -1615,6 +1655,17 @@ void GateMateImpl::finishRoute()
                 l02 = swap_lut2_inputs(l02);
             if (cfg.count(id_LUT2_03) && cfg.at(id_LUT2_03) == 1)
                 l03 = swap_lut2_inputs(l03);
+            {
+                CellInfo *ci = cell.second.get();
+                int *luts[4] = {&l00, &l01, &l02, &l03};
+                const IdString lut_ports[4][2] = {
+                        {id_D0_00, id_D1_00}, {id_D0_01, id_D1_01}, {id_D0_02, id_D1_02}, {id_D0_03, id_D1_03}};
+                for (int k = 0; k < 4; k++) {
+                    IdString pin = same_input(ci, lut_ports[k][0], lut_ports[k][1]);
+                    if (pin != IdString())
+                        *luts[k] = fold_lut2(*luts[k], lut_input_of(pin));
+                }
+            }
 
             cell.second->params[id_INIT_L00] = Property(l00, 4);
             cell.second->params[id_INIT_L01] = Property(l01, 4);
