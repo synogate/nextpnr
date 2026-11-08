@@ -1705,7 +1705,11 @@ void GateMateImpl::finishRoute()
                 cell.second->params[id_C_CPE_EN] = Property(val ? 3 : 0, 2);
                 cell.second->params[id_C_ENSEL] = Property(1, 1);
             }
-            ff_routed_ports[cell.first] = {port_mapping[id_CLK_INT], port_mapping[id_EN_INT]};
+            // (Copies: port_mapping[] inserts a port that is not there, which can move the entries the other
+            // reference points to)
+            IdString clk = port_mapping.count(id_CLK_INT) ? port_mapping.at(id_CLK_INT) : IdString();
+            IdString en = port_mapping.count(id_EN_INT) ? port_mapping.at(id_EN_INT) : IdString();
+            ff_routed_ports[cell.first] = {clk, en};
             rename_routed(cell.second.get(), id_CLK_INT);
             rename_routed(cell.second.get(), id_EN_INT);
         }
