@@ -105,6 +105,7 @@
  *
  */
 
+#include "auto_names.h"
 #include "design_utils.h"
 #include "log.h"
 #include "nextpnr.h"
@@ -140,6 +141,9 @@ template <typename FrontendType> struct GenericFrontend
         ctx->top_module = top;
         // Do the actual import, starting from the top level module
         import_module(m, top.str(ctx), top.str(ctx), mod_refs.at(top.str(ctx)));
+
+        if (bool_or_default(ctx->settings, ctx->id("frontend/renameAutoCells"), true))
+            rename_auto_cells(ctx);
 
         ctx->design_loaded = true;
     }

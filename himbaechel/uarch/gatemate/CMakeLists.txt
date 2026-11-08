@@ -37,6 +37,7 @@ set(SOURCES
 
 set(TEST_SOURCES
     tests/adder_semantics.cc
+    tests/auto_names.cc
     tests/bram.cc
     tests/bram_semantics.cc
     tests/bridges.cc

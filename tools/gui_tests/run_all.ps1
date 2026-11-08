@@ -71,7 +71,7 @@ function Get-Design([string]$name) {
             if (-not (Test-Path $pnr)) {
                 # without --gui no window opens; run it on the hidden desktop anyway (no console either)
                 & (Join-Path $root "tools\hidden_desktop.ps1") -Exe $exe -WorkDir $designs `
-                    -Arguments "--device CCGM1A1 --json `"$synth`" $counterCcf --write `"$pnr`"" `
+                    -Arguments "--device CCGM1A1 --no-rename-auto-cells --json `"$synth`" $counterCcf --write `"$pnr`"" `
                     -Stdout (Join-Path $designs "pnr.log") -Stderr (Join-Path $designs "pnr_err.log") -TimeoutSec 600 | Out-Null
                 if (-not (Test-Path $pnr)) { throw "could not build $pnr (see $designs\pnr.log)" }
             }
@@ -122,7 +122,9 @@ foreach ($s in $scripts) {
     $out = Join-Path $OutDir $base
     if (Test-Path $out) { Remove-Item -Recurse -Force $out }
     $start = Get-Date
-    & (Join-Path $root "tools\run_gui_test.ps1") -Exe $exe -Json $d.Json -ExtraArgs $d.Extra -Script $s.FullName `
+    # The scripts select cells by the names yosys gave them (in designs/counter_pnr.json too)
+    $extra = ("--no-rename-auto-cells " + $d.Extra).Trim()
+    & (Join-Path $root "tools\run_gui_test.ps1") -Exe $exe -Json $d.Json -ExtraArgs $extra -Script $s.FullName `
         -OutDir $out -TimeoutSec $TimeoutSec | Out-Null
     $code = $LASTEXITCODE
     $secs = [int]((Get-Date) - $start).TotalSeconds

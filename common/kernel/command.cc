@@ -337,6 +337,9 @@ po::options_description CommandHandler::getGeneralOptions()
     general.add_options()("json", po::value<std::string>(), "JSON design file to ingest");
     general.add_options()("write", po::value<std::string>(), "JSON design file to write");
     general.add_options()("top", po::value<std::string>(), "name of top module");
+    general.add_options()("no-rename-auto-cells", "keep the names synthesis gave cells automatically ($abc$..., "
+                                                  "$auto$...) instead of naming them after the nets they drive, and "
+                                                  "the nets after their best HDL name");
     general.add_options()("seed", po::value<uint64_t>(), "seed value for random number generator");
     general.add_options()("randomize-seed,r", "randomize seed value for random number generator");
 
@@ -461,6 +464,10 @@ void CommandHandler::setupContext(Context *ctx)
         auto seed = distrib(randDev);
         ctx->rngstate = seed;
         log_info("Generated random seed: %" PRIu64 "\n", seed);
+    }
+
+    if (vm.count("no-rename-auto-cells")) {
+        ctx->settings[ctx->id("frontend/renameAutoCells")] = false;
     }
 
     if (vm.count("ignore-loops")) {
