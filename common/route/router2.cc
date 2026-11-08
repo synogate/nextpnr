@@ -62,6 +62,8 @@ struct Router2
         WireId sink_wire;
         BoundingBox bb;
         bool routed = false, pre_routed = false;
+        // The arc ran through an overused wire or resource at the end of the last iteration (see update_congestion)
+        bool in_conflict = false;
     };
 
     // As we allow overlap at first; the nextpnr bind functions can't be used
@@ -1377,8 +1379,10 @@ struct Router2
             auto &ad = nd.arcs.at(usr.index.idx());
             for (size_t j = 0; j < ad.size(); j++) {
                 // Ripup failed arcs to start with
-                // Check if arc is already legally routed
-                if (!failed_slack && check_arc_routing(net, usr.index, j)) {
+                // Check if arc is already legally routed; one that was in conflict is rerouted even so
+                bool in_conflict = ad.at(j).in_conflict;
+                ad.at(j).in_conflict = false;
+                if (!failed_slack && !in_conflict && check_arc_routing(net, usr.index, j)) {
                     update_wire_by_loc(t, net, usr.index, j, true);
                     continue;
                 }
@@ -1562,6 +1566,19 @@ struct Router2
                     }
                     failed_nets.insert(i);
                 }
+            }
+        }
+        // All arcs in a conflict now are rerouted in the next iteration, even those whose conflict an earlier net
+        // resolves by giving way. Were each arc only checked when its net comes up, the net routed first would
+        // give way in every conflict (the nets go in order of criticality, the same in each iteration), and the
+        // others would never be rerouted: their history would never reach them. Where that net has two ways, each
+        // in conflict with a net that never moves, it would go back and forth between them for good.
+        for (int n : failed_nets) {
+            NetInfo *ni = nets_by_udata.at(n);
+            for (auto usr : ni->users.enumerate()) {
+                auto &ad = nets.at(n).arcs.at(usr.index.idx());
+                for (size_t j = 0; j < ad.size(); j++)
+                    ad.at(j).in_conflict = !check_arc_routing(ni, usr.index, j);
             }
         }
         if (arb_after > 0)
