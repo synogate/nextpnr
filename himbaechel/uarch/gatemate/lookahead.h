@@ -62,7 +62,8 @@ struct GateMateLookahead
 
     // Delay from src to dst if dst is a pin behind a CPE input or src a pin before a CPE output,
     // else -1
-    delay_t estimate(WireId src, WireId dst) const;
+    // radius_limit >= 0: only within that many tiles of the pin (and -1 for wires the tables miss there)
+    delay_t estimate(WireId src, WireId dst, int radius_limit = -1) const;
 
   private:
     static constexpr int PHASES = 8;
@@ -111,7 +112,7 @@ struct GateMateLookahead
     void set_anchor_names();
     int phase(int x, int y) const { return (x & 1) * 4 + ((x + y) & 3); }
     // Delay between anchor k of the CPE in anchor_tile and wire w, or -1 if unknown
-    int lookup(int k, int anchor_tile, WireId w) const;
+    int lookup(int k, int anchor_tile, WireId w, int radius_limit = -1) const;
 };
 
 NEXTPNR_NAMESPACE_END

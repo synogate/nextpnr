@@ -86,10 +86,17 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("lookahead", po::value<std::string>(),
                            "router delay estimate: hybrid (default: the tables within hybrid-radius tiles, the "
                            "model beyond), linear, table (shortest paths on the empty chip) or model (closed form, "
-                           "see docs/distance_model.md); the post-route repairs and the LUT input swap use the "
+                           "see docs/distance_model.md) or axis (as hybrid, with the factored estimate of "
+                           "docs/routing_heuristic_concept.md beyond the tables); the post-route repairs and the LUT "
+                           "input swap use the "
                            "tables where built, else the model");
     specific.add_options()("place-delay", po::value<std::string>(),
-                           "placer delay estimate: hybrid (default), linear, table or model");
+                           "placer delay estimate: hybrid (default), linear, table, model or axis");
+    specific.add_options()("axis-prune", po::value<int>(),
+                           "lookahead/place-delay=axis: keep the exits and entries of a wire within this many ps of "
+                           "the best (default 600)");
+    specific.add_options()("axis-keep", po::value<int>(),
+                           "lookahead/place-delay=axis: at most this many exits and entries per wire (default 1000)");
     specific.add_options()("hybrid-radius", po::value<int>(),
                            "radius in tiles of the delay tables in hybrid mode (default 4)");
     specific.add_options()("hybrid-missing", po::value<std::string>(),
@@ -294,8 +301,9 @@ void GateMateImpl::read_options(const ArchArgs &args)
         if (!args.options.count(option))
             return "";
         std::string value = args.options[option].as<std::string>();
-        if (value != "linear" && value != "table" && value != "model" && value != "hybrid")
-            log_error("Invalid %s='%s', valid values are hybrid, linear, table and model.\n", option, value.c_str());
+        if (value != "linear" && value != "table" && value != "model" && value != "hybrid" && value != "axis")
+            log_error("Invalid %s='%s', valid values are hybrid, linear, table, model and axis.\n", option,
+                      value.c_str());
         return value;
     };
     route_estimate = given("lookahead");
@@ -307,12 +315,16 @@ void GateMateImpl::read_options(const ArchArgs &args)
     // hybrid: the tables (radius hybrid-radius, no extrapolation), the model where they have no value; if the
     // other estimate is table, the full tables (radius lookahead-radius, extrapolated) and the model only
     // where they have no value
-    hybrid = (route_estimate == "hybrid" || place_estimate == "hybrid") && route_estimate != "table" &&
+    // axis: as hybrid, with the factored estimate (axis.h) between the tables and the model
+    axis_route = route_estimate == "axis";
+    axis_place = place_estimate == "axis";
+    auto near_tables = [](const std::string &mode) { return mode == "hybrid" || mode == "axis"; };
+    hybrid = (near_tables(route_estimate) || near_tables(place_estimate)) && route_estimate != "table" &&
              place_estimate != "table";
-    table_route = route_estimate == "table" || route_estimate == "hybrid";
-    table_place = place_estimate == "table" || place_estimate == "hybrid";
-    model_route = route_estimate == "model" || route_estimate == "hybrid";
-    model_place = place_estimate == "model" || place_estimate == "hybrid";
+    table_route = route_estimate == "table" || near_tables(route_estimate);
+    table_place = place_estimate == "table" || near_tables(place_estimate);
+    model_route = route_estimate == "model" || near_tables(route_estimate);
+    model_place = place_estimate == "model" || near_tables(place_estimate);
     lut_swap = args.options.count("lut-input-swap") > 0;
     lut_tree_swap = args.options.count("no-lut-tree-swap") == 0;
     lut_bypass = args.options.count("no-lut-bypass") == 0;
@@ -411,9 +423,15 @@ void GateMateImpl::prepare_options()
     }
     if (model_route || model_place || evaluate || !lookahead.built())
         distance.init(ctx, [this](PipId pip) { return pip_allowed_by_options(pip); });
+    if (axis_route || axis_place) {
+        int prune = options.count("axis-prune") ? options["axis-prune"].as<int>() : 600;
+        int keep = options.count("axis-keep") ? options["axis-keep"].as<int>() : 1000;
+        axis_near_radius = options.count("hybrid-radius") ? options["hybrid-radius"].as<int>() : 4;
+        axis.build(ctx, [this](PipId pip) { return pip_allowed_by_options(pip); }, prune, keep);
+    }
     if (!evaluate) {
         auto describe = [&](const std::string &mode) {
-            if (mode == "table" || (mode == "hybrid" && hybrid))
+            if (mode == "table" || ((mode == "hybrid" || mode == "axis") && hybrid))
                 return stringf("%s (radius %d)", mode.c_str(), lookahead.table_radius());
             return mode == "hybrid" ? stringf("hybrid (full tables, radius %d)", lookahead.table_radius()) : mode;
         };
@@ -424,7 +442,8 @@ void GateMateImpl::prepare_options()
         auto avail = [this](PipId pip) { return pip_allowed_by_options(pip); };
         std::string dump = options.count("eval-dump") ? options["eval-dump"].as<std::string>() : "";
         std::string map = options.count("eval-offset-map") ? options["eval-offset-map"].as<std::string>() : "";
-        evaluate_estimates(ctx, lookahead, distance, avail, options["eval-estimate"].as<int>(), dump, map);
+        evaluate_estimates(ctx, lookahead, distance, avail, options["eval-estimate"].as<int>(), dump, map,
+                           axis.built() ? &axis : nullptr);
         exit(0);
     }
     scarce_pip_cost.clear();

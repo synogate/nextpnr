@@ -18,6 +18,7 @@
  */
 
 #include "distance.h"
+#include "axis.h"
 
 #include <algorithm>
 #include <atomic>
@@ -820,7 +821,7 @@ void report(const char *title, const Stats &s)
 
 void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const GateMateDistance &model,
                         std::function<bool(PipId)> avail, int samples, const std::string &dump,
-                        const std::string &offset_map)
+                        const std::string &offset_map, const GateMateAxis *axis)
 {
     auto start_time = std::chrono::steady_clock::now();
     const ChipInfoPOD *chip = ctx->chip_info;
@@ -967,11 +968,13 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
         out.open(dump);
     if (out)
         out << "set\tsrc\tsx\tsy\tdst\tdx\tdy\ttruth\ttable\tlinear\tmodel\tskind\tsstate\tdkind\tdstate\tdplane\tddir"
-               "\tdpx\tdpy\n";
+               "\tdpx\tdpy\taxis\n";
     const char *set_names[] = {"wire to input pin", "output pin to wire", "output pin to input pin"};
-    Stats lin[3], tab[3], mod[3];
+    Stats lin[3], tab[3], mod[3], axi[3], hyb[3];
+    int no_axis[3] = {0, 0, 0};
     int no_table[3] = {0, 0, 0};
     std::vector<Stats> mod_kind(GateMateDistance::KINDS), mod_dst_kind(GateMateDistance::KINDS);
+    std::vector<Stats> axis_kind(GateMateDistance::KINDS), axis_dst_kind(GateMateDistance::KINDS);
     for (auto &s : all) {
         int sx, sy, tx, ty;
         tile_xy(chip, s.src.tile, sx, sy);
@@ -980,6 +983,18 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
         delay_t l = linear(s.src, s.dst), m = model.estimate(s.src, s.dst), t = table.estimate(s.src, s.dst);
         lin[s.set].add(s.truth, l, d);
         mod[s.set].add(s.truth, m, d);
+        if (axis) {
+            // the axis estimate alone (pairs it knows) and as lookahead=axis uses it: the tables within 4 tiles
+            // (here: the exact delay, which they hold there), the axis estimate beyond, the model where it has
+            // none
+            delay_t ax = axis->estimate(s.src, s.dst);
+            if (ax >= 0)
+                axi[s.set].add(s.truth, ax, d);
+            else
+                no_axis[s.set]++;
+            bool near = std::max(std::abs(sx - tx), std::abs(sy - ty)) <= 4;
+            hyb[s.set].add(s.truth, near ? s.truth : (ax >= 0 ? ax : m), d);
+        }
         // (The tables know nothing of some pairs, and give 20000 for those they cannot reach in their radius)
         if (t >= 0 && t < 20000)
             tab[s.set].add(s.truth, t, d);
@@ -989,6 +1004,12 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
             mod_kind[model.info(s.src).kind].add(s.truth, m, d);
         else if (s.set == 1)
             mod_dst_kind[model.info(s.dst).kind].add(s.truth, m, d);
+        if (axis && s.set < 2) {
+            delay_t ax = axis->estimate(s.src, s.dst);
+            if (ax >= 0)
+                (s.set == 0 ? axis_kind[model.info(s.src).kind] : axis_dst_kind[model.info(s.dst).kind])
+                        .add(s.truth, ax, d);
+        }
         if (out) {
             // and the classification: kinds and states, the destination's plane, direction and position
             const auto &a = model.info(s.src), &b = model.info(s.dst);
@@ -996,7 +1017,7 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
                 << "\t" << IdString(chip_wire_info(chip, s.dst).name).str(ctx) << "\t" << tx << "\t" << ty << "\t"
                 << s.truth << "\t" << t << "\t" << l << "\t" << m << "\t" << int(a.kind) << "\t" << int(a.state)
                 << "\t" << int(b.kind) << "\t" << int(b.state) << "\t" << int(b.plane) << "\t" << int(b.dir) << "\t"
-                << tx + b.dx << "\t" << ty + b.dy << "\n";
+                << tx + b.dx << "\t" << ty + b.dy << "\t" << (axis ? axis->estimate(s.src, s.dst) : -1) << "\n";
         }
     }
     static const char *kind_names[] = {"OTHER",  "CPE_OUT",  "CPE_IN", "CPE_INT",  "IM_D",      "IM_DIAG",
@@ -1009,6 +1030,11 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
         report("table", tab[set]);
         log_info("            (table: %d pairs left out, unknown or unreachable in the tables)\n", no_table[set]);
         report("model", mod[set]);
+        if (axis) {
+            report("axis", axi[set]);
+            log_info("            (axis: %d pairs left out, outside the tables)\n", no_axis[set]);
+            report("near+axis", hyb[set]);
+        }
     }
     // The least delay from a CPE output to a CPE input by offset, measured from the CPE at (86, 68)
     if (!offset_map.empty()) {
@@ -1049,6 +1075,14 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
     log_info("output pin to wire by the kind of the wire, model:\n");
     for (int k = 0; k < GateMateDistance::KINDS; k++)
         report(kind_names[k], mod_dst_kind[k]);
+    if (axis) {
+        log_info("wire to input pin by the kind of the wire, axis:\n");
+        for (int k = 0; k < GateMateDistance::KINDS; k++)
+            report(kind_names[k], axis_kind[k]);
+        log_info("output pin to wire by the kind of the wire, axis:\n");
+        for (int k = 0; k < GateMateDistance::KINDS; k++)
+            report(kind_names[k], axis_dst_kind[k]);
+    }
 
     // Time per call, over the wire to input pin pairs
     std::vector<std::pair<WireId, WireId>> pairs;
@@ -1070,6 +1104,8 @@ void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const Gate
         log_info("Time per call:\n");
         time("table", [&](WireId a, WireId b) { return table.estimate(a, b); });
         time("model", [&](WireId a, WireId b) { return model.estimate(a, b); });
+        if (axis)
+            time("axis", [&](WireId a, WireId b) { return axis->estimate(a, b); });
         time("linear", [&](WireId a, WireId b) { return linear(a, b); });
     }
 

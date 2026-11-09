@@ -24,6 +24,7 @@
 #include <atomic>
 #include <mutex>
 
+#include "axis.h"
 #include "distance.h"
 #include "extra_data.h"
 #include "himbaechel_api.h"
@@ -225,7 +226,13 @@ struct GateMateImpl : HimbaechelAPI
     bool model_route = false, model_place = false;
     // lookahead or place-delay=hybrid (the default): tables of radius hybrid-radius near, the model beyond
     bool hybrid = false;
-    // --vopt lookahead and place-delay after the defaults: hybrid, linear, table or model
+    // --vopt lookahead=axis, place-delay=axis: like hybrid, with the factored estimate (axis.h) beyond the
+    // tables and the model only where that has no value
+    GateMateAxis axis;
+    bool axis_route = false, axis_place = false;
+    // With axis, the tables answer only within this many tiles of the pin (--vopt hybrid-radius, default 4)
+    int axis_near_radius = 4;
+    // --vopt lookahead and place-delay after the defaults: hybrid, linear, table, model or axis
     std::string route_estimate, place_estimate;
     // The least routing delay from src to dst on the empty chip, for the post-route repairs, the LUT
     // input swap and report-crit-routing: from the delay tables when they were built (--vopt

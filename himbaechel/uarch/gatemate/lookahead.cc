@@ -498,7 +498,7 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     }
 }
 
-int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
+int GateMateLookahead::lookup(int k, int anchor_tile, WireId w, int radius_limit) const
 {
     const ChipInfoPOD *chip = ctx->chip_info;
     int ax, ay, wx, wy;
@@ -515,6 +515,8 @@ int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
     int ox = wx - ax, oy = wy - ay;
     if (near_only && (std::abs(ox) > radius || std::abs(oy) > radius))
         return -1;
+    if (radius_limit >= 0 && (std::abs(ox) > radius_limit || std::abs(oy) > radius_limit))
+        return -1;
     int ex = clamp(ox), ey = clamp(oy);
     const int offsets = span * span, o = (oy + radius) * span + (ox + radius), p = phase(ax, ay);
     int type = slot_type[p * offsets + o];
@@ -529,18 +531,18 @@ int GateMateLookahead::lookup(int k, int anchor_tile, WireId w) const
     }
     uint16_t value = (*values)[slot_base[(p * int(anchor_names.size()) + k) * offsets + o] + index];
     if (value == MISSING)
-        return near_only && missing_to_model ? -1 : UNREACHABLE;
+        return (near_only && missing_to_model) || radius_limit >= 0 ? -1 : UNREACHABLE;
     return value + int(slope_x * ex + slope_y * ey);
 }
 
-delay_t GateMateLookahead::estimate(WireId src, WireId dst) const
+delay_t GateMateLookahead::estimate(WireId src, WireId dst, int radius_limit) const
 {
     auto best_of = [&](const Hops &hops, WireId pin, WireId other) {
         int best = -1;
         if (hops.start.empty())
             return best;
         for (int i = hops.start[pin.index]; i < hops.start[pin.index + 1]; i++) {
-            int delay = lookup(hops.hops[i].anchor, pin.tile, other);
+            int delay = lookup(hops.hops[i].anchor, pin.tile, other, radius_limit);
             if (delay != -1 && (best == -1 || delay + hops.hops[i].delay < best))
                 best = delay + hops.hops[i].delay;
         }

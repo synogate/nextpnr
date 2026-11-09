@@ -150,9 +150,10 @@ struct GateMateDistance
 // (docs/distance_model.md); `avail` filters out pips that can never be used; `dump`, if not empty,
 // receives the samples as TSV; `offset_map`, if not empty, names docs/experiments/offset_map.tsv to
 // compare with as well
+struct GateMateAxis;
 void evaluate_estimates(Context *ctx, const GateMateLookahead &table, const GateMateDistance &model,
                         std::function<bool(PipId)> avail, int samples, const std::string &dump,
-                        const std::string &offset_map);
+                        const std::string &offset_map, const GateMateAxis *axis = nullptr);
 
 NEXTPNR_NAMESPACE_END
 

@@ -1,4 +1,6 @@
 set(SOURCES
+    axis.cc
+    axis.h
     bitstream.cc
     ccf.cc
     cells.cc

@@ -74,7 +74,13 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
     if (tile_extra_data(src.tile)->die != tile_extra_data(dst.tile)->die)
         d2d += 2000;
     if (table_route) {
-        delay_t delay = lookahead.estimate(src, dst);
+        // (with axis, the tables only near the pins, where they are exact)
+        delay_t delay = lookahead.estimate(src, dst, axis_route ? axis_near_radius : -1);
+        if (delay >= 0)
+            return delay + d2d;
+    }
+    if (axis_route) {
+        delay_t delay = axis.estimate(src, dst);
         if (delay >= 0)
             return delay + d2d;
     }
@@ -277,7 +283,14 @@ delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_be
         d2d += 2000;
     if (table_place) {
         WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
-        delay_t delay = src != WireId() && dst != WireId() ? lookahead.estimate(src, dst) : -1;
+        delay_t delay =
+                src != WireId() && dst != WireId() ? lookahead.estimate(src, dst, axis_place ? axis_near_radius : -1) : -1;
+        if (delay >= 0)
+            return delay + d2d;
+    }
+    if (axis_place) {
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        delay_t delay = src != WireId() && dst != WireId() ? axis.estimate(src, dst) : -1;
         if (delay >= 0)
             return delay + d2d;
     }
