@@ -44,7 +44,10 @@ struct GateMateAxis
 {
     // avail filters out pips that can never be used; prune: keep exits/entries within this many ps of
     // the best; keep: at most this many per wire, after dropping those that another one reaches as fast
-    void build(Context *ctx, std::function<bool(PipId)> avail, int prune = 600, int keep = 1000);
+    // key: the chip and the options the tables depend on; tables built with a key are kept for the rest of
+    // the process and copied instead of built again (the tests and the GUI create many contexts)
+    void build(Context *ctx, std::function<bool(PipId)> avail, int prune = 600, int keep = 1000,
+               const std::string &key = "");
     bool built() const { return ctx != nullptr; }
     // Least delay estimate from src to dst, -1 where neither table knows the wires (outside the core)
     delay_t estimate(WireId src, WireId dst) const;
@@ -118,10 +121,14 @@ struct GateMateAxis
     // The estimate between two anchor wires of the classes cs and cd (no cache)
     // (prune false: without the lower bounds, for checking them)
     delay_t compute(WireId src, int cs, WireId dst, int cd, bool prune = true) const;
+    // compute() through the per-thread cache
+    delay_t cached(WireId src, int cs, WireId dst, int cd) const;
     // Identifies this build for the per-thread caches of estimate()
     uint64_t build_id = 0;
     // GATEMATE_AXIS_CHECK set (diagnosis only): compare each estimate with one without bounds and cache
     bool check_mode = false;
+    // GATEMATE_AXIS_STATS set (diagnosis only): log cache hits and the time per miss now and then
+    bool stats_mode = false;
     void report_mismatch(WireId src, WireId dst, delay_t value, delay_t exact, const char *what) const;
     // Where the root of a node (the wire a WireId names) lies in it is up to the chip database and may
     // differ with the position on the chip. The tables are keyed by a wire that does not: the one with

@@ -42,8 +42,21 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
     // wiring (x mod 2, x + y mod 4), hold such a node at another offset or not at all: up to the 20 ns for
     // unreachable, so that the router took chains of short hops where one long hop is much faster. Such a
     // wire is estimated from the wires it reaches (towards a sink), or from the wire driving it (from a
-    // source).
-    if (is_long_wire(src) && !is_long_wire(dst)) {
+    // source). (lookahead=axis follows long segments to their landings itself.)
+    if (axis_route) {
+        int d2d = tile_extra_data(src.tile)->die != tile_extra_data(dst.tile)->die ? 2000 : 0;
+        // the tables only near the pins, where they are exact, and not for long segments
+        if (table_route && !is_long_wire(src) && !is_long_wire(dst)) {
+            delay_t delay = lookahead.estimate(src, dst, axis_near_radius);
+            if (delay >= 0)
+                return delay + d2d;
+        }
+        delay_t delay = axis.estimate(src, dst);
+        if (delay >= 0)
+            return delay + d2d;
+        if (model_route)
+            return distance.estimate(src, dst) + d2d;
+    } else if (is_long_wire(src) && !is_long_wire(dst)) {
         delay_t best = -1;
         for (PipId pip : ctx->getPipsDownhill(src)) {
             if (!pip_allowed_by_options(pip))
@@ -74,13 +87,7 @@ delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
     if (tile_extra_data(src.tile)->die != tile_extra_data(dst.tile)->die)
         d2d += 2000;
     if (table_route) {
-        // (with axis, the tables only near the pins, where they are exact)
-        delay_t delay = lookahead.estimate(src, dst, axis_route ? axis_near_radius : -1);
-        if (delay >= 0)
-            return delay + d2d;
-    }
-    if (axis_route) {
-        delay_t delay = axis.estimate(src, dst);
+        delay_t delay = lookahead.estimate(src, dst);
         if (delay >= 0)
             return delay + d2d;
     }

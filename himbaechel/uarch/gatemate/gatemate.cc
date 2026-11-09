@@ -18,7 +18,9 @@
  */
 
 #include <algorithm>
+#include <climits>
 #include <fstream>
+#include <queue>
 #include <regex>
 #include <utility>
 
@@ -84,14 +86,13 @@ po::options_description GateMateImpl::getUArchOptions()
     // marked TEMPORARY gave no gain; they and the code behind them are to go once the comparison has
     // been repeated with the timing model fixed.
     specific.add_options()("lookahead", po::value<std::string>(),
-                           "router delay estimate: hybrid (default: the tables within hybrid-radius tiles, the "
-                           "model beyond), linear, table (shortest paths on the empty chip) or model (closed form, "
-                           "see docs/distance_model.md) or axis (as hybrid, with the factored estimate of "
-                           "docs/routing_heuristic_concept.md beyond the tables); the post-route repairs and the LUT "
-                           "input swap use the "
-                           "tables where built, else the model");
+                           "router delay estimate: axis (default: the tables within hybrid-radius tiles, the "
+                           "factored estimate of docs/routing_heuristic_concept.md beyond), hybrid (the tables within "
+                           "hybrid-radius tiles, the model beyond), linear, table (shortest paths on the empty chip) "
+                           "or model (closed form, see docs/distance_model.md); the post-route repairs and the LUT "
+                           "input swap use the tables where built, else the model");
     specific.add_options()("place-delay", po::value<std::string>(),
-                           "placer delay estimate: hybrid (default), linear, table, model or axis");
+                           "placer delay estimate: axis (default), hybrid, linear, table or model");
     specific.add_options()("axis-prune", po::value<int>(),
                            "lookahead/place-delay=axis: keep the exits and entries of a wire within this many ps of "
                            "the best (default 600)");
@@ -296,7 +297,7 @@ void GateMateImpl::read_options(const ArchArgs &args)
     partition_unrouted = args.options.count("partition-unrouted") > 0;
     as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
     partition_open = args.options.count("partition-open") > 0;
-    // The delay estimates of the router and the placer, each hybrid unless given
+    // The delay estimates of the router and the placer, each axis unless given
     auto given = [&](const char *option) -> std::string {
         if (!args.options.count(option))
             return "";
@@ -309,9 +310,9 @@ void GateMateImpl::read_options(const ArchArgs &args)
     route_estimate = given("lookahead");
     place_estimate = given("place-delay");
     if (route_estimate.empty())
-        route_estimate = "hybrid";
+        route_estimate = "axis";
     if (place_estimate.empty())
-        place_estimate = "hybrid";
+        place_estimate = "axis";
     // hybrid: the tables (radius hybrid-radius, no extrapolation), the model where they have no value; if the
     // other estimate is table, the full tables (radius lookahead-radius, extrapolated) and the model only
     // where they have no value
@@ -427,7 +428,78 @@ void GateMateImpl::prepare_options()
         int prune = options.count("axis-prune") ? options["axis-prune"].as<int>() : 600;
         int keep = options.count("axis-keep") ? options["axis-keep"].as<int>() : 1000;
         axis_near_radius = options.count("hybrid-radius") ? options["hybrid-radius"].as<int>() : 4;
-        axis.build(ctx, [this](PipId pip) { return pip_allowed_by_options(pip); }, prune, keep);
+        std::string axis_key = stringf("%s %s %d%d%d%d p%d k%d", ctx->chip_info->name.get(),
+                                       IdString(ctx->speed_grade->name).c_str(ctx), use_cp_for_clk, use_cp_for_cpe,
+                                       use_bridges, use_cpout, prune, keep);
+        if (!axis.built() || axis_key != axis_built_key) {
+            axis.build(ctx, [this](PipId pip) { return pip_allowed_by_options(pip); }, prune, keep, axis_key);
+            axis_built_key = axis_key;
+        }
+    }
+    // GATEMATE_AXIS_PROBE=SRC,DST (diagnosis only): along the least-delay path from wire SRC to wire DST on
+    // the empty chip, the exact delay still to go against the router's estimate, and at each step the
+    // alternatives the estimate ranks best
+    if (const char *probe = getenv("GATEMATE_AXIS_PROBE")) {
+        std::string spec(probe);
+        size_t comma = spec.find(',');
+        WireId src = ctx->getWireByName(IdStringList::parse(ctx, spec.substr(0, comma)));
+        WireId dst = ctx->getWireByName(IdStringList::parse(ctx, spec.substr(comma + 1)));
+        dict<WireId, int> dist;
+        using Item = std::pair<int, WireId>;
+        std::priority_queue<Item, std::vector<Item>, std::greater<Item>> queue;
+        dist[dst] = 0;
+        queue.push({0, dst});
+        while (!queue.empty()) {
+            auto [cost, wire] = queue.top();
+            queue.pop();
+            if (cost > dist.at(wire) || cost > 8000)
+                continue;
+            int delay = ctx->getWireDelay(wire).maxDelay();
+            for (PipId pip : ctx->getPipsUphill(wire)) {
+                if (!pip_allowed_by_options(pip))
+                    continue;
+                WireId prev = ctx->getPipSrcWire(pip);
+                int next = cost + ctx->getPipDelay(pip).maxDelay() + delay;
+                auto found = dist.find(prev);
+                if (found == dist.end() || next < found->second) {
+                    dist[prev] = next;
+                    queue.push({next, prev});
+                }
+            }
+        }
+        auto exact = [&](WireId w) {
+            auto found = dist.find(w);
+            return found == dist.end() ? -1 : found->second;
+        };
+        WireId w = src;
+        for (int step = 0; step < 60 && w != WireId(); step++) {
+            log_info("probe %-40s exact %5d estimate %5d (axis %5d)\n", ctx->nameOfWire(w), exact(w),
+                     int(estimateDelay(w, dst)), int(axis.estimate(w, dst)));
+            if (w == dst)
+                break;
+            std::vector<std::tuple<int, int, WireId>> next; // (pip + estimate, pip + exact, wire)
+            for (PipId pip : ctx->getPipsDownhill(w)) {
+                if (!pip_allowed_by_options(pip))
+                    continue;
+                WireId n = ctx->getPipDstWire(pip);
+                int p = ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(n).maxDelay();
+                int e = exact(n);
+                next.emplace_back(p + int(estimateDelay(n, dst)), e < 0 ? 99999 : p + e, n);
+            }
+            std::sort(next.begin(), next.end(), [](auto &a, auto &b) { return std::get<0>(a) < std::get<0>(b); });
+            for (int i = 0; i < std::min<int>(3, next.size()); i++)
+                log_info("        next by estimate: %-40s pip+estimate %5d pip+exact %5d\n",
+                         ctx->nameOfWire(std::get<2>(next[i])), std::get<0>(next[i]), std::get<1>(next[i]));
+            WireId best;
+            int best_cost = INT_MAX;
+            for (auto &n : next)
+                if (std::get<1>(n) < best_cost) {
+                    best_cost = std::get<1>(n);
+                    best = std::get<2>(n);
+                }
+            w = best;
+        }
+        exit(0);
     }
     if (!evaluate) {
         auto describe = [&](const std::string &mode) {

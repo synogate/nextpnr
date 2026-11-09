@@ -23,6 +23,7 @@
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <map>
 #include <queue>
 #include <regex>
 #if !defined(NPNR_DISABLE_THREADS)
@@ -77,20 +78,40 @@ std::atomic<uint64_t> next_build_id{1};
 // tiles and their offset, so it is cached per thread by (class, wire, class, wire, dx, dy)
 struct EstimateCache
 {
-    static constexpr int BITS = 17;
+    static constexpr int BITS = 20;
     uint64_t build_id = 0;
     std::vector<uint64_t> keys;
     std::vector<int32_t> values;
+    // GATEMATE_AXIS_STATS: calls, cache hits, calls outside the tables, time in misses (ns)
+    int64_t calls = 0, hits = 0, outside = 0, miss_ns = 0;
+    // by (source wire name, destination wire name): misses and their time
+    std::map<std::pair<int, int>, std::pair<int64_t, int64_t>> miss_by_name;
 };
 thread_local EstimateCache estimate_cache;
 } // namespace
 
-void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int prune, int keep)
+namespace {
+std::mutex kept_mutex;
+std::map<std::string, GateMateAxis> kept;
+} // namespace
+
+void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int prune, int keep,
+                         const std::string &key)
 {
+    if (!key.empty()) {
+        std::lock_guard<std::mutex> lock(kept_mutex);
+        auto found = kept.find(key);
+        if (found != kept.end()) {
+            *this = found->second;
+            this->ctx = ctx;
+            return;
+        }
+    }
     auto start_time = std::chrono::steady_clock::now();
     this->ctx = ctx;
     build_id = next_build_id++;
     check_mode = getenv("GATEMATE_AXIS_CHECK") != nullptr;
+    stats_mode = getenv("GATEMATE_AXIS_STATS") != nullptr;
     const ChipInfoPOD *chip = ctx->chip_info;
     shape_anchor.assign(chip->node_shapes.ssize(), Anchor());
     for (int n = 0; n < chip->node_shapes.ssize(); n++) {
@@ -584,6 +605,10 @@ void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int pru
              total, wire_jobs.empty() ? 0.0 : double(total) / (2 * wire_jobs.size()),
              wire_jobs.empty() ? 0.0 : double(groups) / wire_jobs.size(),
              turn[sb_class(cx, cy)][1][2][0], turn[sb_class(cx + 2, cy)][1][2][0], min_turn, ring_turn[1], seconds);
+    if (!key.empty()) {
+        std::lock_guard<std::mutex> lock(kept_mutex);
+        kept.emplace(key, *this);
+    }
 }
 
 WireId GateMateAxis::anchor(WireId wire) const
@@ -680,8 +705,31 @@ delay_t GateMateAxis::estimate(WireId src, WireId dst) const
     src = anchor(src);
     dst = anchor(dst);
     int cs = tile_class[src.tile], cd = tile_class[dst.tile];
-    if (cs < 0 || cd < 0)
+    EstimateCache &cache = estimate_cache;
+    if (stats_mode && ++cache.calls % 5000000 == 0) {
+        log_info("axis stats (one thread): %lld calls, %.1f%% cache hits, %.1f%% outside, %.2f us per miss\n",
+                 (long long)cache.calls, 100.0 * cache.hits / cache.calls, 100.0 * cache.outside / cache.calls,
+                 cache.miss_ns / 1000.0 / std::max<int64_t>(1, cache.calls - cache.hits - cache.outside));
+        std::vector<std::pair<int64_t, std::pair<int, int>>> top;
+        for (auto &entry : cache.miss_by_name)
+            top.push_back({entry.second.second, entry.first});
+        std::sort(top.rbegin(), top.rend());
+        for (int i = 0; i < std::min<int>(12, top.size()); i++) {
+            auto &m = cache.miss_by_name[top[i].second];
+            log_info("  %-24s -> %-24s %9lld misses, %.2f us each\n", IdString(top[i].second.first).c_str(ctx),
+                     IdString(top[i].second.second).c_str(ctx), (long long)m.first, m.second / 1000.0 / m.first);
+        }
+    }
+    if (cs < 0 || cd < 0) {
+        cache.outside++;
         return -1;
+    }
+    return cached(src, cs, dst, cd);
+}
+
+delay_t GateMateAxis::cached(WireId src, int cs, WireId dst, int cd) const
+{
+    EstimateCache &cache = estimate_cache;
     const ChipInfoPOD *chip = ctx->chip_info;
     int sx, sy, tx, ty;
     tile_xy(chip, src.tile, sx, sy);
@@ -691,7 +739,6 @@ delay_t GateMateAxis::estimate(WireId src, WireId dst) const
         return compute(src, cs, dst, cd);
     uint64_t key = (uint64_t(cs) << 59) | (uint64_t(src.index) << 47) | (uint64_t(cd) << 43) |
                    (uint64_t(dst.index) << 31) | (uint64_t(dx) << 20) | (uint64_t(dy) << 9) | 1;
-    EstimateCache &cache = estimate_cache;
     if (cache.build_id != build_id) {
         cache.build_id = build_id;
         cache.keys.assign(size_t(1) << EstimateCache::BITS, 0);
@@ -705,9 +752,20 @@ delay_t GateMateAxis::estimate(WireId src, WireId dst) const
             if (exact != cache.values[slot])
                 report_mismatch(src, dst, cache.values[slot], exact, "cache");
         }
+        cache.hits++;
         return cache.values[slot];
     }
+    auto miss_start = stats_mode ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     delay_t value = compute(src, cs, dst, cd);
+    if (stats_mode) {
+        int64_t ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - miss_start)
+                        .count();
+        cache.miss_ns += ns;
+        auto &m = cache.miss_by_name[{chip_wire_info(chip, src).name, chip_wire_info(chip, dst).name}];
+        m.first++;
+        m.second += ns;
+    }
     if (check_mode) {
         delay_t exact = compute(src, cs, dst, cd, false);
         if (exact != value)
@@ -785,10 +843,11 @@ delay_t GateMateAxis::compute(WireId src, int cs, WireId dst, int cd, bool prune
         const ExitGroup &g = a.exits[e];
         int least = g.cp ? g.cost[0] + least_entry[0] : through(g, least_entry);
         int dx = tx - sx - g.dx, dy = ty - sy - g.dy;
-        // (a turn unless an entry may lie straight ahead on the lane)
+        // (a turn unless an entry may lie straight ahead on the lane; no bound from the switch boxes for a
+        // CP line, which is cheaper per tile)
         bool turn = !g.cp && (dx * UX[g.dir] + dy * UY[g.dir] + reach < 0 ||
                               std::abs(dx * UY[g.dir] - dy * UX[g.dir]) > reach);
-        int bound = lower_bound(dx, dy, reach + 1, turn);
+        int bound = g.cp ? 0 : lower_bound(dx, dy, reach + 1, turn);
         order[e - e0] = {least + bound, e};
     }
     std::sort(order, order + count);

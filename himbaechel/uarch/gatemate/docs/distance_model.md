@@ -2,10 +2,12 @@
 
 ## Results
 
-Default since 2026-10-30: `hybrid` with radius 4 for both the router (`lookahead`) and the placer
-(`place-delay`): the delay tables within 4 tiles, the closed-form model beyond (see Hybrid below).
-`linear`, `table`, `model` and `hybrid` stay selectable, each option on its own (a lone
-`--vopt lookahead=table` leaves the placer at hybrid).
+Default since 2026-11-09: `axis` for both the router and the placer, the delay tables within 4 tiles
+and the factored estimate of `routing_heuristic_concept.md` beyond (dmg_soc median TNS -664 -> -118 ns
+against `table`). From 2026-10-30 to then: `hybrid` with radius 4 for both the router (`lookahead`) and the
+placer (`place-delay`): the delay tables within 4 tiles, the closed-form model beyond (see Hybrid below).
+`linear`, `table`, `model`, `hybrid` and `axis` stay selectable, each option on its own (a lone
+`--vopt lookahead=table` leaves the placer at axis).
 
 dmg_soc, primary clock `cc_bufg_inst_O`, seeds 1-8 (`experiments/distance/runs_hybrid2/summary.md`,
 `runs_base3/summary.md`; hyb6 from `runs_hybrid`, model4 from `runs_model4`). Ratio = per-seed Fmax over

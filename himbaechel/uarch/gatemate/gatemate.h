@@ -229,6 +229,7 @@ struct GateMateImpl : HimbaechelAPI
     // --vopt lookahead=axis, place-delay=axis: like hybrid, with the factored estimate (axis.h) beyond the
     // tables and the model only where that has no value
     GateMateAxis axis;
+    std::string axis_built_key;
     bool axis_route = false, axis_place = false;
     // With axis, the tables answer only within this many tiles of the pin (--vopt hybrid-radius, default 4)
     int axis_near_radius = 4;

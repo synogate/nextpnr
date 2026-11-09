@@ -619,8 +619,9 @@ bool GateMateImpl::routed_inverted(const NetInfo *net, WireId wire) const
 // wires the net reaches, each with the delay it takes to reach it
 std::vector<PipId> GateMateImpl::parity_path(NetInfo *net, WireId sink, bool inverted, bool displace) const
 {
-    // Near the connection, as route_ripped() starts (a little wider to make room)
-    const int margin = displace ? 8 : 4;
+    // Near the connection, as route_ripped() starts (a little wider to make room; displacing, wider still:
+    // at the edge of the chip the few ways of the right polarity can lie further out)
+    const int margin = displace ? 16 : 4;
     BoundingBox box = ctx->getRouteBoundingBox(ctx->getNetinfoSourceWire(net), sink);
     box.x0 = std::max(box.x0 - margin, 0);
     box.y0 = std::max(box.y0 - margin, 0);

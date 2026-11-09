@@ -1,8 +1,8 @@
 # GateMate routing heuristic: a factored concept
 
 Status (2026-11-09): implemented as `--vopt lookahead=axis` (`axis.h/.cc`), see "C++ implementation"
-at the end: on dmg_soc with router and placer, TNS better on 7 of 8 placements (median -918 -> -126 ns),
-Fmax +3.6%, placer 1.9x and router 2.7x slower. Measurements on the pip
+at the end: on dmg_soc with router and placer, TNS better on 7 of 8 placements (median -664 -> -118 ns),
+Fmax +3.6%, the default since 2026-11-09; SA 1.4x and router2 2.5x slower. Measurements on the pip
 graph of the empty CCGM1A1, WORST / SPEED, scripts in `docs/experiments/factored/`. All delays are pip
 delays in ps (wires are 0 ps; logic arcs of the cells are not part of routing).
 
@@ -311,16 +311,40 @@ direction, with the plane change folded in) and ordering the exits by an admissi
 envelope of RUN per direction, at most one turn counted, the entries' real reach plus one tile for a
 diagonal step, the least entry delay per plane precomputed). On top, a per-thread direct-mapped cache
 (2^17 entries): the estimate depends on the positions only through the classes of the two tiles and their
-offset, so (class, wire, class, wire, dx, dy) is an exact key; router (the same arcs every iteration) and
-placer (the same pin pairs at the same offsets) hit it most of the time. With repeats as in eval-estimate
-0.37 us per call. `GATEMATE_AXIS_CHECK=1` recomputes every estimate without bounds and cache and logs any
-difference (dmg_soc placement, seed 1: none).
+offset, so (class, wire, class, wire, dx, dy) is an exact key; now 2^20 entries (12 MB per thread). With
+repeats as in eval-estimate 0.37 us per call. The tables are kept per process by chip and options and
+copied for the next context (the tests and the GUI create many).
+
+The placer asks for pins inside a CPE (`COMBOUT1_int -> D0_02_int` and the like), whose exit and entry
+lists are long: in SA 35-58% cache hits and 8-18 us per miss (`GATEMATE_AXIS_STATS=1` logs hits, time per
+miss and the costliest wire pairs). Tried and dropped: estimating such pins through the CPE's boundary
+(the first nodes outside the CPE, with the delay inside, as the delay tables do): more cache hits, but on
+dmg_soc worse (median TNS -347 instead of -118 ns over 8 placements) and not faster, because the boundary
+nodes' lists are pruned differently from the pins' own. A lower bound that took the entries within 4 tiles
+(and one that took CP lines to cost as much per tile as the switch boxes) was not admissible; the checks
+(`GATEMATE_AXIS_CHECK=1`: every estimate against one without bounds and cache) now find no difference over
+a whole dmg_soc placement. `GATEMATE_AXIS_PROBE=SRC,DST` prints, along the least-delay path between two
+wires, the exact delay to go against the estimate and the alternatives the estimate ranks first.
+
+### On main with the router2 cost change (2026-11-09)
+
+After rebasing onto main (ebb730ac: router2 `newWireCost`, and the long-segment estimate of the tables,
+which with `axis` is left to the axis estimate), 8 placements, 16 runs in parallel, lookahead and
+place-delay table against axis:
+
+| | table | axis |
+|---|---|---|
+| TNS median / mean | -664 / -1037 ns | **-118 / -155 ns** |
+| failing endpoints (median) | 797 | **78** |
+| Fmax geomean | 27.60 MHz | **28.58 MHz** (+3.6%) |
+| HeAP / SA / router2 (median) | 38 / 84 / 50 s | 38 / 120 / 123 s |
+
+TNS better on 7 of 8 placements (seed 7: -108 vs -87 ns).
 
 ## Open points
 
-- Speed: still router2 2.7x and SA 1.9x slower than with the tables (a miss costs ~2 us). Candidates:
-  fewer exits per wire (most come from IM/CPE wires through a CPE), a larger cache, a per-sink table of
-  the lattice part near the sink.
+- Speed: router2 2.5x and SA 1.4x slower than with the tables. The misses on pins inside a CPE dominate
+  the placer; their long lists are the place to start (without changing the estimate, see Speed).
 - Repeat the router-only comparison and other designs with the fixed build.
 - SB wires are estimated 80-100 ps too pessimistic (bridges in the middle of a path, three or more turns).
 - More designs (multi1, corescore25, vexii), the placer (`place-delay=axis`), and the default flow
