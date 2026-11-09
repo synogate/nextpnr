@@ -483,10 +483,17 @@ void GateMateImpl::init(Context *ctx)
     // to the other input of the LUT2 through an input mux another net uses
     if (!ctx->settings.count(ctx->id("router2/wireConflictBaseCost")))
         ctx->settings[ctx->id("router2/wireConflictBaseCost")] = std::to_string(0.2f);
-    // A critical arc branching off its net's existing routing pays for the tree's delay up to the branch point,
-    // rather than hanging off a slow tree of a high-fanout net at no cost
+    // An arc branching off its net's existing routing pays for the tree's delay up to the branch point, rather than
+    // hanging off a slow tree of a high-fanout net at no cost
     if (!ctx->settings.count(ctx->id("router2/treeSeedCost")))
         ctx->settings[ctx->id("router2/treeSeedCost")] = std::to_string(1.0f);
+    // Uncritical arcs pay for the wires their net does not use yet with their delay once more (times the crit
+    // weight), rather than getting the net's wires below their delay. On dmg_soc, together with the tree delay in
+    // full and the estimate of the long segments (estimateDelay), 20 seed pairs over four placements without the
+    // repairs: Fmax +0.6% (12 better), 1.3% fewer wires, router time about the same; TNS mixed (11 better, median
+    // ratio 0.98, but two seeds on one placement with twice as many endpoints failing by a little)
+    if (!ctx->settings.count(ctx->id("router2/newWireCost")))
+        ctx->settings[ctx->id("router2/newWireCost")] = std::to_string(1.0f);
     for (const auto &pad : ctx->package_info->pads) {
         available_pads.emplace(IdString(pad.package_pin));
         BelId bel = ctx->getBelByName(IdStringList::concat(IdString(pad.tile), IdString(pad.bel)));

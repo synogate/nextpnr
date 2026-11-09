@@ -547,6 +547,16 @@ struct Router2
             overuse -= 1;
             source_uses = nd.wires.at(wire).second;
         }
+        // With a cost for new wires (router2/newWireCost), a wire the net's other arcs use already costs its delay
+        // and nothing more: the signal still passes it, but the arc adds no use of it (nor of the resource its pip
+        // sets, which the net holds with this value). Without, it costs uncritical arcs less than its delay
+        if (source_uses > 0 && cfg.new_wire_cost > 0)
+            return base_cost + arb_cost;
+        // A new wire costs uncritical arcs a share of its delay on top, for the routing resources the net takes:
+        // they keep to the net's existing routing where it costs them little delay, critical arcs take the fastest
+        // way. (A discount on the shared wires instead makes them cheaper than their delay, and the delay estimate
+        // of the A* search no longer a lower bound, unless it is discounted too wherever the net already is)
+        float new_wire_cost = source_uses == 0 ? cfg.new_wire_cost * crit_weight * base_cost : 0.0f;
         float present_cost = 1.0f + overuse * curr_cong_weight * crit_weight;
         if (pip != PipId()) {
             Loc pl = ctx->getPipLocation(pip);
@@ -601,19 +611,24 @@ struct Router2
         if (base_cost < cfg.wire_conflict_base_cost)
             wire_cost += (cfg.wire_conflict_base_cost - base_cost) * (wire_factor - 1.0f);
         return wire_cost / (1 + (source_uses * crit_weight)) + bias_cost + resource_cost / (1 + crit_weight) +
-               arb_cost;
+               arb_cost + new_wire_cost;
     }
 
     float get_togo_cost(NetInfo *net, store_index<PortRef> user, int wire, WireId src_sink, bool bwd, float crit_weight)
     {
-        auto &nd = nets.at(net->udata);
         auto &wd = flat_wires[wire];
+        delay_t est_delay = ctx->estimateDelay(bwd ? src_sink : wd.w, bwd ? wd.w : src_sink);
+        // The wires still to come are new ones, which cost the share of their delay for new wires on top (see
+        // score_wire_for_arc). Without that share in the estimate, it is far below the cost of the way to the sink,
+        // and the search spreads out (several times as slow)
+        if (cfg.new_wire_cost > 0)
+            return ctx->getDelayNS(est_delay) * (1.0f + cfg.new_wire_cost * crit_weight) + cfg.ipin_cost_adder;
+        auto &nd = nets.at(net->udata);
         int source_uses = 0;
         if (nd.wires.count(wd.w)) {
             source_uses = nd.wires.at(wd.w).second;
         }
         // FIXME: timing/wirelength balance?
-        delay_t est_delay = ctx->estimateDelay(bwd ? src_sink : wd.w, bwd ? wd.w : src_sink);
         return (ctx->getDelayNS(est_delay) / (1 + source_uses * crit_weight)) + cfg.ipin_cost_adder;
     }
 
@@ -1026,12 +1041,13 @@ struct Router2
                 WireScore base_score;
                 base_score.delay = 0;
                 base_score.cost = 0;
-                // Branching off the net's existing routing is not free for a critical arc: the signal has
-                // already spent the tree's delay to get there
-                if (tree_seed_cost > 0 && wire != src_wire && crit > 0) {
+                // Branching off the net's existing routing is not free: the signal has already spent the tree's
+                // delay to get there. The delay counts in full whatever the arc's criticality (which scales the
+                // congestion costs and the cost of new wires, not the delay)
+                if (tree_seed_cost > 0 && wire != src_wire) {
                     float d = ctx->getDelayNS(tree_delay(nd, wire));
                     base_score.delay = d;
-                    base_score.cost = tree_seed_cost * crit * d;
+                    base_score.cost = tree_seed_cost * d;
                 }
                 int wire_idx = wire_to_idx.at(wire);
                 base_score.togo_cost = get_togo_cost(net, i, wire_idx, dst_wire, false, crit_weight);
@@ -2069,8 +2085,11 @@ struct Router2
         arb_after = ctx->setting<int>("router2/arbitrateAfter", 0);
         arb_penalty = ctx->setting<float>("router2/arbitratePenalty", arb_penalty);
         arb_min_crit = ctx->setting<float>("router2/arbitrateMinCrit", arb_min_crit);
+        if (cfg.new_wire_cost > 0)
+            log_info("router2: a new wire costs uncritical arcs %.2f x crit weight x its delay on top\n",
+                     cfg.new_wire_cost);
         if (tree_seed_cost > 0)
-            log_info("router2: branching off existing routing costs %.2f x crit x tree delay\n", tree_seed_cost);
+            log_info("router2: branching off existing routing costs %.2f x tree delay\n", tree_seed_cost);
         log_info("Running main router loop...\n");
         if (timing_driven)
             tmg.run(true);
@@ -2218,6 +2237,7 @@ Router2Cfg::Router2Cfg(Context *ctx)
     bias_cost_factor = ctx->setting<float>("router2/biasCostFactor", 0.25f);
     resource_conflict_base_cost = ctx->setting<float>("router2/resourceConflictBaseCost", 0.0f);
     wire_conflict_base_cost = ctx->setting<float>("router2/wireConflictBaseCost", 0.0f);
+    new_wire_cost = ctx->setting<float>("router2/newWireCost", 0.0f);
     if (ctx->settings.count(ctx->id("router2/alt-weights"))) {
         init_curr_cong_weight = ctx->setting<float>("router2/initCurrCongWeight", 5.0f);
         hist_cong_weight = ctx->setting<float>("router2/histCongWeight", 0.5f);

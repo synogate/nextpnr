@@ -57,6 +57,11 @@ struct Router2Cfg
     // delay epsilon (GateMate: the CPE's internal muxes, against a routing hop that costs ten times that), an
     // overuse there is all but free, and the router parks the overuse it cannot resolve on such wires for good.
     float wire_conflict_base_cost;
+    // The share of its delay a new wire (one the net does not use yet) costs on top, times the arc's crit weight:
+    // uncritical arcs pay for the routing resources their net takes, critical ones take the fastest way. With it,
+    // a wire the net uses already costs its delay; without it (0), a shared wire costs uncritical arcs less than its
+    // delay instead (divided by 1 + its uses by the net's other arcs times the crit weight)
+    float new_wire_cost;
 
     // Weight given to delay estimate in A*. Higher values
     // mean faster and more directed routing, at the risk
