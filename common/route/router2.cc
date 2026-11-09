@@ -621,9 +621,15 @@ struct Router2
         // The wires still to come are new ones, which cost the share of their delay for new wires on top (see
         // score_wire_for_arc). Without that share in the estimate, it is far below the cost of the way to the sink,
         // and the search spreads out (several times as slow)
-        if (cfg.new_wire_cost > 0)
-            return ctx->getDelayNS(est_delay) * (1.0f + cfg.new_wire_cost * crit_weight) + cfg.ipin_cost_adder;
+        // Backwards, the estimate is of the way from the source to the wire, which may run over the net's routing: that
+        // costs its delay and no more (so does the routing a forward search starts from). With the share for new
+        // wires, the estimate is above the cost of such a way (on two in five arcs on dmg_soc), and the backward
+        // search stops on a meeting point before it finds the cheaper path
         auto &nd = nets.at(net->udata);
+        if (cfg.new_wire_cost > 0) {
+            float new_wires = (bwd && !nd.wires.empty()) ? 0.0f : cfg.new_wire_cost * crit_weight;
+            return ctx->getDelayNS(est_delay) * (1.0f + new_wires) + cfg.ipin_cost_adder;
+        }
         int source_uses = 0;
         if (nd.wires.count(wd.w)) {
             source_uses = nd.wires.at(wd.w).second;
@@ -1070,7 +1076,7 @@ struct Router2
             if (mode == 0 && t.fwd_queue.size() < 4)
                 continue;
             if (!const_mode) {
-                if (mode == 1) {
+                if (mode == 1 || cfg.seed_source) {
                     // Seed forwards with the source wire, if less than 8 existing wires added
                     seed_queue_fwd(src_wire);
                 } else {
@@ -2090,6 +2096,8 @@ struct Router2
                      cfg.new_wire_cost);
         if (tree_seed_cost > 0)
             log_info("router2: branching off existing routing costs %.2f x tree delay\n", tree_seed_cost);
+        if (cfg.seed_source)
+            log_info("router2: the forward search always starts from the source too\n");
         log_info("Running main router loop...\n");
         if (timing_driven)
             tmg.run(true);
@@ -2238,6 +2246,7 @@ Router2Cfg::Router2Cfg(Context *ctx)
     resource_conflict_base_cost = ctx->setting<float>("router2/resourceConflictBaseCost", 0.0f);
     wire_conflict_base_cost = ctx->setting<float>("router2/wireConflictBaseCost", 0.0f);
     new_wire_cost = ctx->setting<float>("router2/newWireCost", 0.0f);
+    seed_source = ctx->setting<bool>("router2/seedSource", false);
     if (ctx->settings.count(ctx->id("router2/alt-weights"))) {
         init_curr_cong_weight = ctx->setting<float>("router2/initCurrCongWeight", 5.0f);
         hist_cong_weight = ctx->setting<float>("router2/histCongWeight", 0.5f);

@@ -62,6 +62,11 @@ struct Router2Cfg
     // a wire the net uses already costs its delay; without it (0), a shared wire costs uncritical arcs less than its
     // delay instead (divided by 1 + its uses by the net's other arcs times the crit weight)
     float new_wire_cost;
+    // Seed the forward search with the source wire also where it starts from the net's routing near the sink
+    // (mode 0). Without, the source and the routing further away are reached only by the backward search, and the
+    // forward search stops on its meeting point before a cheaper path branching off the routing there is found:
+    // the search is no shortest path search, not even without the estimate
+    bool seed_source;
 
     // Weight given to delay estimate in A*. Higher values
     // mean faster and more directed routing, at the risk
