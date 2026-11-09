@@ -878,9 +878,10 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
     // A second-level LUT2 input from a first-level one: the signal passes through that LUT2 (a
     // LUT2 may take either input; postRoute permutes its function to match), so from its output, the
     // way the LUT2 trees draw it. Unused ones as well (in the schematic, and in route mode, where they
-    // are the way on through the LUT2).
+    // are the way on through the LUT2). The virtual bypass (from B, D1_0k_int: both inputs of L10 / L11 through that
+    // LUT2, which then computes) in a lane of its own just below, apart from the signal through A.
     if (lut_input(dn) && dn[3] == '1' && lut_input(sn) && sn[3] == '0') {
-        float m = lut_output_y(sn[4] - '0');
+        float m = lut_output_y(sn[4] - '0') + (sn[1] == '1' ? 0.004f : 0.0f);
         path({Pt{L1_X1, m}, Pt{L2_X0, m}});
         return;
     }

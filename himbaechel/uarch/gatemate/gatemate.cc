@@ -176,6 +176,8 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("lut-input-swap", "before routing, swap the input pairs of LUT trees to save plane changes");
     specific.add_options()("no-lut-tree-swap", "the router keeps the subtrees of the LUT trees in place "
                                                "(the virtual LUT2_10X/LUT2_11X selects)");
+    specific.add_options()("no-lut-bypass", "the router takes the two inputs of L10/L11 through different "
+                                            "first-level LUT2s (no virtual bypass through one)");
     specific.add_options()(
             "lut-swap-rounds", po::value<int>(),
             "after routing, rounds of swapping LUT input pairs or CPE halves on critical paths (default 0)");
@@ -313,6 +315,7 @@ void GateMateImpl::read_options(const ArchArgs &args)
     model_place = place_estimate == "model" || place_estimate == "hybrid";
     lut_swap = args.options.count("lut-input-swap") > 0;
     lut_tree_swap = args.options.count("no-lut-tree-swap") == 0;
+    lut_bypass = args.options.count("no-lut-bypass") == 0;
     timing_opt_after_place = args.options.count("timing-opt") > 0;
     report_crit_routing = args.options.count("report-crit-routing") > 0;
     if (args.options.count("route-repair"))
@@ -942,6 +945,9 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
     if (extra_data.type == PipExtra::PIP_EXTRA_MUX && extra_data.value == 1 && extra_data.group_index != 0 &&
         IdString(extra_data.name).in(id_LUT2_10X, id_LUT2_11X) && !tree_swap_allowed(pip))
         return false;
+    if (extra_data.type == PipExtra::PIP_EXTRA_MUX && IdString(extra_data.name).in(id_LUT2_10, id_LUT2_11) &&
+        !lut_bypass_allowed(pip))
+        return false;
     if (extra_data.type != PipExtra::PIP_EXTRA_MUX || (extra_data.flags & MUX_ROUTING) == 0)
         return true;
     if (used_cpes[pip.tile])
@@ -958,32 +964,52 @@ bool GateMateImpl::design_routed_before() const
 }
 
 // A half's two subtrees can trade places (the virtual LUT2_10X/LUT2_11X select at 1, postRoute moves the
-// tables) only under a LUT tree that L10 alone combines: CPE_L2T4 with no input but the LUT2s' and COMBIN,
-// and nothing out but OUT. The other cells in a CPE give the first-level LUTs roles of their own (MX4,
-// adders, multipliers, carries).
+// tables) only under a LUT tree that L10 alone combines (lut_tree_alone). The other cells in a CPE give the
+// first-level LUTs roles of their own (MX4, adders, multipliers, carries).
 bool GateMateImpl::tree_swap_allowed(PipId pip) const
 {
     if (!lut_tree_swap)
         return false;
     int z = IdString(pip_extra_data(pip)->name) == id_LUT2_10X ? CPE_LT_U_Z : CPE_LT_L_Z;
-    const auto &bels = chip_tile_info(ctx->chip_info, pip.tile).bels;
+    return lut_tree_alone(pip.tile, z) != nullptr;
+}
+
+const CellInfo *GateMateImpl::lut_tree_alone(int tile, int z) const
+{
+    const auto &bels = chip_tile_info(ctx->chip_info, tile).bels;
     for (size_t i = 0; i < bels.size(); i++) {
         if (bels[i].z != z)
             continue;
-        const CellInfo *ci = ctx->getBoundBelCell(BelId(pip.tile, i));
+        const CellInfo *ci = ctx->getBoundBelCell(BelId(tile, i));
         if (!ci || ci->type != id_CPE_L2T4)
-            return false;
+            return nullptr;
         for (auto &port : ci->ports) {
             if (!port.second.net)
                 continue;
-            if (port.second.type == PORT_IN ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10,
-                                                             id_D1_10, id_COMBIN)
-                                            : port.first != id_OUT)
-                return false;
+            if (port.second.type == PORT_IN
+                        ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10, id_COMBIN)
+                        : port.first != id_OUT)
+                return nullptr;
         }
-        return true;
+        return ci;
     }
-    return false;
+    return nullptr;
+}
+
+// The bypass pips (D1_00_int / D1_02_int to an input of L10 / L11) take both inputs of L10 through one first-level
+// LUT2, which then computes L10's function (routed_luts). Only for a plain LUT2 alone in the half: a subtree
+// computing in the first level needs that LUT2 (and its input wire, which the same net could share) and L10's other
+// input for its output.
+bool GateMateImpl::lut_bypass_allowed(PipId pip) const
+{
+    IdString src = ctx->getWireName(ctx->getPipSrcWire(pip))[1];
+    bool upper = src == ctx->id("CPE.D1_00_int");
+    if (!upper && src != ctx->id("CPE.D1_02_int"))
+        return true;
+    if (!lut_bypass)
+        return false;
+    const CellInfo *ci = lut_tree_alone(pip.tile, upper ? CPE_LT_U_Z : CPE_LT_L_Z);
+    return ci && !ci->getPort(id_D0_00) && !ci->getPort(id_D1_00) && !ci->getPort(id_D0_01) && !ci->getPort(id_D1_01);
 }
 
 void GateMateImpl::preRoute()

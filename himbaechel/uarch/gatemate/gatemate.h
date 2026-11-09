@@ -110,6 +110,13 @@ struct GateMateImpl : HimbaechelAPI
     // The router may swap the subtrees of LUT trees (virtual LUT2_10X/LUT2_11X), where tree_swap_allowed
     bool lut_tree_swap = true;
     bool tree_swap_allowed(PipId pip) const;
+    // The router may take both inputs of L10/L11 through one first-level LUT2 (the virtual bypass pips from D1_00_int /
+    // D1_02_int, see die.py): that LUT2 computes L10's function and L10 passes it on, where lut_bypass_allowed
+    bool lut_bypass = true;
+    bool lut_bypass_allowed(PipId pip) const;
+    // The LUT tree in the half `z` (CPE_LT_U_Z / CPE_LT_L_Z) of `tile` if L10 alone combines it: CPE_L2T4 with no input
+    // but the LUT2s' and COMBIN, and nothing out but OUT (else nullptr)
+    const CellInfo *lut_tree_alone(int tile, int z) const;
     bool timing_opt_after_place = false;
     // After routing, up to `rounds` rounds of swapping the input pairs of LUT trees on critical paths,
     // each kept only if it improves Fmax (`test_undo`: try any trees, and undo every round); returns

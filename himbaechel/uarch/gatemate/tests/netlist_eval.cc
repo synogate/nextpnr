@@ -734,14 +734,39 @@ Tri NetlistEvaluator::eval_cpe(const CellInfo *cell, IdString port)
 
 Tri NetlistEvaluator::eval_cplines(const CellInfo *cell, IdString port)
 {
+    // The CP outputs as the chip database's muxes describe them (die.py): with its C_*_I flag clear an output passes
+    // its CP input on; set, it takes {C_SEL_C / C_SEL_P, C_SEL*}: 0 the CPE outputs (OUT1 / OUT2 by C_SEL*), 1 the
+    // comparator output or the other direction's CP input (C_Y12 picks the vertical one for the X outputs)
     auto flag = [&](IdString name) { return bool_or_default(cell->params, name, false); };
-    if (port == id_COUTY1) {
-        // CY1_VAL selects OUT2, OUT1, COMP_OUT or CINX with {C_SEL_C, C_SELY1}; C_CY1_I passes it
-        // to COUTY1, otherwise CINY1 passes vertically.
-        if (!flag(id_C_CY1_I))
-            return input(cell, id_CINY1);
-        Tri sources[4] = {input(cell, id_OUT2), input(cell, id_OUT1), input(cell, id_COMPOUT), input(cell, id_CINX)};
-        return sources[(flag(id_C_SEL_C) ? 2 : 0) | (flag(id_C_SELY1) ? 1 : 0)];
+    struct Output
+    {
+        IdString port, through, pass, sel, sel_cp;
+        // the CPE output at C_SEL* 0 (1 takes the other), and the CP input at C_SEL* 1 on the second branch
+        IdString out0, other_cp;
+    };
+    const Output outputs[] = {
+            {id_COUTX, id_CINX, id_C_CX_I, id_C_SELX, id_C_SEL_C, id_OUT1, IdString()},
+            {id_COUTY1, id_CINY1, id_C_CY1_I, id_C_SELY1, id_C_SEL_C, id_OUT2, id_CINX},
+            {id_COUTY2, id_CINY2, id_C_CY2_I, id_C_SELY2, id_C_SEL_C, id_OUT1, id_CINX},
+            {id_POUTX, id_PINX, id_C_PX_I, id_C_SELX, id_C_SEL_P, id_OUT2, IdString()},
+            {id_POUTY1, id_PINY1, id_C_PY1_I, id_C_SELY1, id_C_SEL_P, id_OUT1, id_PINX},
+            {id_POUTY2, id_PINY2, id_C_PY2_I, id_C_SELY2, id_C_SEL_P, id_OUT2, id_PINX},
+    };
+    for (const Output &o : outputs) {
+        if (port != o.port)
+            continue;
+        if (!flag(o.pass))
+            return input(cell, o.through);
+        bool sel = flag(o.sel);
+        if (!flag(o.sel_cp))
+            return input(cell, sel ? (o.out0 == id_OUT1 ? id_OUT2 : id_OUT1) : o.out0);
+        if (!sel)
+            return input(cell, id_COMPOUT);
+        if (o.other_cp != IdString())
+            return input(cell, o.other_cp);
+        // the X outputs: the vertical CP input C_Y12 picks
+        bool carry = o.port == id_COUTX;
+        return input(cell, flag(id_C_Y12) ? (carry ? id_CINY2 : id_PINY2) : (carry ? id_CINY1 : id_PINY1));
     }
     throw EvalUnsupported(stringf("CP lines '%s' port %s has no model", cell->name.c_str(ctx), port.c_str(ctx)));
 }

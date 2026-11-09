@@ -54,6 +54,7 @@ set(TEST_SOURCES
     tests/known_bugs.h
     tests/lookahead.cc
     tests/lut.cc
+    tests/lut_bypass.cc
     tests/fuse.cc
     tests/lut_swap.cc
     tests/lut_semantics.cc
