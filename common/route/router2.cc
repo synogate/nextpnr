@@ -588,11 +588,13 @@ struct Router2
             }
         }
 
-        // (Unchanged where the resource has neither conflict nor history: the factor is 1 there)
-        float resource_factor = resource_hist_cost * resource_present_cost;
-        float resource_cost = base_cost * resource_factor;
-        if (resource_idx >= 0 && base_cost < cfg.resource_conflict_base_cost)
-            resource_cost += (cfg.resource_conflict_base_cost - base_cost) * (resource_factor - 1.0f);
+        // A resource adds only what its conflict and history add: the wire term already charges the pip's base cost.
+        // Charged in full here too, a pip setting a resource (a CP line output, the LUT subtree swap) would cost
+        // twice its delay, and a critical net would rather take a switch box detour than a faster CP line.
+        float resource_cost = 0.0f;
+        if (resource_idx >= 0)
+            resource_cost = std::max(base_cost, cfg.resource_conflict_base_cost) *
+                            (resource_hist_cost * resource_present_cost - 1.0f);
         // Likewise for the wire (unchanged where it has neither congestion nor history)
         float wire_factor = hist_cost * present_cost;
         float wire_cost = base_cost * wire_factor;
