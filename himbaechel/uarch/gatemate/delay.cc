@@ -36,6 +36,39 @@ NEXTPNR_NAMESPACE_BEGIN
 
 delay_t GateMateImpl::estimateDelay(WireId src, WireId dst) const
 {
+    // A long segment from an SB_DRIVE reaches the big switch boxes 8 to 20 tiles on, through either its
+    // inverting or its non-inverting output depending on the 8x8 tiles it crosses, and its node is named
+    // after whichever of its wires sorts first. The tables, built at one sample position per phase of the
+    // wiring (x mod 2, x + y mod 4), hold such a node at another offset or not at all: up to the 20 ns for
+    // unreachable, so that the router took chains of short hops where one long hop is much faster. Such a
+    // wire is estimated from the wires it reaches (towards a sink), or from the wire driving it (from a
+    // source).
+    if (is_long_wire(src) && !is_long_wire(dst)) {
+        delay_t best = -1;
+        for (PipId pip : ctx->getPipsDownhill(src)) {
+            if (!pip_allowed_by_options(pip))
+                continue;
+            WireId next = ctx->getPipDstWire(pip);
+            delay_t d = ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(next).maxDelay() +
+                        estimateDelay(next, dst);
+            if (best == -1 || d < best)
+                best = d;
+        }
+        if (best != -1)
+            return best;
+    } else if (is_long_wire(dst) && !is_long_wire(src)) {
+        delay_t best = -1;
+        for (PipId pip : ctx->getPipsUphill(dst)) {
+            if (!pip_allowed_by_options(pip))
+                continue;
+            WireId prev = ctx->getPipSrcWire(pip);
+            delay_t d = estimateDelay(src, prev) + ctx->getPipDelay(pip).maxDelay() + ctx->getWireDelay(dst).maxDelay();
+            if (best == -1 || d < best)
+                best = d;
+        }
+        if (best != -1)
+            return best;
+    }
     int sx, sy, dx, dy;
     int d2d = 0;
     if (tile_extra_data(src.tile)->die != tile_extra_data(dst.tile)->die)

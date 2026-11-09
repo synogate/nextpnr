@@ -212,6 +212,14 @@ struct GateMateImpl : HimbaechelAPI
     std::string lookahead_key;
     int lookahead_radius = 0;
     bool table_route = false, table_place = false;
+    // Per tile type and wire: the long switch box segments (SB_DRIVE, and the long segment nodes named after a
+    // D4..D7 input they reach), which the router's estimate takes from the wires before and after them, see
+    // estimateDelay. Empty unless table_route.
+    std::vector<std::vector<bool>> long_wire;
+    bool is_long_wire(WireId w) const
+    {
+        return !long_wire.empty() && long_wire[ctx->chip_info->tile_insts[w.tile].type][w.index];
+    }
     // The closed-form model for them instead (--vopt lookahead=model, place-delay=model), see distance.h
     GateMateDistance distance;
     bool model_route = false, model_place = false;

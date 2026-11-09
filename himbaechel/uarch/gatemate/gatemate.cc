@@ -393,6 +393,15 @@ void GateMateImpl::prepare_options()
             lookahead_key = key;
             lookahead_radius = radius;
         }
+        long_wire.clear();
+        if (table_route) {
+            std::regex long_name(R"(SB_DRIVE\..*|SB_BIG\.P\d\d\.D[4-7]_\d_n)");
+            for (auto &type : ctx->chip_info->tile_types) {
+                long_wire.emplace_back(type.wires.ssize(), false);
+                for (int i = 0; i < type.wires.ssize(); i++)
+                    long_wire.back()[i] = std::regex_match(IdString(type.wires[i].name).str(ctx), long_name);
+            }
+        }
         if (options.count("hybrid-missing")) {
             std::string value = options["hybrid-missing"].as<std::string>();
             if (value != "unreachable" && value != "model")
