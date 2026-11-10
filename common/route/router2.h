@@ -67,6 +67,18 @@ struct Router2Cfg
     // forward search stops on its meeting point before a cheaper path branching off the routing there is found:
     // the search is no shortest path search, not even without the estimate
     bool seed_source;
+    // The share of a wire's present congestion the most critical arcs pay where they are more critical, by
+    // critical_priority_margin, than the arcs of every other net on the wire (1: all of it, as every arc; the
+    // arcs' criticalities are those after the iteration before). The present congestion grows with every iteration
+    // for all users of a wire alike, only scaled by their crit weight, so which of two nets leaves an overused wire
+    // depends on whose detour is cheaper: a critical arc with a detour of 1 ns gives way to a net with slack that
+    // has none under 3 ns, and nothing brings it back once the overuse is gone. With a share below 1 the less
+    // critical nets give way first; the history of the wire, which the critical arc pays as before, still moves it
+    // where they cannot. An arc of criticality c pays 1 - (1 - share) * c^4 of the present congestion: with the
+    // same share for all arcs, the conflicts among nets that are far from critical take longer to resolve (the
+    // router a third longer on GateMate's dmg_soc) for the same timing.
+    float critical_present_share;
+    float critical_priority_margin;
 
     // Weight given to delay estimate in A*. Higher values
     // mean faster and more directed routing, at the risk

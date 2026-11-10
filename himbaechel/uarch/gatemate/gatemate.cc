@@ -587,6 +587,12 @@ void GateMateImpl::init(Context *ctx)
     // ratio 0.98, but two seeds on one placement with twice as many endpoints failing by a little)
     if (!ctx->settings.count(ctx->id("router2/newWireCost")))
         ctx->settings[ctx->id("router2/newWireCost")] = std::to_string(1.0f);
+    // In a conflict over a wire the nets with slack give way before a critical one does: the most critical arcs,
+    // where more critical than all other nets on a wire, pay a fifth of its present congestion. Critical arcs
+    // otherwise lose the wires of their fastest path to nets whose own detours are dearer (0.3 to 3.8 ns on the
+    // worst path of dmg_soc; with it, 16 seeds on the same placements: Fmax +2.7%, all better)
+    if (!ctx->settings.count(ctx->id("router2/criticalPresentShare")))
+        ctx->settings[ctx->id("router2/criticalPresentShare")] = std::to_string(0.2f);
     // The annealer picks a new bel for a cell near its place, or anywhere for the types with fewer bels than this:
     // near a block RAM there is no other. By default that is fewer than 64, which the 32 RAM sites of a die are
     // and their 64 halves are not, so that half RAMs never moved in the refinement

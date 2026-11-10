@@ -374,6 +374,31 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   -190 ns. Not significant either way; kept because a RAM stuck far from its logic is what the bad
   seeds had in common.
 
+- **Critical arcs keep their wires (router2, `router2/criticalPresentShare`, GateMate 0.2):** an arc that
+  is more critical than every other net on a wire pays less of the wire's present congestion, so the nets
+  with slack give way first. Before, which net left an overused wire depended on whose detour was cheaper,
+  and the worst path lost 0.3 to 3.8 ns to wires held by other nets. An arc of criticality c pays
+  1 - 0.8 c^4 of the present congestion. On the placements of the fix (same placement, routed with and
+  without, 15 seeds to compare):
+
+  | | Fmax (geometric mean) | TNS median | Failing endpoints (median) |
+  |---|---|---|---|
+  | the fix | 29.95 MHz | -91 ns | 71 |
+  | with the priority | 30.76 MHz | -56 ns | 37 |
+
+  Fmax +2.7%, better on 15 of 15, TNS on 12. Seed 9, whose router run stalled, routes in 53 iterations.
+  Against the state before the fix, all 16 seeds: 28.04 -> 30.61 MHz (+9.2%, 14 better), median TNS
+  -442 -> -58 ns. Seed 12 stays where it was (24.3 MHz): the router cannot mend that placement. There the
+  data cache's RAMs are 64 columns apart, five cells of the loop sit with the far ones, and the loop
+  crosses the chip six times.
+
+  With the same share of 0.2 for all arcs the gain is the same (+2.7%, 15 of 15) but the router takes a
+  third longer: the conflicts among nets far from critical resolve more slowly (iterations 3 to 6 route
+  1.5 to 2 times as many nets, each slower). Graded by c^4 it takes no longer than without the priority
+  (three seeds side by side: 1749 s against 2120 s without and 2777 s with the flat share). Graded by c^2:
+  +2.3% (13 of 15). A flat share of 0.5: +2.3% (13 of 14). A flat share of 0 (a critical arc never pays
+  for a less critical net): iteration 5 to 9 after 45 minutes, stopped.
+
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed
 the router's criticality weight with a `float` exponent, which rounds differently: the same placements
@@ -388,7 +413,8 @@ builds.
 | Router criticality weight `1 - crit^8` or `1 - crit` instead of `1 - crit^2` | -1.8% and -1.2% |
 | Placing again around the RAMs of a first placement (RAMs locked, the logic back to the analytic placer) | First 8 seeds +4.7% (6 better), all 16: -0.2%, mean TNS -1721 against -408 ns: where the second placement scattered the loop, nothing held it together. With the fix above it adds nothing either (29.89 against 29.95 MHz, 8 seeds), for 60% more placement time |
 | Estimating the nets between a RAM and the CPEs at its pins as they are (0 to 0.15 ns routed, about 1 ns estimated) | With the fix, 16 seeds: Fmax -1.7% (6 better), one seed with TNS -2721 ns. The estimate being too high seems to help: these paths lose most in routing |
-| An arc clearly more critical than the other users of a wire pays a fifth of the present congestion (the others give way first), on the placements placed twice | Fmax +2.1% (4 of 8), TNS better on 7, router time up. Worth repeating on the placements with the fix |
+| With the fix, 16 seeds against the fix: annealer timing weight 0.7 instead of 0.5 | Fmax -1.3% (7 of 15 better) |
+| With the fix, 16 seeds: analytic placer's timing weight 30 or 100 instead of 10, or 30 with criticality exponent 4 instead of 2 | +1.9% (9 of 15), +1.1% (9 of 15), -2.9% (5 of 15): no trend, and the first and the last have a seed of their own with TNS below -2900 ns |
 
 Where the rest goes, with the fix (worst path of each seed): 18.5 to 24.8 ns of routing against 14.6
 to 21.2 ns estimated at placement. Of the difference, 0.3 to 3.8 ns are wires held by other nets

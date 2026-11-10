@@ -104,6 +104,10 @@ struct Router2
         // many iterations in a row the wire has been overused
         int arb_net = -1;
         int overuse_streak = 0;
+        // After the iteration before: the criticality of the most critical arc through the wire, its net, and the
+        // criticality of the most critical arc of the other nets (for Router2Cfg::critical_present_share)
+        float top_crit = 0, top_crit_other = 0;
+        int top_net = -1;
         // The notional location of the wire, to guarantee thread safety
         int16_t x = 0, y = 0;
         // Visit data
@@ -527,7 +531,7 @@ struct Router2
     }
 
     float score_wire_for_arc(NetInfo *net, store_index<PortRef> user, size_t phys_pin, WireId wire, PipId pip,
-                             float crit_weight)
+                             float crit_weight, float crit)
     {
         auto &wd = wire_data(wire);
         auto &nd = nets.at(net->udata);
@@ -558,6 +562,15 @@ struct Router2
         // of the A* search no longer a lower bound, unless it is discounted too wherever the net already is)
         float new_wire_cost = source_uses == 0 ? cfg.new_wire_cost * crit_weight * base_cost : 0.0f;
         float present_cost = 1.0f + overuse * curr_cong_weight * crit_weight;
+        if (cfg.critical_present_share < 1.0f && overuse > 0) {
+            // More critical than every other net here: the others give way first. The share falls from all of the
+            // present congestion for uncritical arcs to critical_present_share for the most critical
+            float others = wd.top_net == net->udata ? wd.top_crit_other : wd.top_crit;
+            if (crit > others + cfg.critical_priority_margin) {
+                float share = 1.0f - (1.0f - cfg.critical_present_share) * crit * crit * crit * crit;
+                present_cost = 1.0f + overuse * curr_cong_weight * crit_weight * share;
+            }
+        }
         if (pip != PipId()) {
             Loc pl = ctx->getPipLocation(pip);
             bias_cost = cfg.bias_cost_factor * (base_cost / int(net->users.entries())) *
@@ -612,6 +625,61 @@ struct Router2
             wire_cost += (cfg.wire_conflict_base_cost - base_cost) * (wire_factor - 1.0f);
         return wire_cost / (1 + (source_uses * crit_weight)) + bias_cost + resource_cost / (1 + crit_weight) +
                arb_cost + new_wire_cost;
+    }
+
+    // The criticality of the most critical arc on every wire, and of the most critical arc of another net (for
+    // Router2Cfg::critical_present_share): each arc's criticality goes to the wires from its sink up to the source
+    void update_wire_criticality()
+    {
+        if (cfg.critical_present_share >= 1.0f || !timing_driven)
+            return;
+        for (auto &wd : flat_wires) {
+            wd.top_crit = wd.top_crit_other = 0;
+            wd.top_net = -1;
+        }
+        std::vector<std::pair<float, store_index<PortRef>>> by_crit;
+        for (size_t n = 0; n < nets_by_udata.size(); n++) {
+            NetInfo *net = nets_by_udata.at(n);
+            auto &nd = nets.at(n);
+            if (nd.wires.empty())
+                continue;
+            WireId src = ctx->getNetinfoSourceWire(net);
+            // The most critical arcs first: the others stop where they join the routing of one before
+            by_crit.clear();
+            for (auto usr : net->users.enumerate())
+                by_crit.emplace_back(get_arc_crit(net, usr.index), usr.index);
+            std::stable_sort(by_crit.begin(), by_crit.end(),
+                             [](const std::pair<float, store_index<PortRef>> &a,
+                                const std::pair<float, store_index<PortRef>> &b) { return a.first > b.first; });
+            for (auto &arc : by_crit) {
+                float crit = arc.first;
+                auto &ads = nd.arcs.at(arc.second.idx());
+                for (size_t j = 0; j < ads.size(); j++) {
+                    if (!ads.at(j).routed)
+                        continue;
+                    WireId cursor = ctx->getNetinfoSinkWire(net, net->users.at(arc.second), j);
+                    while (cursor != WireId()) {
+                        auto &wd = wire_data(cursor);
+                        if (wd.top_net == int(n)) {
+                            // (from here to the source an arc at least as critical has been)
+                            break;
+                        } else if (crit > wd.top_crit) {
+                            wd.top_crit_other = wd.top_crit;
+                            wd.top_crit = crit;
+                            wd.top_net = int(n);
+                        } else if (crit > wd.top_crit_other) {
+                            wd.top_crit_other = crit;
+                        }
+                        if (cursor == src)
+                            break;
+                        auto fnd = nd.wires.find(cursor);
+                        if (fnd == nd.wires.end() || fnd->second.first == PipId())
+                            break;
+                        cursor = ctx->getPipSrcWire(fnd->second.first);
+                    }
+                }
+            }
+        }
     }
 
     float get_togo_cost(NetInfo *net, store_index<PortRef> user, int wire, WireId src_sink, bool bwd, float crit_weight)
@@ -1163,7 +1231,8 @@ struct Router2
                             continue;
                         WireScore next_score;
                         next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, dh, crit_weight);
-                        next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, dh, crit_weight);
+                        next_score.cost =
+                                curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, dh, crit_weight, crit);
                         next_score.togo_cost =
                                 estimate_weight * get_togo_cost(net, i, next_idx, dst_wire, false, crit_weight);
                         if (was_visited_fwd(next_idx, next_score.cost)) {
@@ -1247,7 +1316,8 @@ struct Router2
                         // up to the cost of the path through it (each wire once, the sink included)
                         next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, curr_data.w, uh, crit_weight);
                         next_score.cost =
-                                curr.score.cost + score_wire_for_arc(net, i, phys_pin, curr_data.w, uh, crit_weight);
+                                curr.score.cost +
+                                score_wire_for_arc(net, i, phys_pin, curr_data.w, uh, crit_weight, crit);
                         next_score.togo_cost = const_mode ? 0
                                                           : estimate_weight * get_togo_cost(net, i, next_idx, src_wire,
                                                                                             true, crit_weight);
@@ -2154,6 +2224,7 @@ struct Router2
             int tmgfail = 0;
             if (timing_driven)
                 tmg.run(false);
+            update_wire_criticality();
             if (timing_driven_ripup && iter < 1500) {
                 for (size_t i = 0; i < nets_by_udata.size(); i++) {
                     NetInfo *ni = nets_by_udata.at(i);
@@ -2247,6 +2318,8 @@ Router2Cfg::Router2Cfg(Context *ctx)
     wire_conflict_base_cost = ctx->setting<float>("router2/wireConflictBaseCost", 0.0f);
     new_wire_cost = ctx->setting<float>("router2/newWireCost", 0.0f);
     seed_source = ctx->setting<bool>("router2/seedSource", false);
+    critical_present_share = ctx->setting<float>("router2/criticalPresentShare", 1.0f);
+    critical_priority_margin = ctx->setting<float>("router2/criticalPriorityMargin", 0.02f);
     if (ctx->settings.count(ctx->id("router2/alt-weights"))) {
         init_curr_cong_weight = ctx->setting<float>("router2/initCurrCongWeight", 5.0f);
         hist_cong_weight = ctx->setting<float>("router2/histCongWeight", 0.5f);
