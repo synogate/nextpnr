@@ -229,6 +229,9 @@ void GateMatePacker::pack_cpe()
             ci.params[id_INIT_L00] = Property(LUT_AND, 4);
             ci.params[id_INIT_L01] = Property(LUT_AND_INV_D0, 4);
             ci.params[id_INIT_L10] = Property(LUT_OR, 4);
+            // A constant data input goes into the LUT (instead of a route from the constant driver)
+            optimize_lut2(ci, id_D0_00, id_D1_00, id_INIT_L00);
+            optimize_lut2(ci, id_D0_01, id_D1_01, id_INIT_L01);
             ci.renamePort(id_Y, id_OUT);
             ci.type = id_CPE_L2T4;
         } else {
@@ -988,6 +991,9 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
                 ci.params[id_INIT_L00] = Property(LUT_AND, 4);
                 ci.params[id_INIT_L01] = Property(LUT_AND_INV_D0, 4);
                 ci.params[id_INIT_L10] = Property(LUT_OR, 4);
+                // A constant data input goes into the LUT (instead of a route from the constant driver)
+                optimize_lut2(ci, id_D0_00, id_D1_00, id_INIT_L00);
+                optimize_lut2(ci, id_D0_01, id_D1_01, id_INIT_L01);
                 ci.renamePort(id_Y, id_OUT);
                 ci.type = id_CPE_L2T4;
                 cpe_half = &ci;

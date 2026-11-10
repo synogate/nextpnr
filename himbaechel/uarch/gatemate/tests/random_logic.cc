@@ -67,6 +67,29 @@ TEST_F(GateMateTest, mx4_constant_data)
             200));
 }
 
+// A constant data input of a 2:1 multiplexer goes into its LUTs instead of a route from the constant driver;
+// every pattern of signal, 0 and 1 on both data inputs, a data input that is the select, and the same with the
+// register merged into the CPE (the other place the packer maps the multiplexer).
+TEST_F(GateMateTest, mx2_constant_data_after_routing)
+{
+    EXPECT_TRUE(implementation_matches_reference(
+            [&] {
+                NetInfo *s = input("s"), *sig[2] = {input("d0"), input("d1")};
+                NetInfo *clk = global_clock("clk");
+                for (int pattern = 0; pattern < 9; pattern++) {
+                    NetInfo *d[2];
+                    for (int i = 0, p = pattern; i < 2; i++, p /= 3)
+                        d[i] = p % 3 == 0 ? sig[i] : p % 3 == 1 ? gnd() : vcc();
+                    output(stringf("y%d", pattern), mx2(stringf("mux%d", pattern), d[0], d[1], s));
+                    NetInfo *r = mx2(stringf("rmux%d", pattern), d[0], d[1], s);
+                    output(stringf("q%d", pattern), dff(stringf("ff%d", pattern), r, clk)->getPort(id_Q));
+                }
+                output("ys0", mx2("muxs0", s, gnd(), s));
+                output("ys1", mx2("muxs1", vcc(), s, s));
+            },
+            200));
+}
+
 TEST_F(GateMateTest, mx4_one_constant_select)
 {
     EXPECT_TRUE(implementation_matches_reference([&] {
