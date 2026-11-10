@@ -43,6 +43,15 @@ struct Placer1Cfg
     // If set, adjusts the criticality of a connection (its sink), e.g. by what earlier runs learnt.
     // TEMPORARY: only the GateMate placement learning uses it, which gave no gain
     std::function<float(const PortRef &user, float crit)> adjust_crit;
+    // Directed moves in the refinement of a placement (placer1_refine): in every iteration, a cell or cluster with a
+    // connection of at least this criticality also tries a bel where its connections pull it, the mean of the
+    // cells at their other ends weighted like the timing cost (within directedMoveRadius of it; a type with too
+    // few bels for a pick by location, like a block RAM, the bel nearest to it). Negative: none. The random moves
+    // of the refinement reach a few tiles and are taken only if each step pays, so a cell on a critical path that
+    // the analytic placement left far from the rest of the path, among cells it shares uncritical nets with,
+    // stays there.
+    float directedMoveCrit;
+    int directedMoveRadius;
 };
 
 extern bool placer1(Context *ctx, Placer1Cfg cfg);

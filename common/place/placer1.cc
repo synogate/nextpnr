@@ -272,6 +272,9 @@ class SAPlacer
                          "%.0f, wirelen = %.0f\n",
                          iter, temp, double(curr_timing_cost), double(curr_wirelen_cost));
 
+            if (refine && cfg.directedMoveCrit >= 0)
+                n_directed += directed_moves(autoplaced, chain_basis);
+
             for (int m = 0; m < 15; ++m) {
                 // Loop through all automatically placed cells
                 for (auto cell : autoplaced) {
@@ -401,6 +404,8 @@ class SAPlacer
             log_info("  pin density cost %.0f\n", curr_density_cost);
         }
         log_info("SA placement time %.02fs\n", std::chrono::duration<float>(saplace_end - saplace_start).count());
+        if (refine && cfg.directedMoveCrit >= 0)
+            log_info("  of the moves, %d were directed ones of cells on critical connections\n", n_directed);
 
         // Final post-placement validity check
         ctx->yield();
@@ -584,6 +589,101 @@ class SAPlacer
         if (cfg.netShareWeight > 0)
             update_nets_by_tile(cell, ctx->getBelLocation(newBel), ctx->getBelLocation(oldBel));
         return false;
+    }
+
+    // Directed moves (Placer1Cfg::directedMoveCrit): each cell outside a cluster and each cluster that has a
+    // connection critical enough tries a bel near where its connections pull it; returns how many moved
+    int directed_moves(const std::vector<CellInfo *> &autoplaced, const std::vector<CellInfo *> &chain_basis)
+    {
+        // (nearer than this, the random moves get there)
+        const int min_distance = 3;
+        const int tries = 3;
+        int moved = 0;
+        auto try_unit = [&](CellInfo *root, const std::vector<CellInfo *> &members) {
+            // Where to: the offsets to the cells at the other ends of the unit's connections, weighted as the
+            // timing cost weights the connections' delays
+            double sum_x = 0, sum_y = 0, sum_weight = 0;
+            float most_critical = 0;
+            for (CellInfo *ci : members) {
+                if (ci->bel == BelId())
+                    continue;
+                Loc loc = ctx->getBelLocation(ci->bel);
+                for (auto &port : ci->ports) {
+                    NetInfo *net = port.second.net;
+                    if (!net || ignore_net(net))
+                        continue;
+                    auto pull = [&](CellInfo *other, float crit) {
+                        if (other == ci || other->isPseudo() || other->bel == BelId() ||
+                            (root->cluster != ClusterId() && other->cluster == root->cluster))
+                            return;
+                        most_critical = std::max(most_critical, crit);
+                        double weight = std::pow(crit, crit_exp);
+                        Loc other_loc = ctx->getBelLocation(other->bel);
+                        sum_x += weight * (other_loc.x - loc.x);
+                        sum_y += weight * (other_loc.y - loc.y);
+                        sum_weight += weight;
+                    };
+                    if (port.second.type == PORT_IN) {
+                        pull(net->driver.cell, tmg.get_criticality(CellPortKey(ci->name, port.first)));
+                    } else if (port.second.type == PORT_OUT) {
+                        for (auto &usr : net->users)
+                            pull(usr.cell, tmg.get_criticality(CellPortKey(usr)));
+                    }
+                }
+            }
+            if (sum_weight <= 0 || most_critical < cfg.directedMoveCrit)
+                return;
+            int dx = int(std::lround(sum_x / sum_weight)), dy = int(std::lround(sum_y / sum_weight));
+            if (std::abs(dx) + std::abs(dy) < min_distance)
+                return;
+            Loc root_loc = ctx->getBelLocation(root->bel);
+            FastBels::FastBelsData *bel_data;
+            auto type_cnt = fast_bels.getBelsForCellType(root->type, &bel_data);
+            // (as random_bel_for_cell: the bels of such a type are not kept by location)
+            bool few_bels = cfg.minBelsForGridPick >= 0 && type_cnt < cfg.minBelsForGridPick;
+            for (int t = 0; t < (few_bels ? 1 : tries); t++) {
+                BelId target;
+                if (few_bels) {
+                    // The bel nearest to the place, if nearer than the unit is now
+                    int nearest = std::abs(dx) + std::abs(dy);
+                    for (BelId bel : bel_data->at(0).at(0)) {
+                        Loc loc = ctx->getBelLocation(bel);
+                        if (loc.z != root_loc.z || bel == root->bel)
+                            continue;
+                        int distance = std::abs(loc.x - (root_loc.x + dx)) + std::abs(loc.y - (root_loc.y + dy));
+                        if (distance < nearest) {
+                            nearest = distance;
+                            target = bel;
+                        }
+                    }
+                } else {
+                    int radius = cfg.directedMoveRadius;
+                    int nx = root_loc.x + dx + ctx->rng(2 * radius + 1) - radius;
+                    int ny = root_loc.y + dy + ctx->rng(2 * radius + 1) - radius;
+                    if (nx < 0 || ny < 0 || nx >= int(bel_data->size()) || ny >= int(bel_data->at(nx).size()))
+                        continue;
+                    const auto &bels = bel_data->at(nx).at(ny);
+                    if (bels.empty())
+                        continue;
+                    target = bels.at(ctx->rng(int(bels.size())));
+                    // (a cluster keeps the z of its root, as in the random moves)
+                    if (root->cluster != ClusterId() && ctx->getBelLocation(target).z != root_loc.z)
+                        continue;
+                }
+                if (target == BelId() || target == root->bel || !root->testRegion(target) ||
+                    locked_bels.count(target))
+                    continue;
+                if (root->cluster == ClusterId() ? try_swap_position(root, target) : try_swap_chain(root, target)) {
+                    moved++;
+                    break;
+                }
+            }
+        };
+        for (auto cell : autoplaced)
+            try_unit(cell, {cell});
+        for (auto cb : chain_basis)
+            try_unit(cb, cluster2cell.at(cb->cluster));
+        return moved;
     }
 
     // Swap the Bel of a cell with another, return the original location
@@ -1313,6 +1413,7 @@ class SAPlacer
     float lambda = 0.5;
     bool improved = false;
     int n_move, n_accept;
+    int n_directed = 0;
     int diameter = 35, max_x = 1, max_y = 1;
     dict<IdString, std::tuple<int, int>> bel_types;
     dict<IdString, BoundingBox> region_bounds;
@@ -1334,6 +1435,8 @@ Placer1Cfg::Placer1Cfg(Context *ctx)
     minBelsForGridPick = ctx->setting<int>("placer1/minBelsForGridPick", 64);
     startTemp = ctx->setting<float>("placer1/startTemp", 1);
     timingFanoutThresh = std::numeric_limits<int>::max();
+    directedMoveCrit = ctx->setting<float>("placer1/directedMoveCrit", -1.0f);
+    directedMoveRadius = ctx->setting<int>("placer1/directedMoveRadius", 1);
     timing_driven = ctx->setting<bool>("timing_driven");
     hpwl_scale_x = 1;
     hpwl_scale_y = 1;

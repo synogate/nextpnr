@@ -399,6 +399,32 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   +2.3% (13 of 15). A flat share of 0.5: +2.3% (13 of 14). A flat share of 0 (a critical arc never pays
   for a less critical net): iteration 5 to 9 after 45 minutes, stopped.
 
+- **Directed moves in the refinement (`placer1/directedMoveCrit`, GateMate 0.5):** what the outlier seeds
+  had in common is cells of the critical loop left far from the rest of it by the analytic placement, among
+  cells they share uncritical nets with (seed 12 above). The refinement's random moves reach one to three
+  tiles and are taken only if each step pays, which a step of a few tiles towards a path 60 columns away
+  hardly does against the wirelength it costs. Now every cell outside a cluster and every cluster with a
+  connection of criticality 0.5 or more also tries, once in each iteration, a bel where its connections pull
+  it: the mean of the cells at their other ends, weighted like the timing cost (criticality to the 8th), within
+  one tile of it; a block RAM the RAM site nearest to it. The move is taken if the cost falls, like any other.
+  About 2000 to 2600 such moves per run, most in the first iterations. 16 seeds against the state with the
+  router priority:
+
+  | | Fmax (geometric mean, range) | TNS median / mean | Failing endpoints (median) |
+  |---|---|---|---|
+  | before | 30.61 MHz, 24.28 - 34.85 | -58 / -656 ns | 50 |
+  | with directed moves | 32.03 MHz, 30.78 - 34.39 | -11 / -19 ns | 21 |
+
+  Fmax +4.7% (13 of 16 better), and no seed is left behind: the worst is 30.8 MHz with TNS -87 ns, seed 12
+  goes from 24.3 to 32.5 MHz. Three seeds meet 33 MHz, seven are within 2 ns of TNS. The other settings tried
+  give the same picture (16 seeds each): criticality 0.8 31.75 MHz, any criticality 31.67 MHz, radius 3 with
+  six tries 31.90 MHz (15 seeds), all with the worst seed at 29.7 MHz or better and a mean TNS of -14 to
+  -22 ns. The refinement stops as before (no new least wirelength in an iteration), after 18 iterations in the
+  median; without that, a few dozen directed moves keep coming in every iteration with nothing gained.
+
+  From the state before this section, all 16 seeds: 28.04 -> 32.03 MHz (+14.2%, all better), median TNS
+  -442 -> -11 ns, failing endpoints 387 -> 21.
+
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed
 the router's criticality weight with a `float` exponent, which rounds differently: the same placements

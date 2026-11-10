@@ -593,6 +593,12 @@ void GateMateImpl::init(Context *ctx)
     // worst path of dmg_soc; with it, 16 seeds on the same placements: Fmax +2.7%, all better)
     if (!ctx->settings.count(ctx->id("router2/criticalPresentShare")))
         ctx->settings[ctx->id("router2/criticalPresentShare")] = std::to_string(0.2f);
+    // The refinement also moves the cells on critical connections to where these pull them, however far: on
+    // dmg_soc the analytic placement leaves cells of the critical loop across the chip from the rest of it in some
+    // seeds (with the RAMs of one cache 64 columns apart, five such cells and six crossings), and the random moves
+    // of a few tiles do not bring them over (docs/timing_experiments.md)
+    if (!ctx->settings.count(ctx->id("placer1/directedMoveCrit")))
+        ctx->settings[ctx->id("placer1/directedMoveCrit")] = std::to_string(0.5f);
     // The annealer picks a new bel for a cell near its place, or anywhere for the types with fewer bels than this:
     // near a block RAM there is no other. By default that is fewer than 64, which the 32 RAM sites of a die are
     // and their 64 halves are not, so that half RAMs never moved in the refinement
