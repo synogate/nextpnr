@@ -267,3 +267,84 @@ TEST_F(GateMateTimingTest, related_clocks_without_own_paths)
     ASSERT_TRUE(bool_or_default(ctx->cells.at(ctx->id("q$iosel"))->params, id_OUT1_FF));
     EXPECT_NO_THROW(ctx->place());
 }
+
+// While the design is placed, the two halves of a CPE that a 4:1 multiplexer or an adder takes are separate cells
+// (repack() merges them after placement, and the tests above look at the design after that). The timing analysis of
+// the placers has to see the paths through both halves: from the multiplexer's data inputs, which are in the upper
+// half, to its output in the lower, and from an adder's operands along the carry to the sums further up. Without
+// them the placers took such paths for several short ones (the timing links of the packer stand in for them).
+TEST_F(GateMateTimingTest, packed_design_has_the_paths_through_both_halves_of_a_cpe)
+{
+    NetInfo *clk = global_clock("clk");
+    CellInfo *mux_src = dff("mux_src", input("d"), clk);
+    CellInfo *mux_dst = dff("mux_dst",
+                            mx4("mux", mux_src->getPort(id_Q), input("d1"), input("d2"), input("d3"), input("s0"),
+                                input("s1")),
+                            clk);
+    output("mux_q", mux_dst->getPort(id_Q));
+    CellInfo *add_src = dff("add_src", input("a0"), clk);
+    NetInfo *carry = gnd(), *sum = nullptr;
+    for (int i = 0; i < 5; i++) {
+        // (the second operand of the second bit comes from the first sum: no loop, though both bits share a CPE)
+        auto bit = addf(stringf("add%d", i), i == 0 ? add_src->getPort(id_Q) : input(stringf("a%d", i)),
+                        i == 1 ? lut1("first_sum_inv", 0b01, sum) : input(stringf("b%d", i)), carry);
+        sum = bit.first;
+        carry = bit.second;
+        if (i < 4)
+            output(stringf("sum%d", i), sum);
+    }
+    CellInfo *add_dst = dff("add_dst", sum, clk);
+    output("add_q", add_dst->getPort(id_Q));
+    pack();
+
+    TimingAnalyser tmg(ctx);
+    tmg.setup();
+    // The cells the longest paths into the register `dst` start at, one for each clock domain they come from
+    auto starts_of = [&](const char *dst) {
+        std::string starts;
+        for (auto &ep : tmg.get_endpoint_timings()) {
+            if (ep.endpoint.cell != ctx->id(dst))
+                continue;
+            CriticalPath path = tmg.get_endpoint_path(ep, true);
+            if (!path.segments.empty())
+                starts += " " + path.segments.front().from.first.str(ctx);
+        }
+        return starts;
+    };
+    EXPECT_NE(starts_of("mux_dst").find(" mux_src"), std::string::npos)
+            << "paths into mux_dst start at:" << starts_of("mux_dst");
+    EXPECT_NE(starts_of("add_dst").find(" add_src"), std::string::npos)
+            << "paths into add_dst start at:" << starts_of("add_dst");
+
+    // Placing merges the halves and takes the timing links out again
+    ctx->place();
+    for (auto &cell : ctx->cells)
+        for (auto &port : cell.second->ports)
+            EXPECT_TRUE(port.first != impl->tmg_link_o && port.first != impl->tmg_link_i)
+                    << cell.first.c_str(ctx) << " still has a timing link";
+    for (auto &net : ctx->nets)
+        EXPECT_EQ(net.first.str(ctx).find("$tmg_link"), std::string::npos) << net.first.c_str(ctx);
+}
+
+// An adder's carry goes to the CPE above on a line of its own, and is estimated as such while the design is placed.
+// Taken through the switch boxes like any other net, it cost about 0.5 ns for each CPE of a chain.
+TEST_F(GateMateTimingTest, estimate_of_the_carry_to_the_cpe_above)
+{
+    BelId lower;
+    for (BelId bel : ctx->getBels()) {
+        Loc loc = ctx->getBelLocation(bel);
+        if (ctx->getBelType(bel) == id_CPE_LT_L && ctx->getBelByLocation(Loc(loc.x, loc.y + 1, loc.z)) != BelId() &&
+            ctx->getBelByLocation(Loc(loc.x, loc.y + 2, loc.z)) != BelId()) {
+            lower = bel;
+            break;
+        }
+    }
+    ASSERT_NE(lower, BelId());
+    Loc loc = ctx->getBelLocation(lower);
+    BelId above = ctx->getBelByLocation(Loc(loc.x, loc.y + 1, loc.z));
+    BelId two_above = ctx->getBelByLocation(Loc(loc.x, loc.y + 2, loc.z));
+    EXPECT_EQ(impl->predictDelay(lower, id_COUTY1, above, id_CINY1), 0);
+    // (anything else is routed)
+    EXPECT_GT(impl->predictDelay(lower, id_COUTY1, two_above, id_CINY1), 0);
+    EXPECT_GT(impl->predictDelay(lower, id_OUT, above, id_CINY1), 0);
+}

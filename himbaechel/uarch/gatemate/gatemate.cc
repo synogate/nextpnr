@@ -547,6 +547,8 @@ void GateMateImpl::optionsChanged()
 void GateMateImpl::init(Context *ctx)
 {
     HimbaechelAPI::init(ctx);
+    tmg_link_o = ctx->id("$TMG_LINK_O");
+    tmg_link_i = ctx->id("$TMG_LINK_I");
     prepare_options();
     auto &options = ctx->args.options;
     if (options.count("place-density-weight"))
@@ -585,6 +587,11 @@ void GateMateImpl::init(Context *ctx)
     // ratio 0.98, but two seeds on one placement with twice as many endpoints failing by a little)
     if (!ctx->settings.count(ctx->id("router2/newWireCost")))
         ctx->settings[ctx->id("router2/newWireCost")] = std::to_string(1.0f);
+    // The annealer picks a new bel for a cell near its place, or anywhere for the types with fewer bels than this:
+    // near a block RAM there is no other. By default that is fewer than 64, which the 32 RAM sites of a die are
+    // and their 64 halves are not, so that half RAMs never moved in the refinement
+    if (!ctx->settings.count(ctx->id("placer1/minBelsForGridPick")))
+        ctx->settings[ctx->id("placer1/minBelsForGridPick")] = std::to_string(ram_halves() + 1);
     for (const auto &pad : ctx->package_info->pads) {
         available_pads.emplace(IdString(pad.package_pin));
         BelId bel = ctx->getBelByName(IdStringList::concat(IdString(pad.tile), IdString(pad.bel)));

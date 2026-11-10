@@ -316,6 +316,87 @@ Pending when this was written: `fuse-luts` (see "Logic depth" below).
 - Test restrictions that steer around known bugs go through `avoid(KnownBug::X)`, so fixing the
   bug and deleting its entry shows every restriction to lift.
 
+## November 2026: the paths the placers did not see (bugs 40, 41)
+
+Looking for what limits dmg_soc with the repairs off (`route-repair=0 place-repair=0`, Makefile flags,
+`lookahead` and `place-delay` at their default `axis`, 16 placement seeds 1-15 and 46, 33 MHz clock;
+all numbers below are from these runs, in parallel on one machine, so the times are under load).
+
+- **Where it stood:** Fmax 25.2 to 29.8 MHz (geometric mean 28.0), median TNS -442 ns, while the timing
+  printed after placement was 28.8 to 35.4 MHz. The worst path has 23 to 26 connections over 180 to 370
+  tiles, 21 to 25 ns of routing for 10 to 12 ns of logic. It is the loop from the cache RAMs through the
+  bus arbiter and router to the CPU's ready, the next fetch address and back to the RAMs' address inputs
+  (or the enables of about 1100 registers), and it passes the data inputs of two 4:1 multiplexers.
+- **Cause:** the placers never saw that loop as one path. Until `repack_cpe()` merges them after
+  placement, the halves of a multiplexer or adder CPE are two cells without a net between them, and
+  the carry out of an adder half had no timing class (tests/BUGS.md 40). Paths through a multiplexer's
+  data inputs or along a carry were several short paths to the placers, placed with no regard for each
+  other: the arbiter 50 to 70 tiles from the router it feeds in the bad seeds, next to it by luck in the
+  good ones. That is most of the seed spread, and why the placement estimate said little about the
+  routed result. The registers of the CPU's counters and the register file's write data (300 to 380
+  endpoints) had paths of under 1 ns to the placers and 20 to 33 ns routed.
+- **Fix:** timing links between the halves while the design is placed, the carry arcs, and no routing
+  delay for the carry to the CPE above (bug 41: about 0.5 ns per CPE before, 8 ns on a 32 bit adder,
+  which showed once the chains were in the analysis and made the counters look critical).
+
+  | | Fmax (geometric mean, range) | TNS median / mean | Failing endpoints (median) | Wires |
+  |---|---|---|---|---|
+  | before | 28.04 MHz, 25.17 - 29.84 | -442 / -543 ns | 387 | 509k |
+  | with the paths | 29.95 MHz, 24.18 - 34.18 | -91 / -754 ns | 71 | 502k |
+
+  Fmax +6.0%, 12 of 15 seeds better, TNS better on 11; two seeds meet 33 MHz without repairs (none did
+  before). One seed (9) is missing: its router run kept one wire overused for 1800 iterations and was
+  stopped (the stall known from other placements). And one seed (12) is far worse than any before, 24.2 MHz
+  and TNS -9356 ns: there the placers see the loop and still leave it at 26 MHz (TNS -4241 ns after
+  placement). So the fix shows them the path; it does not make them good at shortening it.
+
+  Three more sets of 16 seeds with the same links differ from the code in the tree in one detail each
+  (the rounding of the router's criticality weight; with the RAM pin estimate of the table below; with an
+  arc from the second bit's operands to the first bit's sum in two-bit adders, which is wrong and made
+  loops in the tests): Fmax +9.5% (15 of 16), +7.6% (13), +9.5% (16), median TNS -69, -69 and -34 ns, one
+  seed with TNS below -1000 ns among the 48 (two among the 16 before). Over all four sets Fmax is +8.2%
+  (56 of 63 runs better). Each detail changes every placement, so the sets are four samples of the same
+  thing, and the spread between them (6.0 to 9.5%) is what 16 seeds resolve.
+
+  Placement took 29% longer (the refinement has more to do) and routing 9% less (medians of runs side by
+  side on a loaded machine; not measured idle).
+  Everything measured before on designs with 4:1 multiplexers or adders (which is all of them: the user
+  design has 731 MX4 and 234 ADDF without `mux-chains`) was placed without these paths, so the ranking
+  of the placement options in the tables above (the placer learning, `timing-opt`, the heap weights, how
+  much `place-repair` brings) is open again.
+- **Half RAMs in the refinement:** the annealer picks a new bel near a cell's place, or anywhere for
+  types with fewer bels than `placer1/minBelsForGridPick` (64): the 32 RAM sites, but not their 64
+  halves, so half RAMs never moved after the analytic placement. GateMate now sets one more than the
+  number of half RAMs (65 on a CCGM1A1). In the
+  bad seeds the cache RAMs sat in the outer RAM columns with their logic 55 to 90 tiles away, and the
+  refinement then swaps 20 to 70 RAMs; alone (before the fix above, 8 seeds) Fmax +0.1%, TNS better on
+  6; with the fix against the fix without it, 8 seeds: Fmax +1.3% (3 better), mean TNS -79 against
+  -190 ns. Not significant either way; kept because a RAM stuck far from its logic is what the bad
+  seeds had in common.
+
+What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
+the environment switches they were behind are not in the tree). The builds with these switches computed
+the router's criticality weight with a `float` exponent, which rounds differently: the same placements
+route a little differently than with the code in the tree, so the comparisons below are among such
+builds.
+
+| Idea | Result |
+|---|---|
+| Criticality relative to each clock pair's constraint instead of its longest path (the 12 MHz clocks and the unconstrained clock crossings count as critical as the 33 MHz clock) | Fmax +1.4% (5 better), TNS mixed: noise. The half-period paths into the HyperBus PHY (12 endpoints, 15.15 ns) then get less weight and limit more seeds |
+| Placers ignore nets of more than 200 users (the BUFG experiment's effect without a BUFG) | Fmax +0.5% (3 of 7), TNS better on 2 |
+| Annealer timing weight 0.8 instead of 0.5 | Fmax -2.5% (2 better), more wire; one seed took the router 42905 iterations |
+| Router criticality weight `1 - crit^8` or `1 - crit` instead of `1 - crit^2` | -1.8% and -1.2% |
+| Placing again around the RAMs of a first placement (RAMs locked, the logic back to the analytic placer) | First 8 seeds +4.7% (6 better), all 16: -0.2%, mean TNS -1721 against -408 ns: where the second placement scattered the loop, nothing held it together. With the fix above it adds nothing either (29.89 against 29.95 MHz, 8 seeds), for 60% more placement time |
+| Estimating the nets between a RAM and the CPEs at its pins as they are (0 to 0.15 ns routed, about 1 ns estimated) | With the fix, 16 seeds: Fmax -1.7% (6 better), one seed with TNS -2721 ns. The estimate being too high seems to help: these paths lose most in routing |
+| An arc clearly more critical than the other users of a wire pays a fifth of the present congestion (the others give way first), on the placements placed twice | Fmax +2.1% (4 of 8), TNS better on 7, router time up. Worth repeating on the placements with the fix |
+
+Where the rest goes, with the fix (worst path of each seed): 18.5 to 24.8 ns of routing against 14.6
+to 21.2 ns estimated at placement. Of the difference, 0.3 to 3.8 ns are wires held by other nets
+(mostly not the same cell's, as it was before the LUT input swaps in the router), the rest is what the
+placement itself rules out: a connection to a neighbouring CPE is estimated at 0.3 ns over the CP lines
+and takes 0.9 to 1 ns through the switch boxes where the CPE's configuration or another net has the
+line. The clock skew on these paths is -1.6 to +2.2 ns; the placers' analysis runs without clock skew.
+
 ## Repeating the comparison after the timing fixes
 
 1. Rebuild; the delay tables are computed at start-up from the chip database, so they follow any

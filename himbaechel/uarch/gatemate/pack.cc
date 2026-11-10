@@ -509,6 +509,7 @@ void GateMatePacker::rename_param(CellInfo *cell, IdString name, IdString new_na
 void GateMatePacker::repack_cpe()
 {
     log_info("Repacking CPEs..\n");
+    remove_timing_links();
     for (auto &cell : ctx->cells) {
         if (cell.second->type.in(id_CPE_L2T4)) {
             Loc l = ctx->getBelLocation(cell.second->bel);

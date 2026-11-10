@@ -115,6 +115,11 @@ struct GateMateImpl : HimbaechelAPI
     // D1_02_int, see die.py): that LUT2 computes L10's function and L10 passes it on, where lut_bypass_allowed
     bool lut_bypass = true;
     bool lut_bypass_allowed(PipId pip) const;
+    // The bels a half block RAM has to choose from (32 RAMs of two halves per die)
+    int ram_halves() const { return 64 * dies; }
+    // The ports of a timing link: a net from one half of a CPE to the other, there from packing until repack()
+    // merges the halves after placement, for the paths through both (GateMatePacker::add_timing_link)
+    IdString tmg_link_o, tmg_link_i;
     // The LUT tree in the half `z` (CPE_LT_U_Z / CPE_LT_L_Z) of `tile` if L10 alone combines it: CPE_L2T4 with no input
     // but the LUT2s' and COMBIN, and nothing out but OUT (else nullptr)
     const CellInfo *lut_tree_alone(int tile, int z) const;

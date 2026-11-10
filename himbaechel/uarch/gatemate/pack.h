@@ -133,6 +133,8 @@ struct GateMatePacker
 
     // Cell creating
     CellInfo *create_cell_ptr(IdString type, IdString name);
+    void add_timing_link(CellInfo *from, CellInfo *to);
+    void remove_timing_links();
     void flush_cells();
     void remove_from_cluster(CellInfo *cell, std::vector<CellInfo *> &members);
     void pack_ram_cell(CellInfo &ci, CellInfo *cell, bool is_split);

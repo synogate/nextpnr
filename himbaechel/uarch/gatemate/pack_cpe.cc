@@ -398,6 +398,8 @@ void GateMatePacker::pack_cpe()
             ci.movePortTo(id_D2, upper, id_IN3);
             ci.movePortTo(id_D3, upper, id_IN4);
             ci.constr_children.push_back(upper);
+            // (the data inputs, in the upper half, to the output of the lower)
+            add_timing_link(upper, &ci);
         } else {
             ci.params[id_C_FUNCTION] = Property(C_MX4, 3);
             ci.params[id_INIT_L11] = Property(select, 4); // Selection bits
@@ -519,6 +521,49 @@ static bool is_addf_ci(NetInfo *net)
 {
     return net && net->users.entries() == 1 && (*net->users.begin()).cell->type == id_CC_ADDF &&
            (*net->users.begin()).port == id_CI;
+}
+
+// Until repack_cpe() merges them after placement, the halves of a CPE whose function takes both (a 4:1 multiplexer, an
+// adder) are two cells with no net between them, so the timing analysis of the placers saw no path through both: none
+// from a multiplexer's data inputs to its output, none from an adder's operands to its carry out or from its carry in
+// to the sum in the other half (and so none of the paths through either that the router then finds critical). A
+// timing link is a net between the halves that stands in for these paths while the design is placed: from
+// `tmg_link_o` of the half with the inputs to `tmg_link_i` of the half with the outputs, with the delay of the
+// inputs' own arcs (getCellDelay). remove_timing_links() takes them out again.
+void GateMatePacker::add_timing_link(CellInfo *from, CellInfo *to)
+{
+    NetInfo *link = ctx->createNet(ctx->idf("%s$tmg_link", from->name.c_str(ctx)));
+    from->addOutput(uarch->tmg_link_o);
+    from->connectPort(uarch->tmg_link_o, link);
+    to->addInput(uarch->tmg_link_i);
+    to->connectPort(uarch->tmg_link_i, link);
+}
+
+void GateMatePacker::remove_timing_links()
+{
+    std::vector<IdString> links;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->ports.count(uarch->tmg_link_o)) {
+            if (NetInfo *link = ci->getPort(uarch->tmg_link_o))
+                links.push_back(link->name);
+        }
+    }
+    for (IdString name : links) {
+        NetInfo *link = ctx->nets.at(name).get();
+        std::vector<CellInfo *> users;
+        for (auto &user : link->users)
+            users.push_back(user.cell);
+        for (CellInfo *user : users) {
+            user->disconnectPort(uarch->tmg_link_i);
+            user->ports.erase(uarch->tmg_link_i);
+        }
+        CellInfo *driver = link->driver.cell;
+        driver->disconnectPort(uarch->tmg_link_o);
+        driver->ports.erase(uarch->tmg_link_o);
+        ctx->net_aliases.erase(name);
+        ctx->nets.erase(name);
+    }
 }
 
 void GateMatePacker::pack_addf()
@@ -783,6 +828,12 @@ void GateMatePacker::pack_addf()
             merge_input(cy, upper, id_B, id_INIT_L01, id_D0_01, id_D1_01);
             upper->params[id_INIT_L10] = Property(LUT_XOR, 4);
             upper->params[id_C_FUNCTION] = Property(merged ? C_ADDF2 : C_ADDF, 3);
+            // (the operands in the upper half to the carry out of the lower half, and to its sum where the CPE has
+            // one bit; with two bits, the carry in and the operands of the first, in the lower half, to the sum of
+            // the second in the upper)
+            add_timing_link(upper, cy);
+            if (merged)
+                add_timing_link(cy, upper);
 
             if (i == grp.size() - 1) {
                 if (!cy->getPort(id_CO))

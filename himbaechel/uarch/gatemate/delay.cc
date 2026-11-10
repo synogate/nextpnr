@@ -275,6 +275,20 @@ void GateMateImpl::prepare_clock_tree_delays() const
 
 delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const
 {
+    // The carry of an adder goes to the CPE above on a line of its own, with no routing to speak of (its delay is
+    // in the cells' arcs to COUTY1). The estimates below take it through the switch boxes: about 0.5 ns for each
+    // CPE of the chain, 8 ns for a 32 bit adder
+    if (src_pin == id_COUTY1 && dst_pin == id_CINY1) {
+        Loc src_loc = ctx->getBelLocation(src_bel), dst_loc = ctx->getBelLocation(dst_bel);
+        if (src_loc.x == dst_loc.x && dst_loc.y == src_loc.y + 1)
+            return 0;
+    }
+    // A timing link joins the halves of one CPE (GateMatePacker::add_timing_link)
+    if (src_pin == tmg_link_o)
+        return 0;
+    // (The nets between a block RAM and the CPEs at its pins have wires of their own too, and are estimated about
+    // 1 ns too high each, where routed they take 0 to 0.15 ns. Estimating them as they are gained nothing on
+    // dmg_soc: 16 seeds, Fmax -1.7%, docs/timing_experiments.md)
     // A global clock reaches its sinks through the clock network, with delays unrelated to distance
     if (ctx->getBelType(src_bel) == id_GLBOUT) {
         WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
@@ -442,11 +456,29 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             {id_D0_03, id_IN7}, {id_D1_03, id_IN8}, {id_D0_11, id_IN5}, {id_D1_11, id_IN7},
     };
 
-    int z = (cell->bel != BelId()) ? (ctx->getBelLocation(cell->bel).z % 2) : 0;
+    // (the analytic placer asks before the cell has a bel: a CPE_LT_L goes to a lower half, whose inputs have
+    // other names in the timing database; taken for an upper half, an adder's operands there had no arcs)
+    int z = (cell->bel != BelId()) ? (ctx->getBelLocation(cell->bel).z % 2) : (cell->type == id_CPE_LT_L ? 1 : 0);
     if (cell->type.in(id_CPE_L2T4, id_CPE_LT_L, id_CPE_LT_U)) {
         // Internal connection from upper L2T4 into the lower half
         if (fromPort == id_COMBIN && toPort == id_OUT)
             return true;
+        // A timing link between the halves, there while the design is placed (GateMatePacker::add_timing_link):
+        // into it with the delay the input has to the half's own output, out of it with none (and not from one
+        // link into the other, which would make a loop of the two halves)
+        if (toPort == tmg_link_o) {
+            if (fromPort == tmg_link_i)
+                return false;
+            if (!getCellDelay(cell, fromPort, id_OUT, delay))
+                delay = DelayQuad{0};
+            return true;
+        }
+        // (The lower half of a two bit adder has the first bit: its sum does not depend on the operands of the
+        // second, in the upper half, only its carry out does. With an arc to the sum, a second operand computed
+        // from the first sum would make a loop.)
+        if (fromPort == tmg_link_i)
+            return toPort == id_COUTY1 ||
+                   (toPort == id_OUT && int_or_default(cell->params, id_C_FUNCTION, 0) != C_ADDF2);
         IdString fp = fromPort, tp = toPort;
         if (z == 0) {
             if (map_upper.count(fp))
@@ -467,6 +499,9 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             return true;
         if (fp == id_CINY1)
             return get_delay_from_tmg_db(ctx->idf("timing__ADDF2Y1_CINY1_%s", tp.c_str(ctx)), delay);
+        // The carry out of an adder's lower half, before repack() makes it a CPE_ADDF / CPE_ADDF2
+        if (tp == id_COUTY1)
+            return get_delay_from_tmg_db(ctx->idf("timing__ADDF2Y1_%s_COUTY1", fp.c_str(ctx)), delay);
         return get_delay_from_tmg_db(ctx->idf("timing__ARBLUT_%s_%s", fp.c_str(ctx), tp.c_str(ctx)), delay);
     } else if (cell->type.in(id_CPE_ADDF, id_CPE_ADDF2)) {
         IdString fp = fromPort, tp = toPort;
@@ -602,16 +637,19 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
     if (cell->type.in(id_CPE_L2T4, id_CPE_LT_L, id_CPE_LT_U)) {
         if (port.in(id_IN1, id_IN2, id_IN3, id_IN4, id_COMBIN, id_CINY1, id_CINY2, id_CINX, id_PINX, id_PINY1, id_PINY2,
                     id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10, id_D0_02, id_D1_02, id_D0_03, id_D1_03,
-                    id_D0_11, id_D1_11))
+                    id_D0_11, id_D1_11) ||
+            port == tmg_link_i)
             return TMG_COMB_INPUT;
         if (port == id_OUT && disconnected(id_IN1) && disconnected(id_IN2) && disconnected(id_IN3) &&
             disconnected(id_IN4) && disconnected(id_D0_00) && disconnected(id_D1_00) && disconnected(id_D0_01) &&
             disconnected(id_D1_01) && disconnected(id_D0_10) && disconnected(id_D1_10) && disconnected(id_D0_02) &&
             disconnected(id_D1_02) && disconnected(id_D0_03) && disconnected(id_D1_03) && disconnected(id_D0_11) &&
             disconnected(id_D1_11) && disconnected(id_COMBIN) && disconnected(id_CINX) && disconnected(id_PINX) &&
-            disconnected(id_CINY1) && disconnected(id_PINY1) && disconnected(id_CINY2) && disconnected(id_PINY2))
+            disconnected(id_CINY1) && disconnected(id_PINY1) && disconnected(id_CINY2) && disconnected(id_PINY2) &&
+            disconnected(tmg_link_i))
             return TMG_IGNORE; // LUT with no inputs is a constant
-        if (port.in(id_OUT))
+        // (COUTY1: the carry out of an adder's lower half, before repack() makes it a CPE_ADDF / CPE_ADDF2)
+        if (port.in(id_OUT, id_COUTY1) || port == tmg_link_o)
             return TMG_COMB_OUTPUT;
         return TMG_IGNORE;
     } else if (cell->type.in(id_CPE_ADDF, id_CPE_ADDF2)) {
