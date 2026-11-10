@@ -84,6 +84,8 @@ struct EstimateCache
     std::vector<int32_t> values;
     // GATEMATE_AXIS_STATS: calls, cache hits, calls outside the tables, time in misses (ns)
     int64_t calls = 0, hits = 0, outside = 0, miss_ns = 0;
+    // work in compute(): exit groups, exits processed, fallbacks, entry loop steps, paths
+    int64_t w_exits = 0, w_done = 0, w_fallback = 0, w_inner = 0, w_paths = 0;
     // by (source wire name, destination wire name): misses and their time
     std::map<std::pair<int, int>, std::pair<int64_t, int64_t>> miss_by_name;
 };
@@ -523,10 +525,23 @@ void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int pru
                 g->least = std::min(g->least, int(st.cost));
                 g->cost[st.plane] = std::min(g->cost[st.plane], int(st.cost));
             }
+            for (auto &g : wire_groups) {
+                g.plane_count = 0;
+                for (int p = 1; p < 13; p++)
+                    if (g.cost[p] < INF)
+                        g.planes[g.plane_count++] = p;
+            }
             cd.exits.insert(cd.exits.end(), wire_groups.begin(), wire_groups.end());
         }
         cd.exit_start.push_back(cd.exits.size());
         groups += cd.exits.size();
+        cd.exit_reach.clear();
+        for (int w = 0; w + 1 < int(cd.exit_start.size()); w++) {
+            int reach = 0;
+            for (int e = cd.exit_start[w]; e < cd.exit_start[w + 1]; e++)
+                reach = std::max(reach, std::max(std::abs(int(cd.exits[e].dx)), std::abs(int(cd.exits[e].dy))));
+            cd.exit_reach.push_back(reach);
+        }
         cd.entry_start.clear();
         cd.least_entry.clear();
         cd.entry_reach.clear();
@@ -706,10 +721,13 @@ delay_t GateMateAxis::estimate(WireId src, WireId dst) const
     dst = anchor(dst);
     int cs = tile_class[src.tile], cd = tile_class[dst.tile];
     EstimateCache &cache = estimate_cache;
-    if (stats_mode && ++cache.calls % 5000000 == 0) {
-        log_info("axis stats (one thread): %lld calls, %.1f%% cache hits, %.1f%% outside, %.2f us per miss\n",
+    if (stats_mode && ++cache.calls % 2000000 == 0) {
+        int64_t misses = std::max<int64_t>(1, cache.calls - cache.hits - cache.outside);
+        log_info("axis stats (one thread): %lld calls, %.1f%% cache hits, %.1f%% outside, %.2f us per miss; per miss "
+                 "%.1f exit groups, %.1f done, %.1f fallbacks, %.1f entry steps, %.1f paths\n",
                  (long long)cache.calls, 100.0 * cache.hits / cache.calls, 100.0 * cache.outside / cache.calls,
-                 cache.miss_ns / 1000.0 / std::max<int64_t>(1, cache.calls - cache.hits - cache.outside));
+                 cache.miss_ns / 1000.0 / misses, double(cache.w_exits) / misses, double(cache.w_done) / misses,
+                 double(cache.w_fallback) / misses, double(cache.w_inner) / misses, double(cache.w_paths) / misses);
         std::vector<std::pair<int64_t, std::pair<int, int>>> top;
         for (auto &entry : cache.miss_by_name)
             top.push_back({entry.second.second, entry.first});
@@ -803,37 +821,76 @@ delay_t GateMateAxis::compute(WireId src, int cs, WireId dst, int cd, bool prune
     // Through the plane change: the least over the exit's planes of the delay to the exit and from there on
     auto through = [](const ExitGroup &e, const int32_t *entry) {
         int value = INF;
-        for (int p = 1; p < 13; p++)
-            value = std::min(value, e.cost[p] + entry[p]);
+        for (int i = 0; i < e.plane_count; i++)
+            value = std::min(value, e.cost[e.planes[i]] + entry[e.planes[i]]);
         return value;
     };
-    // From output `dir` of the SB at (x0, y0), `extra` beyond the exit e, to each entry
-    auto from_sb = [&](const ExitGroup &e, int x0, int y0, int dir, int extra, bool has_turned) {
-        for (int n = n0; n < n1; n++) {
-            const EntryGroup &g = b.entries[n];
-            if (prune && extra + e.least + g.least >= best)
-                break; // (sorted by delay)
-            if (g.cp)
+    // The entries' positions, directions and least delays in a compact array (the groups are large)
+    struct Hot
+    {
+        int bound, x, y, least, index;
+        uint8_t dir, cp;
+        bool operator<(const Hot &o) const { return bound < o.bound || (bound == o.bound && index < o.index); }
+    };
+    const int entries = n1 - n0;
+    Hot hot_buf[64];
+    std::vector<Hot> hot_vec;
+    Hot *hot = hot_buf;
+    if (entries > 64) {
+        hot_vec.resize(entries);
+        hot = hot_vec.data();
+    }
+    // (in the order of a lower bound from any exit, or any SB a first turn reaches: the exits lie within
+    // exit_reach tiles of the source, a first turn two more and a diagonal step one; a CP line costs less per
+    // tile than the switch boxes, so no geometric bound for those)
+    const int exit_slack = a.exit_reach[src.index] + 3;
+    for (int n = 0; n < entries; n++) {
+        const EntryGroup &g = b.entries[n0 + n];
+        int x = tx + g.dx, y = ty + g.dy;
+        int bound = g.least + (g.cp ? 0 : lower_bound(x - sx, y - sy, exit_slack + 1));
+        hot[n] = {bound, x, y, int(g.least), n0 + n, g.dir, g.cp};
+    }
+    std::sort(hot, hot + entries);
+    EstimateCache &stats = estimate_cache;
+    // From output `dir` of the SB at (x0, y0), `extra` beyond the exit e, to each entry; e_bound: the least
+    // delay of the exit and any entry through the plane change (a lower bound of that part for each entry)
+    auto from_sb = [&](const ExitGroup &e, int e_bound, int x0, int y0, int dir, int extra, bool has_turned) {
+        if (prune && extra + e_bound >= best)
+            return;
+        for (int n = 0; n < entries; n++) {
+            const Hot &h = hot[n];
+            if (stats_mode)
+                stats.w_inner++;
+            int ends = std::max(int(e.least) + h.least, e_bound);
+            if (prune && extra + e.least + h.bound >= best)
+                break; // (sorted by that bound)
+            if (h.cp)
                 continue;
-            int x1 = tx + g.dx, y1 = ty + g.dy;
+            int dx = h.x - x0, dy = h.y - y0;
             // straight on: only along the lane
-            if (g.dir == dir && (x1 - x0) * UY[dir] - (y1 - y0) * UX[dir] != 0)
+            if (h.dir == dir && dx * UY[dir] - dy * UX[dir] != 0)
                 continue;
-            int bound = lower_bound(x1 - x0, y1 - y0, 1, g.dir != dir);
-            if (prune && extra + e.least + g.least + bound >= best)
+            if (prune && extra + ends + lower_bound(dx, dy, 1, h.dir != dir) >= best)
                 continue;
             bool turned;
-            int value = path(x0, y0, dir, x1, y1, g.dir, turned);
-            if (value >= INF || (prune && extra + value + e.least + g.least >= best))
+            if (stats_mode)
+                stats.w_paths++;
+            int value = path(x0, y0, dir, h.x, h.y, h.dir, turned);
+            if (value >= INF || (prune && extra + value + ends >= best))
                 continue;
-            best = std::min(best, extra + value + through(e, g.cost[turned || has_turned]));
+            best = std::min(best, extra + value + through(e, b.entries[h.index].cost[turned || has_turned]));
         }
     };
     // The exits in the order of a lower bound of the whole estimate (the entries lie within a few tiles of
     // the target)
-    std::pair<int, int> order_buf[64];
-    std::vector<std::pair<int, int>> order_vec;
-    std::pair<int, int> *order = order_buf;
+    struct Order
+    {
+        int bound, exit, ends;
+        bool operator<(const Order &o) const { return bound < o.bound || (bound == o.bound && exit < o.exit); }
+    };
+    Order order_buf[64];
+    std::vector<Order> order_vec;
+    Order *order = order_buf;
     int count = e1 - e0;
     if (count > 64) {
         order_vec.resize(count);
@@ -848,32 +905,39 @@ delay_t GateMateAxis::compute(WireId src, int cs, WireId dst, int cd, bool prune
         bool turn = !g.cp && (dx * UX[g.dir] + dy * UY[g.dir] + reach < 0 ||
                               std::abs(dx * UY[g.dir] - dy * UX[g.dir]) > reach);
         int bound = g.cp ? 0 : lower_bound(dx, dy, reach + 1, turn);
-        order[e - e0] = {least + bound, e};
+        order[e - e0] = {least + bound, e, least};
     }
     std::sort(order, order + count);
+    if (stats_mode)
+        stats.w_exits += count;
     for (int k = 0; k < count; k++) {
-        if (prune && order[k].first >= best)
+        if (prune && order[k].bound >= best)
             break;
-        const ExitGroup &s = a.exits[order[k].second];
+        const ExitGroup &s = a.exits[order[k].exit];
+        if (stats_mode)
+            stats.w_done++;
         int x0 = sx + s.dx, y0 = sy + s.dy;
         if (s.cp) {
-            for (int n = n0; n < n1; n++) {
-                const EntryGroup &g = b.entries[n];
-                if (prune && s.least + g.least >= best)
+            for (int n = 0; n < entries; n++) {
+                const Hot &h = hot[n];
+                if (prune && s.least + h.bound >= best)
                     break;
-                int dx = tx + g.dx - x0, dy = ty + g.dy - y0;
-                if (!g.cp || dx < 0 || dy < 0 || dx >= CP_SPAN || dy >= CP_SPAN)
+                int dx = h.x - x0, dy = h.y - y0;
+                if (!h.cp || dx < 0 || dy < 0 || dx >= CP_SPAN || dy >= CP_SPAN)
                     continue;
-                int value = cp_delay[((s.dir * 6 + g.dir) * CP_SPAN + dx) * CP_SPAN + dy];
+                int value = cp_delay[((s.dir * 6 + h.dir) * CP_SPAN + dx) * CP_SPAN + dy];
                 if (value < INF)
-                    best = std::min(best, s.least + g.least + value);
+                    best = std::min(best, s.least + h.least + value);
             }
             continue;
         }
-        from_sb(s, x0, y0, s.dir, 0, false);
+        const int e_bound = order[k].ends;
+        from_sb(s, e_bound, x0, y0, s.dir, 0, false);
         // Not heading towards the target: turn (or turn back) at the first SB where it can (this one if
         // big, else the next), then on with at most one more turn
         if ((tx - x0) * UX[s.dir] + (ty - y0) * UY[s.dir] < 2) {
+            if (stats_mode)
+                stats.w_fallback++;
             int a0 = big[sb_class(x0, y0)] ? 0 : 2;
             int first = run_of(x0, y0, s.dir, a0);
             if (first >= INF)
@@ -887,8 +951,8 @@ delay_t GateMateAxis::compute(WireId src, int cs, WireId dst, int cd, bool prune
                     if (t >= INF)
                         continue;
                     int x1 = cx + OX[o], y1 = cy + OY[o];
-                    if (!prune || first + t + through(s, least_entry) + lower_bound(tx - x1, ty - y1, reach + 1) < best)
-                        from_sb(s, x1, y1, j, first + t, true);
+                    if (!prune || first + t + e_bound + lower_bound(tx - x1, ty - y1, reach + 1) < best)
+                        from_sb(s, e_bound, x1, y1, j, first + t, true);
                 }
             }
         }

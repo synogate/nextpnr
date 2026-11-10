@@ -2,7 +2,7 @@
 
 Status (2026-11-09): implemented as `--vopt lookahead=axis` (`axis.h/.cc`), see "C++ implementation"
 at the end: on dmg_soc with router and placer, TNS better on 7 of 8 placements (median -664 -> -118 ns),
-Fmax +3.6%, the default since 2026-11-09; SA 1.4x and router2 2.5x slower. Measurements on the pip
+Fmax +3.6%, the default since 2026-11-09; SA 1.1x and router2 2.1x slower. Measurements on the pip
 graph of the empty CCGM1A1, WORST / SPEED, scripts in `docs/experiments/factored/`. All delays are pip
 delays in ps (wires are 0 ps; logic arcs of the cells are not part of routing).
 
@@ -315,6 +315,14 @@ offset, so (class, wire, class, wire, dx, dy) is an exact key; now 2^20 entries 
 repeats as in eval-estimate 0.37 us per call. The tables are kept per process by chip and options and
 copied for the next context (the tests and the GUI create many).
 
+Without changing any estimate (same placement and routing, bit for bit, on dmg_soc seed 46; the check
+mode finds no difference over a placement), a miss got cheaper by sorting the target's entry groups once
+per call by a lower bound from the source (the source's exit reach plus 3 tiles for a first turn and 1 for
+a diagonal step), keeping their positions in a compact array, bounding the exit and entry part through the
+plane change per exit, and looping over the planes an exit group has instead of all 12. dmg_soc seed 46,
+one run on an idle machine, HeAP / SA / router2: tables 28 / 56 / 30 s; axis before 22 / 96 / 102 s, now
+16 / 63 / 63 s (whole run 114 / 220 / 142 s).
+
 The placer asks for pins inside a CPE (`COMBOUT1_int -> D0_02_int` and the like), whose exit and entry
 lists are long: in SA 35-58% cache hits and 8-18 us per miss (`GATEMATE_AXIS_STATS=1` logs hits, time per
 miss and the costliest wire pairs). Tried and dropped: estimating such pins through the CPE's boundary
@@ -343,8 +351,8 @@ TNS better on 7 of 8 placements (seed 7: -108 vs -87 ns).
 
 ## Open points
 
-- Speed: router2 2.5x and SA 1.4x slower than with the tables. The misses on pins inside a CPE dominate
-  the placer; their long lists are the place to start (without changing the estimate, see Speed).
+- Speed: router2 2.1x and SA 1.1x slower than with the tables (HeAP faster). In the router most estimates
+  are misses (each arc is new in the first iteration), at ~2 us each with ~25 exit groups per wire.
 - Repeat the router-only comparison and other designs with the fixed build.
 - SB wires are estimated 80-100 ps too pessimistic (bridges in the middle of a path, three or more turns).
 - More designs (multi1, corescore25, vexii), the placer (`place-delay=axis`), and the default flow

@@ -78,6 +78,7 @@ struct GateMateAxis
         uint8_t dir, cp;
         int32_t least;
         int32_t cost[13]; // by plane; cp: [0]
+        uint8_t planes[12], plane_count; // the planes with a delay
     };
     struct ClassData
     {
@@ -89,6 +90,8 @@ struct GateMateAxis
         // its entries lie from it (tiles, either axis)
         std::vector<int32_t> least_entry;
         std::vector<int16_t> entry_reach;
+        // Per wire: how far its exits lie from it (tiles, either axis)
+        std::vector<int16_t> exit_reach;
     };
 
     Context *ctx = nullptr;
