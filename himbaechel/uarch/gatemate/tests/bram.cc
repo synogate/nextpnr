@@ -128,6 +128,171 @@ TEST_F(GateMateBramTest, ram_pin_cpes_keep_a_live_cluster_root_after_placement)
     EXPECT_GT(clustered, 0);
 }
 
+// A RAM input is fed through a CPE at the pin, whose LUT half takes the LUT driving the input. Where that LUT
+// fed other cells too, the half only passed its result on: one more level of logic and one more connection on
+// every path into the pin (on dmg_soc the address of the instruction cache, which ends the worst path in 11 of
+// 16 seeds, comes from such a LUT). The pin then gets a copy of the LUT, and the LUT stays for its other users.
+class GateMatePinLutTest : public GateMateBramTest
+{
+  protected:
+    CellInfo *ram = nullptr;
+    NetInfo *a = nullptr, *b = nullptr;
+
+    // A RAM with the address bits `bits` from one LUT2 `f` of the inputs a and b, which feeds another LUT
+    // too if `other_user`
+    void build(const std::vector<int> &bits, bool other_user, bool keep = false)
+    {
+        ram = ctx->createCell(ctx->id("ram"), id_CC_BRAM_20K);
+        ram->params[id_RAM_MODE] = Property("TDP");
+        for (auto p : {id_A_RD_WIDTH, id_A_WR_WIDTH})
+            ram->params[p] = Property(5, 32);
+        connect_input(ram, id_A_CLK, global_clock("clk"));
+        a = input("a");
+        b = input("b");
+        NetInfo *f = lut2("f", 0b0110, a, b);
+        if (keep)
+            ctx->cells.at(ctx->id("f"))->attrs[ctx->id("keep")] = Property(1, 1);
+        for (int bit : bits)
+            connect_input(ram, ctx->idf("A_ADDR[%d]", bit), f);
+        if (other_user)
+            output("g_out", lut2("g", 0b1000, f, input("c")));
+        output("o", connect_output(ram, ctx->id("A_DO[0]")));
+        pack();
+    }
+
+    // The LUT half of the CPE at the pin of address bit `bit`
+    const CellInfo *half_at(int bit)
+    {
+        NetInfo *pin = ram->getPort(ctx->idf("ADDRA0[%d]", bit));
+        if (!pin || !pin->driver.cell || pin->driver.cell->type != id_CPE_RAMO)
+            return nullptr;
+        NetInfo *in = pin->driver.cell->getPort(id_I);
+        return in ? in->driver.cell : nullptr;
+    }
+
+    // The half computes f from a and b itself
+    void expect_the_lut(const CellInfo *half, const std::string &what)
+    {
+        ASSERT_NE(half, nullptr) << what;
+        EXPECT_EQ(half->type, id_CPE_L2T4) << what;
+        EXPECT_EQ(half->getPort(id_D0_10), a) << what;
+        EXPECT_EQ(half->getPort(id_D1_10), b) << what;
+        EXPECT_EQ(int_or_default(half->params, id_INIT_L10, -1), 0b0110) << what;
+        EXPECT_EQ(half->cluster, ram->cluster) << what;
+    }
+
+    int cells_fed_by(const NetInfo *net, IdString type)
+    {
+        int n = 0;
+        for (auto &user : net->users)
+            n += user.cell->type == type;
+        return n;
+    }
+};
+
+TEST_F(GateMatePinLutTest, lut_feeding_a_pin_and_another_cell_is_copied_to_the_pin)
+{
+    build({7}, true);
+    const CellInfo *half = half_at(7);
+    expect_the_lut(half, "the half at the pin");
+    // The LUT is still there for its other user, free to be placed
+    ASSERT_TRUE(ctx->cells.count(ctx->id("f")));
+    const CellInfo *f = ctx->cells.at(ctx->id("f")).get();
+    EXPECT_NE(half, f);
+    EXPECT_EQ(f->cluster, ClusterId());
+    ASSERT_NE(f->getPort(id_OUT), nullptr);
+    EXPECT_EQ(f->getPort(id_OUT)->users.entries(), 1u);
+    EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 2);
+}
+
+TEST_F(GateMatePinLutTest, lut_feeding_two_pins_is_at_both)
+{
+    build({7, 8}, false);
+    expect_the_lut(half_at(7), "the half at the first pin");
+    expect_the_lut(half_at(8), "the half at the second pin");
+    EXPECT_NE(half_at(7), half_at(8));
+    // One of the two is the LUT itself: no third one is left
+    EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 2);
+    EXPECT_EQ(cells_fed_by(b, id_CPE_L2T4), 2);
+}
+
+TEST_F(GateMatePinLutTest, lut_feeding_one_pin_alone_moves_to_the_pin)
+{
+    build({7}, false);
+    const CellInfo *half = half_at(7);
+    expect_the_lut(half, "the half at the pin");
+    EXPECT_EQ(half->name, ctx->id("f"));
+    EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 1);
+}
+
+// A LUT marked to be kept is not copied, and with --vopt no-pin-lut-copies none is: the half at the pin passes
+// the LUT's result on
+TEST_F(GateMatePinLutTest, kept_lut_is_not_copied)
+{
+    build({7}, true, true);
+    const CellInfo *half = half_at(7);
+    ASSERT_NE(half, nullptr);
+    ASSERT_TRUE(ctx->cells.count(ctx->id("f")));
+    EXPECT_EQ(half->getPort(id_D0_10), ctx->cells.at(ctx->id("f"))->getPort(id_OUT));
+    EXPECT_EQ(half->getPort(id_D1_10), nullptr);
+    EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 1);
+}
+
+TEST_F(GateMatePinLutTest, no_copies_with_the_option_off)
+{
+    init_context("CCGM1A1", {"--allow-unconstrained", "--no-pin-lut-copies"});
+    build({7, 8}, true);
+    ASSERT_TRUE(ctx->cells.count(ctx->id("f")));
+    const NetInfo *f = ctx->cells.at(ctx->id("f"))->getPort(id_OUT);
+    for (int bit : {7, 8}) {
+        const CellInfo *half = half_at(bit);
+        ASSERT_NE(half, nullptr) << bit;
+        EXPECT_EQ(half->getPort(id_D0_10), f) << bit;
+    }
+    EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 1);
+}
+
+// The copies compute what the LUT computes: the placed and routed design against the netlist as it was read
+TEST_F(GateMatePinLutTest, design_with_copies_matches_reference)
+{
+    auto design = [&] {
+        CellInfo *mem = ctx->createCell(ctx->id("ram"), id_CC_BRAM_20K);
+        mem->params[id_RAM_MODE] = Property("TDP");
+        for (auto p : {id_A_RD_WIDTH, id_A_WR_WIDTH})
+            mem->params[p] = Property(5, 32);
+        NetInfo *clk = global_clock("clk");
+        connect_input(mem, id_A_CLK, clk);
+        connect_input(mem, id_A_EN, vcc());
+        connect_input(mem, id_A_WE, input("we"));
+        NetInfo *x = input("x"), *y = input("y"), *z = input("z");
+        // Three LUTs, each to two address bits or to an address bit and a data input, and to an output
+        NetInfo *f = lut2("f", 0b0110, x, y);
+        NetInfo *g = l2t4("g", 0b1000, 0b0110, 0b1110, x, y, z, x);
+        NetInfo *h = mx2("h", x, y, z);
+        connect_input(mem, ctx->id("A_ADDR[3]"), f);
+        connect_input(mem, ctx->id("A_ADDR[4]"), f);
+        connect_input(mem, ctx->id("A_ADDR[5]"), g);
+        connect_input(mem, ctx->id("A_DI[0]"), g);
+        connect_input(mem, ctx->id("A_ADDR[7]"), h);
+        connect_input(mem, ctx->id("A_DI[1]"), h);
+        for (int i = 2; i < 5; i++)
+            connect_input(mem, ctx->idf("A_DI[%d]", i), i == 2 ? x : i == 3 ? y : z);
+        for (int i = 0; i < 5; i++) {
+            connect_input(mem, ctx->idf("A_BM[%d]", i), vcc());
+            output(stringf("o%d", i), connect_output(mem, ctx->idf("A_DO[%d]", i)));
+        }
+        output("f_out", f);
+        output("g_out", g);
+        output("h_out", h);
+    };
+    EXPECT_TRUE(implementation_matches_reference(design, 400, 1));
+    int copies = 0;
+    for (auto &cell : ctx->cells)
+        copies += cell.second->type == id_CPE_L2T4 && cell.second->cluster != ClusterId() &&
+                  cell.first.str(ctx).find("_cpe") != std::string::npos && cell.second->getPort(id_D1_10) != nullptr;
+    EXPECT_GT(copies, 0);
+}
+
 // The LOC parameter of the RAM primitives ("D<die>X<column>Y<row>", cells_sim.v) places the RAM
 // in that block. pack_bram.cc reads it, but does not use it.
 TEST_F(GateMateBramTest, location_parameter)

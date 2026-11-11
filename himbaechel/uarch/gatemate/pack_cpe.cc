@@ -952,12 +952,25 @@ std::pair<CellInfo *, CellInfo *> GateMatePacker::move_ram_io(CellInfo *cell, Id
         ram_io_type = id_CPE_RAMO;
 
     if (o_net) {
-        if (o_net != net_PACKER_GND && o_net != net_PACKER_VCC && o_net->driver.cell &&
-            o_net->driver.cell->getPort(o_net->driver.port)->users.entries() == 1 &&
-            o_net->driver.cell->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_MX2 /*, id_CC_DFF, id_CC_DLT*/) &&
-            // A LUT taken into a fixed CPE outside its region would leave the region
-            (place || o_net->driver.cell->testRegion(ctx->getBelByLocation(Loc(cpe_loc.x, cpe_loc.y, cpe_loc.z - 4))))) {
-            CellInfo &ci = *o_net->driver.cell;
+        // The LUT driving the pin goes into the CPE at the pin
+        CellInfo *lut = o_net != net_PACKER_GND && o_net != net_PACKER_VCC ? o_net->driver.cell : nullptr;
+        if (lut && !(lut->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_MX2 /*, id_CC_DFF, id_CC_DLT*/) &&
+                     // A LUT taken into a fixed CPE outside its region would leave the region
+                     (place || lut->testRegion(ctx->getBelByLocation(Loc(cpe_loc.x, cpe_loc.y, cpe_loc.z - 4))))))
+            lut = nullptr;
+        // One that feeds other cells too stays for them, and the pin gets a copy: a half that only passed the
+        // LUT's result on would be a level of logic and a connection more on every path into the pin
+        if (lut && o_net->users.entries() > 1 && uarch->copy_pin_luts && !lut->attrs.count(ctx->id("keep"))) {
+            IdString name = ctx->idf("%s$%s_cpe", cell->name.c_str(ctx), oPort.c_str(ctx));
+            IdString out = o_net->driver.port;
+            lut = copy_cell(lut, name);
+            o_net = ctx->createNet(ctx->idf("%s$lut", name.c_str(ctx)));
+            lut->connectPort(out, o_net);
+            cell->disconnectPort(oPort);
+            cell->connectPort(oPort, o_net);
+        }
+        if (lut && o_net->users.entries() == 1) {
+            CellInfo &ci = *lut;
             /* if (ci.type.in(id_CC_DFF, id_CC_DLT)) {
                 cpe_half = create_cell_ptr(id_CPE_L2T4, ctx->idf("%s$%s_cpe", cell->name.c_str(ctx), oPort.c_str(ctx)));
                 ci.renamePort(id_Q, id_DOUT);

@@ -133,6 +133,8 @@ struct GateMatePacker
 
     // Cell creating
     CellInfo *create_cell_ptr(IdString type, IdString name);
+    // A cell `name` like `cell`, with its inputs on the same nets and its outputs open
+    CellInfo *copy_cell(const CellInfo *cell, IdString name);
     void add_timing_link(CellInfo *from, CellInfo *to);
     void remove_timing_links();
     void flush_cells();

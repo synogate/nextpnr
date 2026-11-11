@@ -274,6 +274,9 @@ Pending when this was written: `fuse-luts` (see "Logic depth" below).
   grew (28.5 -> 30.8 ns): a merged CPE takes up to 8 inputs from two cells' sources, which is
   harder to place close to and crowds its input muxes. Less depth only pays where the routing
   does not grow back.
+  That was with placers that did not see the paths through multiplexers and adders (bugs 40, 41). With
+  them fixed, N = 2 on dmg_soc: Fmax +8.5%, all 16 seeds better ("The logic levels of the loop" below).
+  N = 2 was not measured on the other designs since.
 - Further depth rewrites, not done, with what the data says:
   - 8:1 multiplexers: yosys has `CC_MX8`, the GateMate packer does not, hence `-nomx8`.
   - Two neighbouring LUT trees whose combined function fits a whole CPE (three LUT2 levels over
@@ -473,6 +476,57 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   endpoints and the TNS fall in every one of the sets. Three more seeds miss 33 MHz by 0.2 ns of TNS or less.
   The router's part has no test of its own: in a small design the other inputs find their places before the
   critical one gives way, with or without it.
+
+- **The logic levels of the loop, and the refinement (2026-11-11).** With the estimates right, the worst path
+  of a seed has 25 levels: 10.9 ns of logic and 19.8 ns of routing, 14.3 ns of that on the 12.6 connections of
+  four tiles and more (a connection to the next tile takes 0.47 ns, one over 2 to 3 tiles 0.60 ns, over 4 to
+  8 tiles 0.80 ns, over 17 to 32 tiles 1.43 ns: every level costs a connection, wherever its cell is). The
+  path runs over 224 tiles between a start and an end 61 tiles apart. About 390 of the 400 worst endpoints of a seed
+  start at one block RAM, the tags of the data cache; the worst path ends at the address inputs of the
+  instruction cache's RAMs in 11 of 16 seeds. Each change against the state above (16 seeds, 32.41 MHz,
+  30.60 - 34.56, 4 seeds at 33 MHz):
+
+  - *Two LUT levels in one CPE (`cpe-merge=2`, see "Logic depth").* The option was there, measured with the
+    placers that did not see the paths (+0.8%, with the routing growing back what the logic saved). Now:
+    835 pairs merged, 528 of them with a copy of the first LUT, 4% more CPE halves, 1% more wire. 35.17 MHz
+    (33.98 - 36.29), **+8.5%, all 16 seeds better and all at 33 MHz**. `cpe-merge=1` (no copies, 316 pairs)
+    and `fuse-luts` give nothing in the estimate after placement (+1.0%, 9 of 16; -0.2%, 7 of 16).
+  - *The LUT in front of a RAM pin (on by default, `no-pin-lut-copies`).* A RAM input is fed through the LUT
+    half of a CPE at the pin. The LUT driving the input moved into that half only where it fed nothing else;
+    otherwise the half passed its result on, a level of logic (0.4 ns) and a connection more. 1724 such
+    halves in dmg_soc, 660 behind a LUT (775 behind a register, 200 behind a multiplexer or an adder, which
+    stay): the address of the instruction cache comes from a LUT feeding three RAM halves and one other cell.
+    Now the pin gets a copy of the LUT (`GateMatePacker::move_ram_io`, for every block fed through CPEs).
+    33.25 MHz (31.74 - 34.61), +2.6% (13 of 16), mean TNS -9.7 -> -1.3 ns, 10 seeds at 33 MHz, 3% more wire.
+    With `cpe-merge=2`: 35.33 MHz (30.65 - 38.26), +0.5% over the merge alone (noise): a LUT merged with the
+    one before it is a 5-input LUT, which does not go to a pin.
+  - *A refinement that anneals (`refine-temp=3e-5`, setting `placer1/refineTemp`, off by default).* The
+    refinement of the analytic placement takes only moves that improve it, and after two or three iterations
+    its moves reach no further than the next tile. Started at 3e-5 it cools as the annealer does: 84
+    iterations instead of 20 (the refinement takes about four times as long), timing cost 985 -> 921,
+    wirelength 161000 -> 152000 (seed 2). Estimate after placement +5.9% (15 of 16) alone; from 1e-4:
+    +4.6% with 107 iterations, from 1e-5: +2.2% with 57. Routed, with the two above: 36.54 MHz
+    (32.87 - 39.42), +3.4% over them (13 of 16).
+
+  | | Fmax (geometric mean, range) | Against the state above | Seeds at 33 MHz |
+  |---|---|---|---|
+  | the state above | 32.41 MHz, 30.60 - 34.56 | | 4 |
+  | LUT copies at the pins (default) | 33.25 MHz, 31.74 - 34.61 | +2.6% (13 of 16) | 10 |
+  | `cpe-merge=2` alone | 35.17 MHz, 33.98 - 36.29 | +8.5% (16 of 16) | 16 |
+  | copies and `cpe-merge=2` | 35.33 MHz, 30.65 - 38.26 | +9.0% (14 of 16) | 15 |
+  | and `refine-temp=3e-5` | 36.54 MHz, 32.87 - 39.42 | +12.7% (15 of 16) | 15 |
+
+  The seed below 33 MHz in the last two rows (seed 3) fails on another path: from a FIFO's RAM to the
+  HyperBus outputs, half a period (15.15 ns), 8 levels with four connections of 2 ns. With the loop faster
+  this path limits a seed now and then; nothing was done about it.
+
+  Tried and dropped (estimates after placement, 16 seeds): the three RAM halves of the instruction cache
+  around the tag RAM of the data cache by LOC parameters (routed: 31.52 MHz, -2.8%, 3 of 16 better: the
+  loop also runs through the CPU, and the placers' own choice is no worse); a copy of a LUT for the upper
+  half of a 5-input LUT where the LUT feeds other cells too (+0.4%, 8 of 16; 16 such LUTs); for
+  `cpe-merge`, the pairs on the deepest paths first and of a LUT's inputs the deepest (+0.6% over the plain
+  order, 9 of 16), and a split of the pair where the upper half takes inputs of the second LUT too (109
+  pairs more, -1.1%, 7 of 16).
 
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed

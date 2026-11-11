@@ -20,6 +20,8 @@
 // What the placers take for the delays of the design while it is placed, against what the routing makes of them:
 // the estimate of a connection into a cell whose inputs cannot trade places, and the delays of the clocks.
 
+#include <random>
+#include <regex>
 #include "testing.h"
 
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
@@ -195,4 +197,73 @@ TEST_F(GateMateClockEstimateTest, clock_estimates_are_the_routed_delays)
     EXPECT_EQ(rams, 1);
     EXPECT_GE(registers, 2);
     ctx->finishRoute();
+}
+
+class GateMateRefinementTest : public GateMateTest
+{
+  protected:
+    // Registers between random LUTs of the inputs and of each other
+    void build()
+    {
+        std::mt19937 rng(7);
+        NetInfo *clk = global_clock("clk");
+        std::vector<NetInfo *> nets;
+        for (int i = 0; i < 6; i++)
+            nets.push_back(input(stringf("i%d", i)));
+        const int tables[] = {0b1000, 0b1110, 0b0110, 0b1001, 0b0111, 0b0001};
+        for (int n = 0; n < 120; n++) {
+            NetInfo *x = nets[rng() % nets.size()], *y = nets[rng() % nets.size()];
+            NetInfo *f = lut2(stringf("f%d", n), tables[rng() % 6], x, y);
+            nets.push_back(n % 3 ? f : dff(stringf("r%d", n), f, clk)->getPort(id_Q));
+        }
+        for (int i = 0; i < 8; i++)
+            output(stringf("o%d", i), nets[nets.size() - 1 - i]);
+    }
+
+    // The temperature the refinement starts at and the number of its last iteration, from the log
+    std::pair<double, int> refinement(const std::string &log)
+    {
+        std::smatch m;
+        std::pair<double, int> result(-1, 0);
+        if (std::regex_search(log, m, std::regex("at iteration #1: temp = ([0-9.]+)")))
+            result.first = std::stod(m[1]);
+        std::regex line("at iteration #([0-9]+): temp = ");
+        for (auto it = std::sregex_iterator(log.begin(), log.end(), line); it != std::sregex_iterator(); ++it)
+            result.second = std::max(result.second, std::stoi((*it)[1]));
+        return result;
+    }
+};
+
+// The refinement of the analytic placement takes only the moves that improve the placement, unless it starts
+// warm (--vopt refine-temp, setting placer1/refineTemp): then it anneals, over several times the iterations
+// (dmg_soc at 3e-5: 84 iterations against 20, Fmax +3.4% over 16 seeds)
+TEST_F(GateMateRefinementTest, refinement_starts_at_the_temperature_given)
+{
+    std::pair<double, int> cold, warm;
+    {
+        LogCapture info(LogLevel::INFO_MSG);
+        build();
+        ctx->pack();
+        ctx->place();
+        cold = refinement(info.str());
+    }
+    init_context("CCGM1A1", {"--allow-unconstrained", "--refine-temp=3e-5"});
+    EXPECT_NEAR(ctx->setting<float>("placer1/refineTemp", 0.0f), 3e-5, 1e-9);
+    {
+        LogCapture info(LogLevel::INFO_MSG);
+        build();
+        ctx->pack();
+        ctx->place();
+        warm = refinement(info.str());
+    }
+    EXPECT_NEAR(cold.first, 0.0, 1e-6);
+    EXPECT_NEAR(warm.first, 3e-5, 1e-6);
+    EXPECT_GT(cold.second, 0);
+    EXPECT_GT(warm.second, cold.second + 10);
+}
+
+TEST_F(GateMateRefinementTest, annealed_design_matches_reference)
+{
+    init_context("CCGM1A1", {"--allow-unconstrained", "--refine-temp=3e-5"});
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 200, 1));
 }

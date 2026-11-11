@@ -825,8 +825,8 @@ NEXTPNR_NAMESPACE_END
 
 NEXTPNR_NAMESPACE_BEGIN
 
-// Two levels of LUTs in one CPE (--vopt cpe-merge=N). TEMPORARY until measured
-// (docs/timing_experiments.md).
+// Two levels of LUTs in one CPE (--vopt cpe-merge=N). On dmg_soc N = 2 gives Fmax +8.5% (16 of 16 seeds,
+// docs/timing_experiments.md); off by default until measured on other designs.
 //
 // A LUT tree fills half a CPE, but a whole CPE has a third level, L20, combining the upper half's
 // tree with the lower half's. Where a LUT B fed by a LUT A depends on its other inputs only through
@@ -890,19 +890,7 @@ void GateMatePacker::merge_into_cpes(int level)
             NetInfo *fifth = signal;
             if (!alone) {
                 // A copy of A for B alone
-                CellInfo *copy = ctx->createCell(ctx->idf("%s$cpe_copy%d", a->name.c_str(ctx), copied), a->type);
-                copy->params = a->params;
-                copy->attrs = a->attrs;
-                copy->region = a->region;
-                for (auto &port : a->ports) {
-                    if (port.second.type == PORT_IN) {
-                        copy->addInput(port.first);
-                        if (port.second.net)
-                            copy->connectPort(port.first, port.second.net);
-                    } else {
-                        copy->addOutput(port.first);
-                    }
-                }
+                CellInfo *copy = copy_cell(a, ctx->idf("%s$cpe_copy%d", a->name.c_str(ctx), copied));
                 fifth = ctx->createNet(ctx->idf("%s$cpe_copy%d", signal->name.c_str(ctx), copied));
                 copy->connectPort(fuser.output(a), fifth);
                 a = copy;

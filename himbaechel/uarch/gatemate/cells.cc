@@ -25,6 +25,24 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+CellInfo *GateMatePacker::copy_cell(const CellInfo *cell, IdString name)
+{
+    CellInfo *copy = ctx->createCell(name, cell->type);
+    copy->params = cell->params;
+    copy->attrs = cell->attrs;
+    copy->region = cell->region;
+    for (auto &port : cell->ports) {
+        if (port.second.type == PORT_IN) {
+            copy->addInput(port.first);
+            if (port.second.net)
+                copy->connectPort(port.first, port.second.net);
+        } else {
+            copy->addOutput(port.first);
+        }
+    }
+    return copy;
+}
+
 CellInfo *GateMatePacker::create_cell_ptr(IdString type, IdString name)
 {
     CellInfo *cell = ctx->createCell(name, type);

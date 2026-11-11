@@ -57,6 +57,12 @@ struct Placer1Cfg
     // not routed, so these delays are the architecture's estimates (predictDelay): only for an architecture that
     // estimates its clock network
     bool clockSkew;
+    // The temperature the refinement of a placement (placer1_refine) starts at (setting placer1/refineTemp). By
+    // default it is the temperature annealing ends at: a move is taken only if it improves the placement, and the
+    // moves soon reach no further than the next tile. From a higher one the refinement is an annealing of the
+    // analytic placement that cools as the annealer's does: several times the iterations, and a placement the
+    // moves that pay at once do not get to
+    float refineTemp;
 };
 
 extern bool placer1(Context *ctx, Placer1Cfg cfg);

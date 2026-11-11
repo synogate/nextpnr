@@ -414,6 +414,9 @@ struct GateMateImpl : HimbaechelAPI
 
     // Partitions (partition.cc). With as_partition the top level ports stay as unrouted nets instead of
     // IO pads, so the result can be imported into another design with --vopt partition.
+    // A LUT that drives a pin of a RAM (or of another block whose pins are fed through CPEs) and other cells
+    // is copied into the CPE at the pin
+    bool copy_pin_luts = true;
     bool as_partition = false;
     // With partition_unrouted the partition is written placed only, after placing; importing it routes its nets
     bool partition_unrouted = false;

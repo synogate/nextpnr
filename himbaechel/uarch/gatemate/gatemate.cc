@@ -58,6 +58,9 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("no-cpe-cp", "do not use CP lines pass through CPE");
     specific.add_options()("no-bridges", "do not use CPE in bridge mode");
     specific.add_options()("no-cpout", "do not route from CP lines back to OUT1 / OUT2 through CPOUT");
+    specific.add_options()("no-pin-lut-copies",
+                           "do not copy a LUT that drives a RAM pin and other cells into the CPE at the pin (the CPE "
+                           "then only passes the LUT's result on)");
     specific.add_options()("as-partition",
                            "implement the design as a partition: top level ports become unrouted boundary nets instead "
                            "of IO pads, for importing the result with partition");
@@ -143,7 +146,7 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("rewrite-depth", po::value<float>(),
                            "apply mux-chains, fuse-luts and enable-to-lut only on paths at least this fraction as "
                            "deep (in logic levels) as the deepest");
-    // TEMPORARY until measured (docs/timing_experiments.md)
+    // (dmg_soc with 2: Fmax +8.5%, docs/timing_experiments.md; off by default until measured on other designs)
     specific.add_options()("cpe-merge", po::value<int>(),
                            "before packing, merge two levels of LUTs into one CPE where they fit: 1 where the first "
                            "feeds only the second, 2 also with a copy of the first");
@@ -192,6 +195,9 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("lut-swap-moves", po::value<std::string>(),
                            "moves for lut-swap-rounds: pairs, halves or both (default)");
     // TEMPORARY: no gain, see docs/timing_experiments.md; goes with its code after the ablation is redone
+    specific.add_options()("refine-temp", po::value<float>(),
+                           "temperature the refinement of the analytic placement starts at (default: only moves "
+                           "that improve the placement; 3e-5 anneals it, at about four times the iterations)");
     specific.add_options()("place-density-weight", po::value<float>(),
                            "weight of a pin density penalty in the annealing placer (default 0, off)");
     specific.add_options()("place-density-pins", po::value<float>(),
@@ -294,6 +300,7 @@ void GateMateImpl::read_options(const ArchArgs &args)
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
     use_cpout = args.options.count("no-cpout") == 0;
+    copy_pin_luts = args.options.count("no-pin-lut-copies") == 0;
     partition_unrouted = args.options.count("partition-unrouted") > 0;
     as_partition = args.options.count("as-partition") > 0 || partition_unrouted;
     partition_open = args.options.count("partition-open") > 0;
@@ -569,6 +576,8 @@ void GateMateImpl::init(Context *ctx)
     tmg_link_i = ctx->id("$TMG_LINK_I");
     prepare_options();
     auto &options = ctx->args.options;
+    if (options.count("refine-temp"))
+        ctx->settings[ctx->id("placer1/refineTemp")] = stringf("%g", options["refine-temp"].as<float>());
     if (options.count("place-density-weight"))
         ctx->settings[ctx->id("placer1/densityWeight")] = std::to_string(options["place-density-weight"].as<float>());
     if (options.count("place-density-pins"))

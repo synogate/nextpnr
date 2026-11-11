@@ -261,7 +261,7 @@ class SAPlacer
         wirelen_t min_wirelen = curr_wirelen_cost;
 
         int n_no_progress = 0;
-        temp = refine ? 1e-7 : cfg.startTemp;
+        temp = refine ? std::max(1e-7f, cfg.refineTemp) : cfg.startTemp;
 
         // Main simulated annealing loop
         for (int iter = 1;; iter++) {
@@ -1437,6 +1437,7 @@ Placer1Cfg::Placer1Cfg(Context *ctx)
     startTemp = ctx->setting<float>("placer1/startTemp", 1);
     timingFanoutThresh = std::numeric_limits<int>::max();
     clockSkew = ctx->setting<bool>("placer/clockSkew", false);
+    refineTemp = ctx->setting<float>("placer1/refineTemp", 1e-7f);
     directedMoveCrit = ctx->setting<float>("placer1/directedMoveCrit", -1.0f);
     directedMoveRadius = ctx->setting<int>("placer1/directedMoveRadius", 1);
     timing_driven = ctx->setting<bool>("timing_driven");
