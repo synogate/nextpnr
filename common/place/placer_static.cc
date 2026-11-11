@@ -149,6 +149,8 @@ struct PlacerNet
     RealPair wa_wl;
     // lines up with user indexes; plus one for driver
     std::vector<PlacerPort> ports;
+    // The users with a critical arc and its criticality, as of the last timing analysis (PlacerStaticCfg::arc_weight)
+    std::vector<std::pair<CellInfo *, float>> crit_users;
     int hpwl() { return (b1.x - b0.x) + (b1.y - b0.y); }
 };
 
@@ -970,8 +972,26 @@ class StaticPlacer
                     }
                 }
             }
-            float weight = 1.0 + 5 * std::pow(crit, 2);
+            float weight = 1.0 + cfg.timing_weight * std::pow(crit, cfg.crit_exponent);
             gradient += weight * (d_min - d_max);
+            // The pull of the critical arcs at this port (towards the other end; a smoothed sign of the distance, as
+            // the pull of a two-pin net is)
+            if (cfg.timing_driven && cfg.arc_weight > 0) {
+                auto pull = [&](CellInfo *other, float arc_crit) {
+                    if (arc_crit < cfg.arc_min_crit || other == nullptr || other == cell)
+                        return;
+                    if (other->udata == -1 && other->bel == BelId())
+                        return;
+                    float d = loc.at(axis) - cell_loc(other, ref).at(axis);
+                    gradient -= cfg.arc_weight * std::pow(arc_crit, cfg.arc_exponent) * d / std::sqrt(d * d + 4.0f);
+                };
+                if (port.second.type == PORT_IN) {
+                    pull(ni->driver.cell, crit);
+                } else if (port.second.type == PORT_OUT) {
+                    for (auto &user : nd.crit_users)
+                        pull(user.first, user.second);
+                }
+            }
         }
 
         NPNR_ASSERT(std::isfinite(gradient));
@@ -1285,7 +1305,7 @@ class StaticPlacer
         if (print)
             log_info("   system potential: %.0f hpwl: %.0f\n", system_potential(), system_hpwl());
         compute_overlap(print);
-        if ((iter % 10) == 0)
+        if ((iter % cfg.timing_period) == 0)
             update_timing();
     }
 
@@ -1306,6 +1326,18 @@ class StaticPlacer
             }
         }
         tmg.run(false);
+        if (cfg.arc_weight > 0) {
+            for (auto &net : nets) {
+                net.crit_users.clear();
+                if (net.skip || net.ni->driver.cell == nullptr)
+                    continue;
+                for (auto &usr : net.ni->users) {
+                    float crit = tmg.get_criticality(CellPortKey(usr));
+                    if (crit >= cfg.arc_min_crit)
+                        net.crit_users.emplace_back(usr.cell, crit);
+                }
+            }
+        }
     }
 
     void legalise_step(bool dsp_bram)
@@ -1645,6 +1677,7 @@ class StaticPlacer
     {
         groups.resize(cfg.cell_groups.size());
         tmg.setup_only = true;
+        tmg.with_clock_skew = cfg.clockSkew;
         tmg.setup();
         dump_density = ctx->setting<bool>("static/dump_density", false);
     };
@@ -1725,6 +1758,13 @@ bool placer_static(Context *ctx, PlacerStaticCfg cfg)
 PlacerStaticCfg::PlacerStaticCfg(Context *ctx)
 {
     timing_driven = ctx->setting<bool>("timing_driven");
+    timing_weight = ctx->setting<float>("placerStatic/timingWeight", 5.0f);
+    crit_exponent = ctx->setting<float>("placerStatic/critExponent", 2.0f);
+    timing_period = std::max(1, ctx->setting<int>("placerStatic/timingPeriod", 10));
+    clockSkew = ctx->setting<bool>("placer/clockSkew", false);
+    arc_weight = ctx->setting<float>("placerStatic/arcWeight", 0.0f);
+    arc_exponent = ctx->setting<float>("placerStatic/arcExponent", 4.0f);
+    arc_min_crit = ctx->setting<float>("placerStatic/arcMinCrit", 0.5f);
 
     hpwl_scale_x = 1;
     hpwl_scale_y = 1;

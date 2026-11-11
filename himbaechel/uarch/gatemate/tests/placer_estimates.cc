@@ -22,6 +22,7 @@
 
 #include <random>
 #include <regex>
+#include "placer_static.h"
 #include "testing.h"
 
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
@@ -265,5 +266,90 @@ TEST_F(GateMateRefinementTest, refinement_starts_at_the_temperature_given)
 TEST_F(GateMateRefinementTest, annealed_design_matches_reference)
 {
     init_context("CCGM1A1", {"--allow-unconstrained", "--refine-temp=3e-5"});
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 200, 1));
+}
+
+// The electrostatic placer (--placer static) lays the modules of a design out as islands where the analytic one
+// wraps them around each other (dmg_soc: 17% less wirelength, docs/timing_experiments.md). On GateMate it takes its
+// delays from the placer's estimates and can pull the ends of critical arcs together (placerStatic/arcWeight).
+class GateMateStaticPlacerTest : public GateMateRefinementTest
+{
+  protected:
+    void use_static(const std::vector<std::string> &settings = {})
+    {
+        init_context("CCGM1A1", {"--allow-unconstrained"});
+        ctx->settings[ctx->id("placer")] = std::string("static");
+        for (size_t i = 0; i + 1 < settings.size(); i += 2)
+            ctx->settings[ctx->id(settings[i])] = settings[i + 1];
+    }
+
+    // Places the design and returns the log
+    std::string place()
+    {
+        LogCapture info(LogLevel::INFO_MSG);
+        build();
+        ctx->pack();
+        ctx->place();
+        return info.str();
+    }
+
+    // The wirelength the refinement ends with
+    static int final_wirelength(const std::string &log)
+    {
+        int result = -1;
+        std::regex line("at iteration #[0-9]+: temp = [0-9.]+, timing cost = [0-9]+, wirelen = ([0-9]+)");
+        for (auto it = std::sregex_iterator(log.begin(), log.end(), line); it != std::sregex_iterator(); ++it)
+            result = std::stoi((*it)[1]);
+        return result;
+    }
+};
+
+// Without bels the placer cannot ask predictDelay; its own default (0.1 ns and 0.1 ns per tile) is far from a chip
+// where the CPE next door costs 0.5 to 1 ns and a tile more a few 10 ps (dmg_soc: Fmax +4.6% with these delays)
+TEST_F(GateMateStaticPlacerTest, delays_are_those_of_the_estimates)
+{
+    use_static();
+    std::string log = place();
+    std::smatch m;
+    ASSERT_TRUE(std::regex_search(
+            log, m,
+            std::regex("Static placer delays: next door ([0-9]+) ps, 2 / 4 / 10 / 40 tiles ([0-9]+) / ([0-9]+) / "
+                       "([0-9]+) / ([0-9]+) ps")));
+    int next = std::stoi(m[1]), d4 = std::stoi(m[3]), d10 = std::stoi(m[4]), d40 = std::stoi(m[5]);
+    EXPECT_GT(next, 400);
+    EXPECT_LT(next, 1500);
+    EXPECT_GT(d10, d4);
+    EXPECT_GT(d40, d10);
+    // (the default would give 4.1 ns)
+    EXPECT_LT(d40, 3500);
+    EXPECT_LT(d40 - next, 40 * 60);
+}
+
+TEST_F(GateMateStaticPlacerTest, placed_design_matches_reference)
+{
+    use_static();
+    EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 200, 1));
+}
+
+// The pull is towards the other end of the arc. On all arcs alike (no threshold, exponent 0) it is three more
+// two-pin nets per arc: the wirelength stays about what it was (772 and 769); pushed apart it would triple
+TEST_F(GateMateStaticPlacerTest, critical_arcs_pull_their_ends_together)
+{
+    use_static();
+    // (on by default on GateMate, for the critical arcs)
+    EXPECT_NEAR(PlacerStaticCfg(ctx).arc_weight, 3.0f, 1e-6);
+    EXPECT_NEAR(PlacerStaticCfg(ctx).arc_min_crit, 0.5f, 1e-6);
+    use_static({"placerStatic/arcWeight", "0"});
+    int plain = final_wirelength(place());
+    use_static({"placerStatic/arcWeight", "3", "placerStatic/arcMinCrit", "0", "placerStatic/arcExponent", "0"});
+    int pulled = final_wirelength(place());
+    ASSERT_GT(plain, 0);
+    ASSERT_GT(pulled, 0);
+    EXPECT_LT(pulled, plain * 3 / 2);
+}
+
+TEST_F(GateMateStaticPlacerTest, design_placed_without_the_pull_matches_reference)
+{
+    use_static({"placerStatic/arcWeight", "0"});
     EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 200, 1));
 }

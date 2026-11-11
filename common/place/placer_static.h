@@ -64,6 +64,22 @@ struct PlacerStaticCfg
     // for calculating timing estimates based on distance
     // estimate = c + mx*dx + my * dy
     delay_t timing_c = 100, timing_mx = 100, timing_my = 100;
+    // A pin's pull grows with the criticality of its arc: 1 + timing_weight * crit^crit_exponent (settings
+    // placerStatic/timingWeight and placerStatic/critExponent), with the criticalities of an analysis every
+    // timing_period iterations (placerStatic/timingPeriod)
+    float timing_weight = 5.0f;
+    float crit_exponent = 2.0f;
+    int timing_period = 10;
+    // As Placer1Cfg::clockSkew (the same setting, placer/clockSkew)
+    bool clockSkew = false;
+    // A critical arc pulls its driver and its user together, on top of the wirelength of the net: with
+    // arc_weight * crit^arc_exponent of the pull of a two-pin net, for arcs of at least arc_min_crit (settings
+    // placerStatic/arcWeight, 0 = off, placerStatic/arcExponent, placerStatic/arcMinCrit). In the wirelength
+    // of a net only the pins at the edges of its box are pulled, so a critical user among many users of a net is
+    // not drawn to the driver by the weight of its pin.
+    float arc_weight = 0.0f;
+    float arc_exponent = 4.0f;
+    float arc_min_crit = 0.5f;
     // groups of cells that should be placed together.
     // groups < logic_groups are logic like LUTs and FFs, further groups for BRAM/DSP/misc
     std::vector<StaticCellGroupCfg> cell_groups;

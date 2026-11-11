@@ -633,6 +633,10 @@ void GateMateImpl::init(Context *ctx)
     // (docs/timing_experiments.md). The estimates are those of predictDelay (clock_tree_delays)
     if (!ctx->settings.count(ctx->id("placer/clockSkew")))
         ctx->settings[ctx->id("placer/clockSkew")] = std::string("1");
+    // In the electrostatic placer (--placer static) a critical arc pulls its two ends together: dmg_soc Fmax
+    // +2.2% over 16 seeds and no seed below 33.6 MHz, the benchmark designs +1.0% (docs/timing_experiments.md)
+    if (!ctx->settings.count(ctx->id("placerStatic/arcWeight")))
+        ctx->settings[ctx->id("placerStatic/arcWeight")] = std::to_string(3.0f);
     // The annealer picks a new bel for a cell near its place, or anywhere for the types with fewer bels than this:
     // near a block RAM there is no other. By default that is fewer than 64, which the 32 RAM sites of a die are
     // and their 64 halves are not, so that half RAMs never moved in the refinement
@@ -2113,6 +2117,51 @@ void GateMateImpl::configurePlacerHeap(PlacerHeapCfg &cfg)
 
 void GateMateImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
 {
+    // The delay between two places while the cells have no bels: what predictDelay gives from the output of a CPE
+    // to an input of a CPE that far away, taken around the middle of the chip. (The placer's own default, 0.1 ns
+    // and 0.1 ns per tile, is far off: next door costs 0.65 ns here and a tile more about 0.04 ns.)
+    {
+        int w = ctx->getGridDimX(), h = ctx->getGridDimY();
+        auto table = std::make_shared<std::vector<delay_t>>(size_t(w) * h, 0);
+        auto cpe_at = [&](int x, int y) {
+            for (int r = 0; r < 8; r++)
+                for (int dx = -r; dx <= r; dx++)
+                    for (int dy = -r; dy <= r; dy++) {
+                        if (x + dx < 0 || y + dy < 0 || x + dx >= w || y + dy >= h)
+                            continue;
+                        BelId bel = ctx->getBelByLocation(Loc(x + dx, y + dy, CPE_LT_L_Z));
+                        if (bel != BelId())
+                            return bel;
+                    }
+            return BelId();
+        };
+        // (the mean over the four places of a CPE in the pattern of the switch boxes, and both directions)
+        for (int dy = 0; dy < h; dy++)
+            for (int dx = 0; dx < w; dx++) {
+                int64_t sum = 0;
+                int count = 0;
+                for (int k = 0; k < 8; k++) {
+                    int x = (w - dx) / 2 + (k & 1), y = (h - dy) / 2 + ((k >> 1) & 1);
+                    BelId src = cpe_at(x, y), dst = cpe_at(x + dx, y + dy);
+                    if (src == BelId() || dst == BelId())
+                        continue;
+                    sum += (k & 4) ? predictDelay(dst, id_OUT, src, id_IN1) : predictDelay(src, id_OUT, dst, id_IN1);
+                    count++;
+                }
+                table->at(size_t(dy) * w + dx) = count ? delay_t(sum / count) : 650 + 40 * (dx + dy);
+            }
+        log_info("Static placer delays: next door %d ps, 2 / 4 / 10 / 40 tiles %d / %d / %d / %d ps\n",
+                 int(table->at(1)), int(table->at(2)), int(table->at(4)), int(table->at(10)), int(table->at(40)));
+        IdString link_o = tmg_link_o;
+        cfg.predict_delay = [table, w, h, link_o](Context *, const PlacerStaticCfg &, Loc src, IdString src_pin, Loc dst,
+                                                  IdString dst_pin) -> delay_t {
+            // A timing link joins the halves of one CPE, and a carry goes to the CPE above on its own line
+            if (src_pin == link_o || (src_pin == id_COUTY1 && dst_pin == id_CINY1))
+                return 0;
+            int dx = std::min(std::abs(dst.x - src.x), w - 1), dy = std::min(std::abs(dst.y - src.y), h - 1);
+            return table->at(size_t(dy) * w + dx);
+        };
+    }
     cfg.glbBufTypes.insert(id_CLKIN);
     cfg.glbBufTypes.insert(id_GLBOUT);
     cfg.glbBufTypes.insert(id_PLL);

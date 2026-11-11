@@ -569,8 +569,80 @@ all numbers below are from these runs, in parallel on one machine, so the times 
     vexsmp2, multi8, multi12 and multi15 ran into the 90 minutes, 7 of them in the router's first
     iterations; with 4 hours none ran into the limit).
   - Four runs ended with router2's `Failed to route arc` (multi12 without options, multi8 with the merge,
-    multi15 and coreblocks with both; in iteration 1 to 3, both builds): an arc that finds no path even
-    without its bounding box. Not looked into; it is neither option's.
+    multi15 and coreblocks with both; in iteration 1 to 3, both builds). Neither option's: the search kept a
+    meeting point of its two halves whose path had changed since it was checked (a wire of it reached more
+    cheaply through another pip) and used a CPE's CP line with two settings; the path was dropped at the
+    end and nothing took its place. Fixed (the cheapest meeting point that still holds is taken); multi8
+    seed 10 routes, the other two pass the iteration they failed in.
+  - Still open: runs whose router never clears its last conflicts (5 of the 180 without the merge, 1 with
+    it, one dmg_soc seed with the static placer). router2 now logs the last conflicts every 50 iterations:
+    in micropython seed 1 it is nets of one column of CPEs trading inputs and CP lines (`TI6_int` reached by
+    `IN6_int` for one net and by `PINY1` for another, input multiplexer outputs shared by two nets), other
+    wires each iteration, so that no wire's history grows (8 to 13 after 50 iterations).
+
+  *The target clock does not matter.* dmg_soc with the PLL at 40 and at 45 MHz instead of 33: the same
+  placement and routing bit for bit in all 16 seeds (Fmax 34.44 MHz with the Linux build in all three). The
+  criticality of an arc is relative to the worst path of its pair of clock edges, not to the constraint, so the
+  placers and the router work on the worst path whether the target is met or not. Only TNS and the count
+  of failing endpoints change.
+
+  *Module islands: the electrostatic placer (`--placer static`).* Vivado and Quartus pull a design apart into
+  islands of its modules; here it is one blob. A map of the placed dmg_soc by top-level module
+  (`modmap.py` on the written netlist) shows why that is more than looks: the analytic placer puts the CPU
+  as a column into the middle and wraps the pixel pipeline around it in a C (3400 cells, 6.8% of its nets
+  leave the module; RMS radius 39 tiles where 20 would hold it), the DMA unit falls into two lumps on
+  opposite sides of the CPU, and the picture is the same for every seed. The 26 block RAMs take 26 of the 32 sites all over the
+  chip and their modules follow them.
+
+  - By hand (the pipeline and the DMG interface held in the lower left quarter by a region, analytic
+    placer): 34.7 and 35.1 MHz for two seeds that give 36.7 and 38.3 without. Not the way.
+  - nextpnr's second placer, `--placer static` (electrostatic, after ePlace/RePlAce), gives the islands:
+    CPU, pipeline, DMA unit and caches each in one piece, wirelength after the refinement 130000 against
+    157000 (-17%), 3% less wire routed, the router 40% faster. As it was, Fmax -4.1% (33.03 against 34.44
+    MHz; Linux build, 16 seeds): it took its delays as 0.1 ns plus 0.1 ns per tile, where the CPE next door
+    costs 0.8 ns here and 40 tiles 2.0 ns.
+  - *Delays from the estimates* (`configurePlacerStatic`: a table by distance of what `predictDelay` gives
+    between two CPEs, and the clock skew as in the other placers): 34.55 MHz, +4.6% (14 of 16), level with
+    the analytic placer. Other weights of the critical pins (2 or 20 for 5; 10 or 20 with exponent 4 for 2) and
+    an analysis every 3 iterations instead of 10 all lose 1.3 to 4.6%.
+  - *Critical arcs pull their ends together* (`placerStatic/arcWeight`, 3 on GateMate; `arcExponent` 4,
+    `arcMinCrit` 0.5). The worst path of the islands went 35 tiles to the arbiter's island and 46 back to the
+    CPU: the weight of a critical pin only acts where the pin is at the edge of its net's box, which a user
+    among many is not. Now each arc of at least 0.5 criticality pulls driver and user together with
+    3 * crit^4 of the pull of a two-pin net. Weight 1 / 3 / 10: 35.24 / 35.30 / 35.07 MHz (+2.0 / +2.2 /
+    +1.5% over none), and no seed below 33.3 MHz (analytic: 29.96). Exponent 2: -1.7%; 8: +0.7%; threshold
+    0.8: +2.5% with the Linux build and -0.5% with the Windows build, left at 0.5.
+
+  | dmg_soc, 16 seeds | Fmax (geometric mean, range) | Against the analytic placer |
+  |---|---|---|
+  | Linux build: analytic (default) | 34.44 MHz, 29.96 - 37.71 | |
+  | static as it was | 33.03 MHz, from 31.25 | -4.1% |
+  | static, delays from the estimates | 34.55 MHz, from 31.17 | +0.3% |
+  | static, and the pull of critical arcs | 35.30 MHz, from 33.60 | +2.5% |
+  | Windows build: analytic (default) | 35.33 MHz, 30.65 - 38.26 | |
+  | static with the pull | 35.60 MHz, from 33.95 | +0.8% (8 of 16) |
+  | static with the pull, `refine-temp=3e-5` | 37.30 MHz, 34.65 - 38.31 | +5.6% (13 of 16) |
+  | analytic, `refine-temp=3e-5` | 36.54 MHz, 32.87 - 39.42 | +3.4% |
+
+  Run time (medians of 16 runs, 32 at a time): analytic 356 s placer, 375 s refinement, 812 s router; static
+  94 s refinement and 513 s router; static with `refine-temp` 478 s refinement and 355 s router (analytic
+  with it: 1468 s and 549 s).
+
+  On the benchmark designs (Linux build, seeds 1 - 5; not all runs of the full designs had ended: 76 pairs
+  without the pull, 59 with it) the static placer is level with the analytic one and much faster: -0.8% (38
+  of 76 better) at 0.62 of the run time without the pull, -0.2% (28 of 59) at 0.78 with it; the pull itself
+  +1.0% (34 of 59). The small designs lose (picorv32 -1.8%, micropython -4.0%, minerva -7.6% with the
+  pull), the full ones gain (corescore45 +4.5%, multi8 +9.2%, mor1kx +8.0%). So the analytic placer stays
+  the default, and `--placer static` is the choice for a design of several loosely coupled modules like
+  dmg_soc, with `--vopt refine-temp=3e-5` where the run time allows.
+
+  What limits dmg_soc then (static, pull, `refine-temp`; 16 seeds): in 11 seeds the loop through the caches
+  and the CPU at 26.1 to 27.7 ns, in 5 seeds, three of the four slowest among them, the half period from the RAM of
+  a FIFO through the HyperBus controller to the output registers at the pads (12.0 to 14.3 ns for half of
+  26 to 29 ns). That RAM lies up to 88 tiles from the pads: the static placer snaps the block RAMs to
+  sites early (the step more than doubles the wirelength of that moment) and each to the nearest free
+  one in turn. Not done: an
+  assignment of the RAMs to the sites as a whole, by the timing of their paths.
 
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed
