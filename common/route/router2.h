@@ -76,7 +76,9 @@ struct Router2Cfg
     // critical nets give way first; the history of the wire, which the critical arc pays as before, still moves it
     // where they cannot. An arc of criticality c pays 1 - (1 - share) * c^4 of the present congestion: with the
     // same share for all arcs, the conflicts among nets that are far from critical take longer to resolve (the
-    // router a third longer on GateMate's dmg_soc) for the same timing.
+    // router a third longer on GateMate's dmg_soc) for the same timing. The same holds for the present cost of a
+    // resource in conflict (a mux select that the nets through it must agree on): an arc more critical than the arcs
+    // of every other net that sets the resource pays this share of it.
     float critical_present_share;
     float critical_priority_margin;
 

@@ -66,6 +66,7 @@ set(TEST_SOURCES
     tests/mx8.cc
     tests/netlist_eval.cc
     tests/netlist_eval.h
+    tests/placer_estimates.cc
     tests/pll.cc
     tests/qor.cc
     tests/random_logic.cc

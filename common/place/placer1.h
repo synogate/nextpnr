@@ -52,6 +52,11 @@ struct Placer1Cfg
     // stays there.
     float directedMoveCrit;
     int directedMoveRadius;
+    // The timing analysis of the placer counts the delays of the clocks to the start and the end of a path (setting
+    // placer/clockSkew, off by default, also for the analytic placer). While the design is placed the clocks are
+    // not routed, so these delays are the architecture's estimates (predictDelay): only for an architecture that
+    // estimates its clock network
+    bool clockSkew;
 };
 
 extern bool placer1(Context *ctx, Placer1Cfg cfg);

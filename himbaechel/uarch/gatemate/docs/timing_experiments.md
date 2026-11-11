@@ -396,7 +396,7 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   third longer: the conflicts among nets far from critical resolve more slowly (iterations 3 to 6 route
   1.5 to 2 times as many nets, each slower). Graded by c^4 it takes no longer than without the priority
   (three seeds side by side: 1749 s against 2120 s without and 2777 s with the flat share). Graded by c^2:
-  +2.3% (13 of 15). A flat share of 0.5: +2.3% (13 of 14). A flat share of 0 (a critical arc never pays
+  +2.3% (13 of 15). A flat share of 0.5: +2.2% (14 of 15). A flat share of 0 (a critical arc never pays
   for a less critical net): iteration 5 to 9 after 45 minutes, stopped.
 
 - **Directed moves in the refinement (`placer1/directedMoveCrit`, GateMate 0.5):** what the outlier seeds
@@ -418,12 +418,61 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   Fmax +4.7% (13 of 16 better), and no seed is left behind: the worst is 30.8 MHz with TNS -87 ns, seed 12
   goes from 24.3 to 32.5 MHz. Three seeds meet 33 MHz, seven are within 2 ns of TNS. The other settings tried
   give the same picture (16 seeds each): criticality 0.8 31.75 MHz, any criticality 31.67 MHz, radius 3 with
-  six tries 31.90 MHz (15 seeds), all with the worst seed at 29.7 MHz or better and a mean TNS of -14 to
-  -22 ns. The refinement stops as before (no new least wirelength in an iteration), after 18 iterations in the
+  six tries 31.99 MHz, all with the worst seed at 29.7 MHz or better and a mean TNS of -13 to -22 ns. The refinement stops as before (no new least wirelength in an iteration), after 18 iterations in the
   median; without that, a few dozen directed moves keep coming in every iteration with nothing gained.
 
   From the state before this section, all 16 seeds: 28.04 -> 32.03 MHz (+14.2%, all better), median TNS
   -442 -> -11 ns, failing endpoints 387 -> 21.
+
+- **The estimate against the routing (bugs 42, 43).** With the placers seeing the paths, what they take for
+  the delays matters. Measured on the state above with the constant MX2 fold of the same day (16 seeds:
+  31.68 MHz, 29.39 - 32.91, median TNS -5.6 ns, no seed at 33 MHz), over the connections on the paths into
+  the 400 worst endpoints of each seed: the estimate after placement is right on average and off by up to
+  2.5 ns of the period for a seed, and the worst path of a seed is routed 2.4 ns above its estimate, nearly
+  all of it on connections to a CPE one to three tiles away: estimated at the 0.3 ns of a CP line and routed
+  at 0.9 to 1 ns through the switch boxes. Three causes, three changes:
+
+  - *The clock skew.* A global clock reaches the registers after 0.8 to 2.4 ns (0.95 ns in the top rows,
+    2.25 ns in the middle of the chip) and the clock inputs of the block RAMs with no delay. The analysis of
+    the routed design counts that, the placers' did not: for them the worst endpoint was a register behind a
+    RAM in all 16 seeds, on a path with 1.4 to 2.3 ns more than its delay says, while 14 of the routed
+    designs failed first at a RAM's address input. Now the placers analyse with the clock skew (`placer/clockSkew`, on for
+    GateMate), from the estimates of the clock delays; these were 2.2 ns for the clock inputs of half the RAM
+    halves, which the search of the clock network does not reach (bug 43). 16 seeds: Fmax +1.5% (11 of 15,
+    one seed in the router's one-wire stall), median TNS -5.6 -> -2.7 ns.
+  - *Inputs that cannot trade places.* The estimates come from the empty chip, where each first-level LUT
+    input is reached from both pairs of CPE inputs through the swap of the subtrees. Only a plain LUT tree
+    has that swap. The select S1 of a 4:1 multiplexer comes in on IN7 / IN8 or on the CP line from the left,
+    S0 on IN5 / IN6 or on the one from below: S1 from the CPE below was estimated at 0.3 ns and routed at
+    0.9 ns (bug 42). The worst path of a seed has three selects (the multiplexers of the critical loop),
+    estimated 1.1 ns too fast in all. Now the input of a cell without the swap is estimated to the place it
+    has (`estimate_sink`). The selects on the worst paths go from 1.01 to 0.93 ns each (0.74 ns with the clock
+    skew too), 16 seeds alone: Fmax +0.7% (9 of 16), median TNS -5.6 -> -2.7 ns.
+  - *Critical inputs of LUT trees that gave way (router2).* Where a plain LUT tree has its most critical input
+    from the CPE below or left and that input sits in the other subtree, the subtrees must be swapped, and with
+    them the other three inputs, which have their fastest ways as the tree stands. The swap is one select for
+    the four nets, a resource in conflict while they disagree. The present cost of that conflict grew for the
+    critical input like for the others (scaled by its crit weight, but with three other uses against one), and
+    after seven iterations it was more than the 0.65 ns of the detour: an input of criticality 0.97 left the
+    CP line to three of 0.15 to 0.3 that had not found their new places yet (seed 2, traced). The share of the
+    present congestion that a most critical arc pays on a wire (`router2/criticalPresentShare`) now holds for
+    a resource too. In the trace the input keeps the line and the others are in place two iterations later;
+    such connections on the paths into the worst endpoints of seed 2: 19 -> 11. Same placements, 16 seeds:
+    Fmax +0.6% (12 of 16), median TNS -5.6 -> -4.4 ns. What is left are trees whose other inputs are as
+    critical (within 0.03 in 35 of 43 cases looked at): two inputs cannot both have the line.
+
+  All three, 16 seeds:
+
+  | | Fmax (geometric mean, range) | TNS median / mean | Failing endpoints (median) | Seeds at 33 MHz |
+  |---|---|---|---|---|
+  | before | 31.68 MHz, 29.39 - 32.91 | -5.6 / -16.6 ns | 16 | 0 |
+  | clock skew and estimate | 32.26 MHz, 30.14 - 34.64 | -1.0 / -10.9 ns | 6 | 3 |
+  | and the router | 32.41 MHz, 30.60 - 34.56 | -1.1 / -9.7 ns | 4 | 4 |
+
+  Fmax +2.3% (10 of 16 better), which is at the edge of what two sets of 16 seeds differ by; the failing
+  endpoints and the TNS fall in every one of the sets. Three more seeds miss 33 MHz by 0.2 ns of TNS or less.
+  The router's part has no test of its own: in a small design the other inputs find their places before the
+  critical one gives way, with or without it.
 
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed
@@ -442,12 +491,13 @@ builds.
 | With the fix, 16 seeds against the fix: annealer timing weight 0.7 instead of 0.5 | Fmax -1.3% (7 of 15 better) |
 | With the fix, 16 seeds: analytic placer's timing weight 30 or 100 instead of 10, or 30 with criticality exponent 4 instead of 2 | +1.9% (9 of 15), +1.1% (9 of 15), -2.9% (5 of 15): no trend, and the first and the last have a seed of their own with TNS below -2900 ns |
 
-Where the rest goes, with the fix (worst path of each seed): 18.5 to 24.8 ns of routing against 14.6
-to 21.2 ns estimated at placement. Of the difference, 0.3 to 3.8 ns are wires held by other nets
-(mostly not the same cell's, as it was before the LUT input swaps in the router), the rest is what the
-placement itself rules out: a connection to a neighbouring CPE is estimated at 0.3 ns over the CP lines
-and takes 0.9 to 1 ns through the switch boxes where the CPE's configuration or another net has the
-line. The clock skew on these paths is -1.6 to +2.2 ns; the placers' analysis runs without clock skew.
+Where the rest goes, with all of the above (worst path of each seed, mean of 16): 19.8 ns of routing
+against 18.0 ns estimated at placement. Of the 1.7 ns, 1.3 ns are on connections to a CPE one to three
+tiles away: 31 of 156 such connections are routed 0.3 ns or more above the estimate, all into plain LUT
+trees, where another input of the tree as critical, or another net out of the source CPE, has the CP line
+or the place the line comes in at. The estimate gives every input its fastest way; which of them can
+have it together it does not know. The longer connections are 0.4 ns above their estimates in all, wires
+held by other nets.
 
 ## Repeating the comparison after the timing fixes
 

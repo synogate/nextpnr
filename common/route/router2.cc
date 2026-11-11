@@ -124,6 +124,10 @@ struct Router2
         float hist_cong_cost = 1.0;
         // Historical cost of each value, grown by its uses while the resource is in conflict
         dict<int, float> value_hist;
+        // As PerWireData: after the iteration before, the criticality of the most critical arc that sets the
+        // resource, its net, and the criticality of the most critical arc of the other nets
+        float top_crit = 0, top_crit_other = 0;
+        int top_net = -1;
     };
 
     Context *ctx;
@@ -602,6 +606,17 @@ struct Router2
             if (other_uses > 0)
                 other_uses += rd.value_count.size();
             resource_present_cost = 1.0f + other_uses * curr_cong_weight * crit_weight;
+            if (cfg.critical_present_share < 1.0f && other_uses > 0) {
+                // As for a wire: more critical than every other net that sets the resource, the arc pays a share
+                // of the conflict and the others give way first. Where several arcs must change their ways
+                // together for that (the inputs of a LUT tree, to its other subtree), they take some iterations,
+                // in which the conflict would cost the critical arc more than the detour that ends it
+                float others = rd.top_net == net->udata ? rd.top_crit_other : rd.top_crit;
+                if (crit > others + cfg.critical_priority_margin) {
+                    float share = 1.0f - (1.0f - cfg.critical_present_share) * crit * crit * crit * crit;
+                    resource_present_cost = 1.0f + other_uses * curr_cong_weight * crit_weight * share;
+                }
+            }
             // The values held in conflict longest cost more: where the users of one value cannot leave it, the
             // others, though as many, turn to it
             if (value >= 0) {
@@ -636,6 +651,10 @@ struct Router2
         for (auto &wd : flat_wires) {
             wd.top_crit = wd.top_crit_other = 0;
             wd.top_net = -1;
+        }
+        for (auto &rd : flat_resources) {
+            rd.top_crit = rd.top_crit_other = 0;
+            rd.top_net = -1;
         }
         std::vector<std::pair<float, store_index<PortRef>>> by_crit;
         for (size_t n = 0; n < nets_by_udata.size(); n++) {
@@ -675,6 +694,19 @@ struct Router2
                         auto fnd = nd.wires.find(cursor);
                         if (fnd == nd.wires.end() || fnd->second.first == PipId())
                             break;
+                        GroupId resource = ctx->getResourceKeyForPip(fnd->second.first);
+                        if (resource != GroupId()) {
+                            auto &rd = resource_data(resource);
+                            if (rd.top_net == int(n)) {
+                                // (a more critical arc of the net sets it too)
+                            } else if (crit > rd.top_crit) {
+                                rd.top_crit_other = rd.top_crit;
+                                rd.top_crit = crit;
+                                rd.top_net = int(n);
+                            } else if (crit > rd.top_crit_other) {
+                                rd.top_crit_other = crit;
+                            }
+                        }
                         cursor = ctx->getPipSrcWire(fnd->second.first);
                     }
                 }

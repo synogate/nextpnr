@@ -298,25 +298,29 @@ delay_t GateMateImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_be
             if (found != sinks.end())
                 return found->second;
         }
+        // The clock inputs of a block RAM have no delay from the global clocks; the search above ends before it
+        // has seen all of them, and the estimates below take them through the switch boxes (2.2 ns)
+        if (ctx->getBelBucketForBel(dst_bel) == id_RAM_HALF)
+            return 0;
     }
     int d2d = 0;
     if (tile_extra_data(src_bel.tile)->die != tile_extra_data(dst_bel.tile)->die)
         d2d += 2000;
     if (table_place) {
-        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = estimate_sink(dst_bel, dst_pin);
         delay_t delay =
                 src != WireId() && dst != WireId() ? lookahead.estimate(src, dst, axis_place ? axis_near_radius : -1) : -1;
         if (delay >= 0)
             return delay + d2d;
     }
     if (axis_place) {
-        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = estimate_sink(dst_bel, dst_pin);
         delay_t delay = src != WireId() && dst != WireId() ? axis.estimate(src, dst) : -1;
         if (delay >= 0)
             return delay + d2d;
     }
     if (model_place) {
-        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = ctx->getBelPinWire(dst_bel, dst_pin);
+        WireId src = ctx->getBelPinWire(src_bel, src_pin), dst = estimate_sink(dst_bel, dst_pin);
         if (src != WireId() && dst != WireId())
             return distance.estimate(src, dst) + d2d;
     }

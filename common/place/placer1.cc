@@ -238,6 +238,7 @@ class SAPlacer
 
         // Invoke timing analysis to obtain criticalities
         tmg.setup_only = true;
+        tmg.with_clock_skew = cfg.clockSkew;
         tmg.setup();
 
         // Calculate costs after initial placement
@@ -1435,6 +1436,7 @@ Placer1Cfg::Placer1Cfg(Context *ctx)
     minBelsForGridPick = ctx->setting<int>("placer1/minBelsForGridPick", 64);
     startTemp = ctx->setting<float>("placer1/startTemp", 1);
     timingFanoutThresh = std::numeric_limits<int>::max();
+    clockSkew = ctx->setting<bool>("placer/clockSkew", false);
     directedMoveCrit = ctx->setting<float>("placer1/directedMoveCrit", -1.0f);
     directedMoveRadius = ctx->setting<int>("placer1/directedMoveRadius", 1);
     timing_driven = ctx->setting<bool>("timing_driven");

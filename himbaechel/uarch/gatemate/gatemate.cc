@@ -424,6 +424,24 @@ void GateMateImpl::prepare_options()
     }
     if (model_route || model_place || evaluate || !lookahead.built())
         distance.init(ctx, [this](PipId pip) { return pip_allowed_by_options(pip); });
+    // (for estimate_sink)
+    unswapped_wire.clear();
+    for (auto &type : ctx->chip_info->tile_types) {
+        dict<IdString, int> by_name;
+        for (int i = 0; i < type.wires.ssize(); i++)
+            by_name.emplace(IdString(type.wires[i].name), i);
+        unswapped_wire.emplace_back();
+        for (int input = 0; input < 2; input++)
+            for (int lut = 0; lut < 4; lut++) {
+                auto pin = by_name.find(ctx->idf("CPE.D%d_0%d_int", input, lut));
+                auto place = by_name.find(ctx->idf("CPE.P%d_0%d_int", input, lut));
+                if (pin == by_name.end() || place == by_name.end())
+                    continue;
+                if (unswapped_wire.back().empty())
+                    unswapped_wire.back().assign(type.wires.ssize(), -1);
+                unswapped_wire.back()[pin->second] = place->second;
+            }
+    }
     if (axis_route || axis_place) {
         int prune = options.count("axis-prune") ? options["axis-prune"].as<int>() : 600;
         int keep = options.count("axis-keep") ? options["axis-keep"].as<int>() : 1000;
@@ -599,6 +617,13 @@ void GateMateImpl::init(Context *ctx)
     // of a few tiles do not bring them over (docs/timing_experiments.md)
     if (!ctx->settings.count(ctx->id("placer1/directedMoveCrit")))
         ctx->settings[ctx->id("placer1/directedMoveCrit")] = std::to_string(0.5f);
+    // The placers count the clock skew, as the analysis of the routed design does. A global clock reaches the
+    // registers after 0.8 to 2.4 ns, the later the further from the top and bottom rows, and the block RAMs with no
+    // delay at all: a path from a RAM to a register has up to 2.4 ns more than its delay says, one from a register
+    // to a RAM as much less. Without the skew the placers took the first kind for the critical ones on dmg_soc
+    // (docs/timing_experiments.md). The estimates are those of predictDelay (clock_tree_delays)
+    if (!ctx->settings.count(ctx->id("placer/clockSkew")))
+        ctx->settings[ctx->id("placer/clockSkew")] = std::string("1");
     // The annealer picks a new bel for a cell near its place, or anywhere for the types with fewer bels than this:
     // near a block RAM there is no other. By default that is fewer than 64, which the 32 RAM sites of a die are
     // and their 64 halves are not, so that half RAMs never moved in the refinement
@@ -1107,19 +1132,38 @@ const CellInfo *GateMateImpl::lut_tree_alone(int tile, int z) const
         if (bels[i].z != z)
             continue;
         const CellInfo *ci = ctx->getBoundBelCell(BelId(tile, i));
-        if (!ci || ci->type != id_CPE_L2T4)
-            return nullptr;
-        for (auto &port : ci->ports) {
-            if (!port.second.net)
-                continue;
-            if (port.second.type == PORT_IN
-                        ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10, id_COMBIN)
-                        : port.first != id_OUT)
-                return nullptr;
-        }
-        return ci;
+        return swappable_lut_tree(ci) ? ci : nullptr;
     }
     return nullptr;
+}
+
+bool GateMateImpl::swappable_lut_tree(const CellInfo *ci)
+{
+    if (!ci || ci->type != id_CPE_L2T4)
+        return false;
+    for (auto &port : ci->ports) {
+        if (!port.second.net)
+            continue;
+        if (port.second.type == PORT_IN
+                    ? !port.first.in(id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10, id_COMBIN)
+                    : port.first != id_OUT)
+            return false;
+    }
+    return true;
+}
+
+WireId GateMateImpl::estimate_sink(BelId bel, IdString pin) const
+{
+    WireId wire = ctx->getBelPinWire(bel, pin);
+    if (wire == WireId() || unswapped_wire.empty())
+        return wire;
+    auto &places = unswapped_wire[ctx->chip_info->tile_insts[wire.tile].type];
+    if (places.empty() || places[wire.index] < 0)
+        return wire;
+    const CellInfo *ci = ctx->getBoundBelCell(bel);
+    if (!ci || swappable_lut_tree(ci))
+        return wire;
+    return WireId(wire.tile, places[wire.index]);
 }
 
 // The bypass pips (D1_00_int / D1_02_int to an input of L10 / L11) take both inputs of L10 through one first-level

@@ -123,6 +123,17 @@ struct GateMateImpl : HimbaechelAPI
     // The LUT tree in the half `z` (CPE_LT_U_Z / CPE_LT_L_Z) of `tile` if L10 alone combines it: CPE_L2T4 with no input
     // but the LUT2s' and COMBIN, and nothing out but OUT (else nullptr)
     const CellInfo *lut_tree_alone(int tile, int z) const;
+    // (a cell for which lut_tree_alone holds, wherever it is)
+    static bool swappable_lut_tree(const CellInfo *ci);
+    // The wire the placers' delay estimate takes for an input pin. The estimates come from the empty chip, where
+    // every first-level LUT input (CPE.D0_00_int ...) is reached from both pairs of CPE inputs, through the subtree
+    // swap. Only a plain LUT tree has that swap (tree_swap_allowed): an input of any other cell, like a select of
+    // a 4:1 multiplexer, is estimated to the place it has without the swap (CPE.P0_00_int ...). Taken to the pin,
+    // such an input was estimated at the 0.3 ns of the CP line from the CPE below (or left) where the routing must
+    // go through the switch boxes to the other pair, 0.9 ns
+    WireId estimate_sink(BelId bel, IdString pin) const;
+    // (per tile type, by the wire of the pin: the wire of that place in the tile, or -1)
+    std::vector<std::vector<int>> unswapped_wire;
     bool timing_opt_after_place = false;
     // After routing, up to `rounds` rounds of swapping the input pairs of LUT trees on critical paths,
     // each kept only if it improves Fmax (`test_undo`: try any trees, and undo every round); returns

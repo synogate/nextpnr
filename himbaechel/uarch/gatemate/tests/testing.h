@@ -105,6 +105,11 @@ class GateMateTest : public ::testing::Test
     ::testing::AssertionResult place_ram_pair(const std::string &lower, const std::string &upper);
 
     // Run the packer through the Arch entry point (as the command line flow does).
+    // Binds `cell` (with the rest of its cluster) to `bel`, locked; false if that does not fit
+    bool place_locked(CellInfo *cell, BelId bel);
+    // The pips of the route of `net` to `wire`, from the sink back to the source
+    std::vector<PipId> route_to(const NetInfo *net, WireId wire);
+
     void pack();
     // Run the packer, reporting an error message as test failure (ASSERT_TRUE(packs())).
     ::testing::AssertionResult packs();

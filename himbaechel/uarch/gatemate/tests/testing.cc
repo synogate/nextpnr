@@ -749,6 +749,46 @@ void GateMateTest::place_and_route()
     return outputs_match(reference.get(), ctx, steps, seed);
 }
 
+bool GateMateTest::place_locked(CellInfo *cell, BelId bel)
+{
+    if (bel == BelId())
+        return false;
+    if (cell->cluster == ClusterId()) {
+        if (!ctx->checkBelAvail(bel) || !ctx->isValidBelForCellType(cell->type, bel))
+            return false;
+        ctx->bindBel(bel, cell, STRENGTH_LOCKED);
+        return true;
+    }
+    Loc at = ctx->getBelLocation(bel);
+    for (BelId root_bel : ctx->getBelsByTile(at.x, at.y)) {
+        std::vector<std::pair<CellInfo *, BelId>> placement;
+        if (!ctx->getClusterPlacement(cell->cluster, root_bel, placement))
+            continue;
+        bool fits = false, free = true;
+        for (auto &p : placement) {
+            fits |= p.first == cell && p.second == bel;
+            free &= p.second != BelId() && ctx->checkBelAvail(p.second);
+        }
+        if (!fits || !free)
+            continue;
+        for (auto &p : placement)
+            ctx->bindBel(p.second, p.first, STRENGTH_LOCKED);
+        return true;
+    }
+    return false;
+}
+
+std::vector<PipId> GateMateTest::route_to(const NetInfo *net, WireId wire)
+{
+    std::vector<PipId> pips;
+    while (net->wires.count(wire) && net->wires.at(wire).pip != PipId() && pips.size() < 100) {
+        PipId pip = net->wires.at(wire).pip;
+        pips.push_back(pip);
+        wire = ctx->getPipSrcWire(pip);
+    }
+    return pips;
+}
+
 LogCapture::LogCapture(LogLevel level) { log_streams.push_back(std::make_pair(&stream, level)); }
 
 LogCapture::~LogCapture()

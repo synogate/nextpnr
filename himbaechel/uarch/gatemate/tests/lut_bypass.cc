@@ -178,48 +178,6 @@ class GateMateLutBypassTest : public GateMateTest, public ::testing::WithParamIn
         return found;
     }
 
-    // Binds `cell` (with the rest of its cluster) to `bel`, locked; false if that does not fit
-    bool place_locked(CellInfo *cell, BelId bel)
-    {
-        if (bel == BelId())
-            return false;
-        if (cell->cluster == ClusterId()) {
-            if (!ctx->checkBelAvail(bel) || !ctx->isValidBelForCellType(cell->type, bel))
-                return false;
-            ctx->bindBel(bel, cell, STRENGTH_LOCKED);
-            return true;
-        }
-        Loc at = ctx->getBelLocation(bel);
-        for (BelId root_bel : ctx->getBelsByTile(at.x, at.y)) {
-            std::vector<std::pair<CellInfo *, BelId>> placement;
-            if (!ctx->getClusterPlacement(cell->cluster, root_bel, placement))
-                continue;
-            bool fits = false, free = true;
-            for (auto &p : placement) {
-                fits |= p.first == cell && p.second == bel;
-                free &= p.second != BelId() && ctx->checkBelAvail(p.second);
-            }
-            if (!fits || !free)
-                continue;
-            for (auto &p : placement)
-                ctx->bindBel(p.second, p.first, STRENGTH_LOCKED);
-            return true;
-        }
-        return false;
-    }
-
-    // The pips of the route of `net` to `wire`, from the sink back to the source
-    std::vector<PipId> route_to(const NetInfo *net, WireId wire)
-    {
-        std::vector<PipId> pips;
-        while (net->wires.count(wire) && net->wires.at(wire).pip != PipId() && pips.size() < 100) {
-            PipId pip = net->wires.at(wire).pip;
-            pips.push_back(pip);
-            wire = ctx->getPipSrcWire(pip);
-        }
-        return pips;
-    }
-
     std::string describe(const std::vector<PipId> &pips)
     {
         std::string s;

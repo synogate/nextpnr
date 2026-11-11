@@ -45,6 +45,8 @@ struct PlacerHeapCfg
     bool placeAllAtOnce;
     float netShareWeight;
     bool parallelRefine;
+    // As Placer1Cfg::clockSkew (the same setting, placer/clockSkew)
+    bool clockSkew;
     bool chainRipup;
     int cell_placement_timeout;
 

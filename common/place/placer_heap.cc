@@ -166,6 +166,7 @@ class HeAPPlacer
             : ctx(ctx), cfg(cfg), fast_bels(ctx, /*check_bel_available=*/true, -1), tmg(ctx)
     {
         tmg.setup_only = true;
+        tmg.with_clock_skew = cfg.clockSkew;
         tmg.setup();
 
         for (auto &cell : ctx->cells)
@@ -2196,6 +2197,7 @@ PlacerHeapCfg::PlacerHeapCfg(Context *ctx)
     criticalityExponent = ctx->setting<int>("placerHeap/criticalityExponent");
     timingWeight = ctx->setting<int>("placerHeap/timingWeight");
     parallelRefine = ctx->setting<bool>("placerHeap/parallelRefine", false);
+    clockSkew = ctx->setting<bool>("placer/clockSkew", false);
     netShareWeight = ctx->setting<float>("placerHeap/netShareWeight", 0);
     disableCtrlSet = ctx->setting<bool>("placerHeap/noCtrlSet", false);
 
