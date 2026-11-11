@@ -1374,13 +1374,23 @@ struct Router2
                     }
                 }
             }
+            // A meeting point is checked for a resource used with two values when it is recorded. But the search
+            // goes on, and a wire of the path may be reached more cheaply through another pip afterwards: the path
+            // through the meeting point as it is at the end may use a resource twice where the one checked did not
+            // (GateMate: into a CPE's CP line by one input and out by another). Then the cheapest meeting point whose
+            // path holds now takes its place; without this the arc failed although paths were at hand.
+            if (midpoint_wire != -1 && !const_mode && path_resource_conflict(nd, midpoint_wire)) {
+                ROUTE_LOG_DBG("   Path found uses a resource with two values, looking for another meeting point\n");
+                midpoint_wire = -1;
+                best_meet = std::numeric_limits<float>::max();
+                for (int wire : t.dirty_wires) {
+                    auto &wd = flat_wires.at(wire);
+                    if (wd.cost_fwd != PerWireData::NOT_VISITED && wd.cost_bwd != PerWireData::NOT_VISITED)
+                        try_meet(wire);
+                }
+            }
             if (midpoint_wire != -1)
                 break;
-        }
-        // The two halves of the path may each be fine but use a resource with different values together
-        if (midpoint_wire != -1 && !const_mode && path_resource_conflict(nd, midpoint_wire)) {
-            ROUTE_LOG_DBG("   Path found uses a resource with two values, retrying\n");
-            midpoint_wire = -1;
         }
         ArcRouteResult result = ARC_SUCCESS;
         if (midpoint_wire != -1) {
@@ -1478,6 +1488,101 @@ struct Router2
     }
 #undef ARC_ERR
 
+    // Why an arc found no path even without its bounding box: a search backwards from the sink by the hard rules of
+    // route_arc alone (no costs), first with the resource values the net already has, then without them. Where it
+    // dies, the pips it could not take are listed; where it arrives, the path and the resources along it.
+    void explain_failed_arc(NetInfo *net, store_index<PortRef> i, size_t phys_pin)
+    {
+        auto &nd = nets.at(net->udata);
+        WireId src = ctx->getNetinfoSourceWire(net), dst = ctx->getNetinfoSinkWire(net, net->users.at(i), phys_pin);
+        for (int with_resources = 1; with_resources >= 0; with_resources--) {
+            dict<WireId, PipId> seen;
+            std::queue<WireId> queue;
+            std::vector<std::string> rejected;
+            WireId reached;
+            seen[dst] = PipId();
+            queue.push(dst);
+            while (!queue.empty() && reached == WireId() && seen.size() < 500000) {
+                WireId w = queue.front();
+                queue.pop();
+                PipId bound_pip;
+                auto fnd_wire = nd.wires.find(w);
+                if (fnd_wire != nd.wires.end())
+                    bound_pip = fnd_wire->second.first;
+                for (PipId uh : ctx->getPipsUphill(w)) {
+                    WireId next = ctx->getPipSrcWire(uh);
+                    auto &nwd = wire_data(next);
+                    std::string why;
+                    GroupId key = ctx->getResourceKeyForPip(uh);
+                    if (bound_pip != PipId() && bound_pip != uh)
+                        why = "the net drives the wire through another pip";
+                    else if (!ctx->checkPipAvailForNet(uh, net))
+                        why = "not available to the net";
+                    else if (nwd.reserved_net == PerWireData::RESERVED_UNAVAILABLE)
+                        why = "its source wire is unavailable";
+                    else if (nwd.reserved_net != -1 && nwd.reserved_net != net->udata)
+                        why = stringf("its source wire is reserved for net '%s'",
+                                      ctx->nameOf(nets_by_udata.at(nwd.reserved_net)));
+                    else if (with_resources && key != GroupId()) {
+                        auto fnd = nd.resources.find(key);
+                        if (fnd != nd.resources.end() && fnd->second.value != ctx->getResourceValueForPip(uh))
+                            why = stringf("resource %s is at %d for the net (%d pips), the pip needs %d",
+                                          ctx->nameOfGroup(key), fnd->second.value, fnd->second.count,
+                                          ctx->getResourceValueForPip(uh));
+                    }
+                    if (!why.empty()) {
+                        if (rejected.size() < 60)
+                            rejected.push_back(stringf("%s: %s", ctx->nameOfPip(uh), why.c_str()));
+                        continue;
+                    }
+                    if (seen.count(next))
+                        continue;
+                    seen[next] = uh;
+                    if (next == src || nd.wires.count(next)) {
+                        reached = next;
+                        break;
+                    }
+                    queue.push(next);
+                }
+            }
+            log_info("Arc %d.%d of net '%s', backwards from the sink %s the net's resource values: %s after %d "
+                     "wires\n",
+                     i.idx(), int(phys_pin), ctx->nameOf(net), with_resources ? "with" : "without",
+                     reached != WireId() ? (reached == src ? "at the source" : "at the net's routing")
+                                         : queue.empty() ? "dead end" : "given up",
+                     int(seen.size()));
+            if (reached == WireId()) {
+                for (auto &line : rejected)
+                    log_info("    %s\n", line.c_str());
+                continue;
+            }
+            // The path found, from where it meets the net to the sink, and the net's routing from there back
+            WireId cursor = reached;
+            while (cursor != dst) {
+                PipId pip = seen.at(cursor);
+                GroupId key = ctx->getResourceKeyForPip(pip);
+                if (key != GroupId())
+                    log_info("    %s (%s = %d)\n", ctx->nameOfPip(pip), ctx->nameOfGroup(key),
+                             ctx->getResourceValueForPip(pip));
+                else
+                    log_info("    %s\n", ctx->nameOfPip(pip));
+                cursor = ctx->getPipDstWire(pip);
+            }
+            cursor = reached;
+            while (cursor != src) {
+                auto fnd = nd.wires.find(cursor);
+                if (fnd == nd.wires.end() || fnd->second.first == PipId())
+                    break;
+                GroupId key = ctx->getResourceKeyForPip(fnd->second.first);
+                if (key != GroupId())
+                    log_info("    net: %s (%s = %d)\n", ctx->nameOfPip(fnd->second.first), ctx->nameOfGroup(key),
+                             ctx->getResourceValueForPip(fnd->second.first));
+                cursor = ctx->getPipSrcWire(fnd->second.first);
+            }
+            break;
+        }
+    }
+
     bool route_net(ThreadContext &t, NetInfo *net, bool is_mt)
     {
 
@@ -1549,6 +1654,7 @@ struct Router2
                                 log("\n");
                             }
                         }
+                        explain_failed_arc(net, a.first, a.second);
                         log_error("Failed to route arc %d.%d of net '%s', from %s to %s.\n", a.first.idx(),
                                   int(a.second), ctx->nameOf(net), ctx->nameOfWire(ctx->getNetinfoSourceWire(net)),
                                   ctx->nameOfWire(ctx->getNetinfoSinkWire(net, net->users.at(a.first), a.second)));
@@ -1717,6 +1823,35 @@ struct Router2
             if ((net_data.fail_count % 3) == 0) {
                 // Every three times a net fails to route, expand the bounding box to increase the search space
                 ctx->expandBoundingBox(net_data.bb);
+            }
+        }
+    }
+
+    // The last conflicts of a run that does not end: the wires and resources still overused, with the nets on them
+    void report_conflicts()
+    {
+        if (overused_wires + overused_resources == 0 || overused_wires + overused_resources > 8)
+            return;
+        for (size_t i = 0; i < nets.size(); i++) {
+            auto &nd = nets.at(i);
+            NetInfo *ni = nets_by_udata.at(i);
+            for (const auto &w : nd.wires) {
+                auto &wd = wire_data(w.first);
+                if (wd.curr_cong > 1)
+                    log_info("        wire %s (%d nets, history %.1f): net '%s' (%d users, %d arcs here, crit %.2f) by "
+                             "pip %s\n",
+                             ctx->nameOfWire(w.first), wd.curr_cong, wd.hist_cong_cost, ctx->nameOf(ni),
+                             int(ni->users.entries()), w.second.second, nd.max_crit,
+                             w.second.first == PipId() ? "-" : ctx->nameOfPip(w.second.first));
+            }
+            for (const auto &r : nd.resources) {
+                auto &rd = resource_data(r.first);
+                if (rd.value_count.size() > 1)
+                    log_info("        resource %s (%d values, history %.1f): net '%s' (%d users, crit %.2f) sets %d "
+                             "with %d pips\n",
+                             ctx->nameOfGroup(r.first), int(rd.value_count.size()), rd.hist_cong_cost,
+                             ctx->nameOf(ni), int(ni->users.entries()), nd.max_crit, r.second.value,
+                             r.second.count);
             }
         }
     }
@@ -2226,6 +2361,8 @@ struct Router2
             update_route_delays();
             route_queue.clear();
             update_congestion();
+            if (iter % 50 == 0)
+                report_conflicts();
 
             if (!cfg.heatmap.empty()) {
                 {
