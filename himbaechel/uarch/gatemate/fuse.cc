@@ -825,8 +825,8 @@ NEXTPNR_NAMESPACE_END
 
 NEXTPNR_NAMESPACE_BEGIN
 
-// Two levels of LUTs in one CPE (--vopt cpe-merge=N). On dmg_soc N = 2 gives Fmax +8.5% (16 of 16 seeds,
-// docs/timing_experiments.md); off by default until measured on other designs.
+// Two levels of LUTs in one CPE (--vopt cpe-merge=N, N = 2 by default, 0 turns it off). On dmg_soc N = 2
+// gives Fmax +8.5% (16 of 16 seeds), over 18 designs +13% (docs/timing_experiments.md).
 //
 // A LUT tree fills half a CPE, but a whole CPE has a third level, L20, combining the upper half's
 // tree with the lower half's. Where a LUT B fed by a LUT A depends on its other inputs only through
@@ -852,6 +852,9 @@ void GateMatePacker::merge_into_cpes(int level)
             CellInfo *a = signal->driver.cell;
             Lut fa;
             if (!a || a == b || !a->type.in(id_CC_LUT1, id_CC_LUT2, id_CC_L2T4, id_CC_MX2) || !fuser.function(a, fa))
+                continue;
+            // A LUT of another region would leave it for B's CPE
+            if (a->region != b->region)
                 continue;
             bool alone = signal->users.entries() == 1;
             if (!alone && (level < 2 || !deep(name)))

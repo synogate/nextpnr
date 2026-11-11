@@ -258,12 +258,12 @@ TEST_F(GateMateTest, chained_multiplexers_become_one_4_to_1_multiplexer)
     EXPECT_NE(log.find("Merged 16 chains of 2:1 multiplexers"), std::string::npos);
 }
 
-// --vopt cpe-merge: a LUT feeding a LUT goes with it into one CPE (the first in the upper half, the
-// second's other inputs in the lower one, the second's own function in L20) where the second
-// splits so, also with a copy of the first where it feeds more (cpe-merge=2)
+// A LUT feeding a LUT goes with it into one CPE (the first in the upper half, the second's other
+// inputs in the lower one, the second's own function in L20) where the second splits so, also with a
+// copy of the first where it feeds more. The default (--vopt cpe-merge=2): over 18 designs Fmax +13%,
+// docs/timing_experiments.md
 TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
 {
-    init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=2"});
     LogCapture info(LogLevel::INFO_MSG);
     std::pair<int, int> halves;
     EXPECT_TRUE(implementation_matches_reference(
@@ -305,4 +305,97 @@ TEST_F(GateMateTest, lut_pairs_merge_into_one_cpe)
     // each with the first LUT in the upper half
     EXPECT_EQ(halves.first, merged);
     EXPECT_EQ(halves.second, 0);
+}
+
+class GateMateCpeMergeTest : public GateMateTest
+{
+  protected:
+    CellInfo *first = nullptr, *second = nullptr;
+
+    // b = a & i2 & (i3 | i4), a = i0 & i1: b is a function of a and of one LUT tree of the rest. With
+    // `shared`, a feeds an output too
+    void build(bool shared)
+    {
+        NetInfo *a = lut2("a", 0b1000, input("i0"), input("i1"));
+        NetInfo *b = l2t4("b", 0b1000, 0b1110, 0b1000, a, input("i2"), input("i3"), input("i4"));
+        output("o", b);
+        if (shared)
+            output("p", a);
+        first = a->driver.cell;
+        second = b->driver.cell;
+    }
+
+    // 5-input LUTs with a LUT in the upper half after packing
+    int merged()
+    {
+        ctx->pack();
+        return l2t5_upper_halves(ctx).first;
+    }
+};
+
+// The first LUT is the upper half of the second one's CPE, named as the upper half of a 5-input LUT is
+TEST_F(GateMateCpeMergeTest, pair_merges_by_default)
+{
+    build(false);
+    EXPECT_EQ(merged(), 1);
+    EXPECT_FALSE(ctx->cells.count(ctx->id("a")));
+    ASSERT_TRUE(ctx->cells.count(ctx->id("b$upper")));
+    const CellInfo *upper = ctx->cells.at(ctx->id("b$upper")).get();
+    EXPECT_EQ(upper->cluster, ctx->id("b"));
+    EXPECT_EQ(upper->constr_z, CPE_LT_U_Z);
+}
+
+// With a copy in the upper half, the first LUT stays for its other users
+TEST_F(GateMateCpeMergeTest, pair_merges_with_a_copy_by_default)
+{
+    build(true);
+    EXPECT_EQ(merged(), 1);
+    ASSERT_TRUE(ctx->cells.count(ctx->id("b$upper")));
+    EXPECT_EQ(ctx->cells.at(ctx->id("b$upper"))->cluster, ctx->id("b"));
+    ASSERT_TRUE(ctx->cells.count(ctx->id("a")));
+    EXPECT_EQ(ctx->cells.at(ctx->id("a"))->cluster, ClusterId());
+}
+
+TEST_F(GateMateCpeMergeTest, level_1_merges_without_copies_only)
+{
+    init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=1"});
+    build(true);
+    EXPECT_EQ(merged(), 0);
+    init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=1"});
+    build(false);
+    EXPECT_EQ(merged(), 1);
+}
+
+TEST_F(GateMateCpeMergeTest, nothing_merges_with_the_option_at_0)
+{
+    for (bool shared : {false, true}) {
+        init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=0"});
+        build(shared);
+        EXPECT_EQ(merged(), 0) << shared;
+    }
+}
+
+// The first LUT (or its copy) is placed in the second's CPE: one of another region would leave its region
+TEST_F(GateMateCpeMergeTest, lut_of_another_region_is_not_merged)
+{
+    for (bool shared : {false, true})
+        for (int regions = 0; regions < 3; regions++) {
+            init_context("CCGM1A1", {"--allow-unconstrained"});
+            build(shared);
+            ctx->createRectangularRegion(ctx->id("r1"), 40, 40, 60, 60);
+            ctx->createRectangularRegion(ctx->id("r2"), 80, 80, 100, 100);
+            // 0: the first in a region, the second in none; 1: in different regions; 2: in the same one
+            ctx->constrainCellToRegion(first->name, ctx->id("r1"));
+            if (regions)
+                ctx->constrainCellToRegion(second->name, ctx->id(regions == 1 ? "r2" : "r1"));
+            EXPECT_EQ(merged(), regions == 2 ? 1 : 0) << shared << " " << regions;
+        }
+}
+
+TEST_F(GateMateCpeMergeTest, merged_pair_matches_reference)
+{
+    for (bool shared : {false, true}) {
+        init_context("CCGM1A1", {"--allow-unconstrained"});
+        EXPECT_TRUE(implementation_matches_reference([&] { build(shared); }, 64, 1)) << shared;
+    }
 }

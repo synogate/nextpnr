@@ -140,7 +140,8 @@ TEST_F(GateMateLogicCheckTest, snapshot_survives_write_and_read)
 // The LUT tree computing b takes over a: L00 = x & y, L01 passes z on, L10 = XOR. The cell of a goes.
 TEST_F(GateMateLogicCheckTest, merged_luts_are_proven_equal)
 {
-    init_context();
+    // (the packer leaves the pair to be merged here)
+    init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=0"});
     build();
     ASSERT_TRUE(packs());
     LogicSnapshot ref = LogicSnapshot::take(ctx);

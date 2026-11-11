@@ -276,7 +276,8 @@ Pending when this was written: `fuse-luts` (see "Logic depth" below).
   does not grow back.
   That was with placers that did not see the paths through multiplexers and adders (bugs 40, 41). With
   them fixed, N = 2 on dmg_soc: Fmax +8.5%, all 16 seeds better ("The logic levels of the loop" below).
-  N = 2 was not measured on the other designs since.
+  Over the 18 benchmark designs N = 2 gives +13% and shorter runs, and is the default since
+  (`cpe-merge=0` turns it off; "The two options on the benchmark designs" below).
 - Further depth rewrites, not done, with what the data says:
   - 8:1 multiplexers: yosys has `CC_MX8`, the GateMate packer does not, hence `-nomx8`.
   - Two neighbouring LUT trees whose combined function fits a whole CPE (three LUT2 levels over
@@ -527,6 +528,49 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   `cpe-merge`, the pairs on the deepest paths first and of a LUT's inputs the deepest (+0.6% over the plain
   order, 9 of 16), and a split of the pair where the upper half takes inputs of the second LUT too (109
   pairs more, -1.1%, 7 of 16).
+
+  *The two options on the benchmark designs.* `cpe-merge=2` and `refine-temp=3e-5` on the 18 designs of
+  `docs/experiments/designs`, 10 seeds, without the repair passes; seeds 1 - 5 with the Windows build (30
+  runs at a time, 90 minutes limit), 6 - 10 with a static Linux build on a server (40 at a time, 4 hours),
+  the three variants of a seed on one machine (the two builds give different results for a seed). Fmax is the
+  geometric mean over the seeds, the gain the mean of the ratios by seed, the run time the median ratio by
+  seed (536 of 540 runs; four of seed 10 were still running):
+
+  | Design | CPE halves used | Fmax without | `cpe-merge=2` | run time | `refine-temp=3e-5` on top | run time |
+  |---|---|---|---|---|---|---|
+  | multi1 | 6% | 49.94 MHz | +4.5% (8 of 10) | x0.87 | +3.4% (7 of 10) | x1.11 |
+  | picorv32 | 17% | 34.40 MHz | +10.0% (9 of 9) | x0.88 | +2.1% (7 of 9) | x1.32 |
+  | lm32 | 20% | 29.49 MHz | +5.5% (9 of 10) | x0.78 | +3.4% (8 of 10) | x1.31 |
+  | mandelbrot | 17% | 40.96 MHz | -0.7% (4 of 10) | x0.89 | +1.1% (8 of 10) | x1.73 |
+  | micropython | 15% | 22.35 MHz | +7.2% (9 of 9) | x0.87 | +2.0% (8 of 10) | x1.21 |
+  | minerva | 26% | 22.83 MHz | +1.5% (7 of 10) | x0.78 | +3.1% (9 of 10) | x1.43 |
+  | mor1kx | 25% | 18.58 MHz | +33.2% (10 of 10) | x0.81 | +3.1% (7 of 10) | x1.27 |
+  | neorv32 | 21% | 27.99 MHz | -0.1% (4 of 10) | x0.87 | -1.0% (5 of 10) | x1.37 |
+  | vexriscv | 21% | 33.34 MHz | +6.7% (8 of 10) | x0.93 | +5.6% (10 of 10) | x1.17 |
+  | vexii | 32% | 31.95 MHz | +7.8% (10 of 10) | x0.82 | +4.3% (9 of 10) | x1.58 |
+  | corescore | 17% | 37.63 MHz | +18.9% (10 of 10) | x0.84 | -0.0% (6 of 10) | x1.45 |
+  | corescore25 | 42% | 32.17 MHz | +11.1% (10 of 10) | x1.07 | +4.9% (9 of 10) | x2.12 |
+  | vexsmp2 | 68% | 15.53 MHz | +56.4% (9 of 9) | x0.85 | +4.8% (7 of 9) | x1.47 |
+  | coreblocks | 82% | 12.90 MHz | +37.3% (9 of 9) | x0.74 | +5.2% (5 of 5) | x1.83 |
+  | corescore45 | 75% | 27.13 MHz | +11.2% (9 of 9) | x0.96 | +0.6% (5 of 10) | x2.84 |
+  | multi8 | 47% | 40.64 MHz | +14.1% (8 of 8) | x0.70 | +5.2% (6 of 8) | x1.62 |
+  | multi12 | 71% | 38.84 MHz | +14.9% (9 of 9) | x0.70 | +8.3% (7 of 8) | x2.07 |
+  | multi15 | 90% | 39.19 MHz | +17.2% (10 of 10) | x0.74 | +1.6% (3 of 5) | x2.08 |
+  | all runs | | | **+13.2% (152 of 172)** | x0.84 | +3.1% (126 of 164) | x1.44 |
+
+  - `cpe-merge=2` is the **default** since (`cpe-merge=0` turns it off, 1 merges without copies): no design
+    loses more than noise (mandelbrot, neorv32), the full ones gain the most, and the runs get shorter,
+    since the router has fewer nets and converges sooner. Runs that did not end: 6 without it (5 where
+    router2 ran into the time limit on a last few overused wires), 1 with it. A LUT is only merged with one of
+    its own region (a floorplan region would lose it to the other LUT's CPE otherwise), and the upper half
+    is named `<second LUT>$upper`.
+  - `refine-temp=3e-5` stays an **option**: +3.1% on top for 1.1 to 2.8 times the run time; on the full
+    designs the run takes twice as long and more (of the first five seeds, 9 of the 25 runs on coreblocks,
+    vexsmp2, multi8, multi12 and multi15 ran into the 90 minutes, 7 of them in the router's first
+    iterations; with 4 hours none ran into the limit).
+  - Four runs ended with router2's `Failed to route arc` (multi12 without options, multi8 with the merge,
+    multi15 and coreblocks with both; in iteration 1 to 3, both builds): an arc that finds no path even
+    without its bounding box. Not looked into; it is neither option's.
 
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed

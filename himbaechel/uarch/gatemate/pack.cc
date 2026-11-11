@@ -825,8 +825,10 @@ void GateMateImpl::pack()
         packer.fuse_luts();
     if (args.options.count("enable-to-lut"))
         packer.enables_into_luts(args.options["enable-to-lut"].as<int>());
-    if (args.options.count("cpe-merge"))
-        packer.merge_into_cpes(args.options["cpe-merge"].as<int>());
+    // Two levels of LUTs in one CPE, with copies, unless turned off (cpe-merge=0)
+    int cpe_merge = args.options.count("cpe-merge") ? args.options["cpe-merge"].as<int>() : 2;
+    if (cpe_merge > 0)
+        packer.merge_into_cpes(cpe_merge);
     packer.cleanup();
     packer.fold_clock_inverters();
     packer.pack_io();
@@ -841,7 +843,7 @@ void GateMateImpl::pack()
     packer.pack_mult();
     packer.pack_addf();
     packer.pack_cpe();
-    if (args.options.count("fuse-luts") || args.options.count("cpe-merge"))
+    if (args.options.count("fuse-luts") || cpe_merge > 0)
         packer.fuse_l2t5_inputs();
     packer.copy_clocks();
     packer.remove_constants();

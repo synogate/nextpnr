@@ -146,10 +146,10 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("rewrite-depth", po::value<float>(),
                            "apply mux-chains, fuse-luts and enable-to-lut only on paths at least this fraction as "
                            "deep (in logic levels) as the deepest");
-    // (dmg_soc with 2: Fmax +8.5%, docs/timing_experiments.md; off by default until measured on other designs)
+    // (2 by default: dmg_soc Fmax +8.5%, 18 designs +13%, docs/timing_experiments.md)
     specific.add_options()("cpe-merge", po::value<int>(),
                            "before packing, merge two levels of LUTs into one CPE where they fit: 1 where the first "
-                           "feeds only the second, 2 also with a copy of the first");
+                           "feeds only the second, 2 also with a copy of the first (default), 0 not at all");
     // TEMPORARY until measured (docs/timing_experiments.md)
     specific.add_options()("mux-chains", "before packing, merge chains of two 2:1 multiplexers into 4:1 multiplexers");
     // TEMPORARY until measured (docs/timing_experiments.md)

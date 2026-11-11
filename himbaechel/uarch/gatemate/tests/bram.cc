@@ -138,6 +138,14 @@ class GateMatePinLutTest : public GateMateBramTest
     CellInfo *ram = nullptr;
     NetInfo *a = nullptr, *b = nullptr;
 
+    // Without the merge of LUT pairs into CPEs, which gives the other LUT a copy of its own first (see
+    // with_the_merge_of_lut_pairs_the_lut_itself_goes_to_the_pin)
+    void SetUp() override
+    {
+        GateMateBramTest::SetUp();
+        init_context("CCGM1A1", {"--allow-unconstrained", "--cpe-merge=0"});
+    }
+
     // A RAM with the address bits `bits` from one LUT2 `f` of the inputs a and b, which feeds another LUT
     // too if `other_user`
     void build(const std::vector<int> &bits, bool other_user, bool keep = false)
@@ -240,7 +248,7 @@ TEST_F(GateMatePinLutTest, kept_lut_is_not_copied)
 
 TEST_F(GateMatePinLutTest, no_copies_with_the_option_off)
 {
-    init_context("CCGM1A1", {"--allow-unconstrained", "--no-pin-lut-copies"});
+    init_context("CCGM1A1", {"--allow-unconstrained", "--no-pin-lut-copies", "--cpe-merge=0"});
     build({7, 8}, true);
     ASSERT_TRUE(ctx->cells.count(ctx->id("f")));
     const NetInfo *f = ctx->cells.at(ctx->id("f"))->getPort(id_OUT);
@@ -252,9 +260,25 @@ TEST_F(GateMatePinLutTest, no_copies_with_the_option_off)
     EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 1);
 }
 
+// By default the other LUT is merged with a copy of the LUT into one CPE: the LUT feeds the pin alone then
+TEST_F(GateMatePinLutTest, with_the_merge_of_lut_pairs_the_lut_itself_goes_to_the_pin)
+{
+    init_context();
+    build({7}, true);
+    const CellInfo *half = half_at(7);
+    expect_the_lut(half, "the half at the pin");
+    EXPECT_EQ(half->name, ctx->id("f"));
+    // and the copy is in the CPE of the other LUT
+    ASSERT_TRUE(ctx->cells.count(ctx->id("g$upper")));
+    EXPECT_EQ(ctx->cells.at(ctx->id("g$upper"))->cluster, ctx->id("g"));
+    EXPECT_EQ(cells_fed_by(a, id_CPE_L2T4), 2);
+}
+
 // The copies compute what the LUT computes: the placed and routed design against the netlist as it was read
+// (with the default options)
 TEST_F(GateMatePinLutTest, design_with_copies_matches_reference)
 {
+    init_context();
     auto design = [&] {
         CellInfo *mem = ctx->createCell(ctx->id("ram"), id_CC_BRAM_20K);
         mem->params[id_RAM_MODE] = Property("TDP");

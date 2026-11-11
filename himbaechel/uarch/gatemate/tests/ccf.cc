@@ -286,26 +286,33 @@ TEST_F(GateMateCcfTest, floorplanning_region)
                   "end floorplanning\n",
                   {"--allow-unconstrained"});
     NetInfo *a = input("a"), *b = input("b");
-    std::vector<std::string> scoped;
     NetInfo *net = a;
     for (int i = 0; i < 8; i++) {
         net = lut2(stringf("lut%d", i), 0b0110, net, b);
         ctx->cells.at(ctx->idf("lut%d", i))->attrs[ctx->id("scopename")] = Property("sub");
-        scoped.push_back(stringf("lut%d", i));
     }
     // An unconstrained LUT in front of the output (a LUT driving an output pad directly is moved
     // next to the pad, see region_of_lut_driving_output)
     output("o", lut2("last", 0b1001, net, a));
     ASSERT_TRUE(packs());
     ctx->place();
-    for (auto &name : scoped) {
-        CellInfo *cell = ctx->cells.at(ctx->id(name)).get();
+    // (A LUT merged with the next one into a CPE is that one's upper half, lut<n>$upper; the unconstrained
+    // last one takes none of them)
+    int scoped = 0;
+    for (auto &entry : ctx->cells) {
+        CellInfo *cell = entry.second.get();
+        std::string name = cell->name.str(ctx);
+        if (name.rfind("lut", 0) != 0)
+            continue;
+        scoped++;
         ASSERT_NE(cell->bel, BelId()) << name;
         Loc loc = ctx->getBelLocation(cell->bel);
         // pB coordinates are offset by 2 from the bel grid
         EXPECT_TRUE(loc.x >= 12 && loc.x <= 22 && loc.y >= 12 && loc.y <= 22)
                 << name << " placed at " << loc.x << ", " << loc.y;
     }
+    EXPECT_EQ(scoped, 8);
+    EXPECT_FALSE(ctx->cells.count(ctx->id("last$upper")));
 }
 
 TEST_F(GateMateCcfTest, floorplanning_wildcard)

@@ -278,10 +278,11 @@ TEST_F(GateMateTest, place_repair_moves_multiplexers)
 // place-repair also fuses: after routing, a critical LUT2 (or a copy of it, if it feeds others too)
 // computes in the first level of the LUT2 alone in a half it feeds. A registered random LUT2 network
 // under a clock it cannot meet, routed, must compute the same, with some fusions kept, also of copies.
+// (Without the packer's merge of LUT pairs, which takes these pairs before: cpe-merge=0.)
 TEST_F(GateMateTest, place_repair_fuses_critical_lut2s)
 {
     init_context("CCGM1A1", {"--allow-unconstrained", "--no-bridges", "--no-cpe-cp", "--lookahead=table",
-                             "--place-delay=table"});
+                             "--place-delay=table", "--cpe-merge=0"});
     LogCapture info(LogLevel::INFO_MSG);
     EXPECT_TRUE(implementation_matches_reference(
             [&] {
