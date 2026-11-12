@@ -2328,13 +2328,6 @@ struct Router2
         arb_after = ctx->setting<int>("router2/arbitrateAfter", 0);
         arb_penalty = ctx->setting<float>("router2/arbitratePenalty", arb_penalty);
         arb_min_crit = ctx->setting<float>("router2/arbitrateMinCrit", arb_min_crit);
-        if (cfg.new_wire_cost > 0)
-            log_info("router2: a new wire costs uncritical arcs %.2f x crit weight x its delay on top\n",
-                     cfg.new_wire_cost);
-        if (tree_seed_cost > 0)
-            log_info("router2: branching off existing routing costs %.2f x tree delay\n", tree_seed_cost);
-        if (cfg.seed_source)
-            log_info("router2: the forward search always starts from the source too\n");
         log_info("Running main router loop...\n");
         if (timing_driven)
             tmg.run(true);

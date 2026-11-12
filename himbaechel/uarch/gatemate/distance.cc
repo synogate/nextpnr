@@ -418,8 +418,6 @@ void GateMateDistance::init(Context *ctx, std::function<bool(PipId)> avail)
     int *values = reinterpret_cast<int *>(&f);
     for (size_t i = 0; i < sizeof(Fit) / sizeof(int); i++)
         values[i] = int(std::lround(values[i] * stage / REFERENCE_STAGE));
-    log_info("GateMate distance model: switch box stage %.0f ps, constants scaled by %.3f\n", stage,
-             stage / REFERENCE_STAGE);
     k.tile = f.tile;
     k.segment = f.segment;
     k.odd = f.odd;

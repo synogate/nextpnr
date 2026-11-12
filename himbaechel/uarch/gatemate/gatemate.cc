@@ -526,15 +526,6 @@ void GateMateImpl::prepare_options()
         }
         exit(0);
     }
-    if (!evaluate) {
-        auto describe = [&](const std::string &mode) {
-            if (mode == "table" || ((mode == "hybrid" || mode == "axis") && hybrid))
-                return stringf("%s (radius %d)", mode.c_str(), lookahead.table_radius());
-            return mode == "hybrid" ? stringf("hybrid (full tables, radius %d)", lookahead.table_radius()) : mode;
-        };
-        log_info("Delay estimates: router %s, placer %s.\n", describe(route_estimate).c_str(),
-                 describe(place_estimate).c_str());
-    }
     if (evaluate) {
         auto avail = [this](PipId pip) { return pip_allowed_by_options(pip); };
         std::string dump = options.count("eval-dump") ? options["eval-dump"].as<std::string>() : "";
@@ -2156,8 +2147,6 @@ void GateMateImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
                 }
                 table->at(size_t(dy) * w + dx) = count ? delay_t(sum / count) : 650 + 40 * (dx + dy);
             }
-        log_info("Static placer delays: next door %d ps, 2 / 4 / 10 / 40 tiles %d / %d / %d / %d ps\n",
-                 int(table->at(1)), int(table->at(2)), int(table->at(4)), int(table->at(10)), int(table->at(40)));
         IdString link_o = tmg_link_o;
         cfg.predict_delay = [table, w, h, link_o](Context *, const PlacerStaticCfg &, Loc src, IdString src_pin, Loc dst,
                                                   IdString dst_pin) -> delay_t {

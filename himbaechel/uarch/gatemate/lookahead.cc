@@ -188,7 +188,6 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
     }
     lock.unlock();
 
-    auto start_time = std::chrono::steady_clock::now();
     const ChipInfoPOD *chip = ctx->chip_info;
     this->ctx = ctx;
     this->radius = radius;
@@ -483,15 +482,6 @@ void GateMateLookahead::build(Context *ctx, int radius, std::function<bool(PipId
         }
     }
 
-    size_t bytes = values->size() * sizeof(uint16_t);
-    float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
-    if (near_only)
-        log_info("Built the GateMate delay tables: radius %d, %.1f MB (%zu bytes), model beyond, %.1fs\n", radius,
-                 bytes / 1e6, bytes, seconds);
-    else
-        log_info("Built the GateMate delay tables: radius %d, %.1f MB (%zu bytes), %.1f/%.1f ps per tile beyond, "
-                 "%.1fs\n",
-                 radius, bytes / 1e6, bytes, slope_x, slope_y, seconds);
     if (keep) {
         lock.lock();
         kept.emplace(std::make_pair(key, radius), *this);

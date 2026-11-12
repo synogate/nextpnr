@@ -109,7 +109,6 @@ void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int pru
             return;
         }
     }
-    auto start_time = std::chrono::steady_clock::now();
     this->ctx = ctx;
     build_id = next_build_id++;
     check_mode = getenv("GATEMATE_AXIS_CHECK") != nullptr;
@@ -389,11 +388,6 @@ void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int pru
             ring_turn[r] = median_of(turned[r], 220 * r);
             ring_straight[r] = median_of(straight[r], ring_turn[r] + 350);
         }
-        log_info("GateMate axis: plane change over %s wires by ring distance 1..6: with a turn %d %d %d %d %d %d, "
-                 "straight %d %d %d %d %d %d ps\n",
-                 all_wires ? "all" : "SB", ring_turn[1], ring_turn[2], ring_turn[3], ring_turn[4], ring_turn[5],
-                 ring_turn[6], ring_straight[1], ring_straight[2], ring_straight[3], ring_straight[4],
-                 ring_straight[5], ring_straight[6]);
     }
 
     // CP lines: from each line leaving a CPE near the centre, over CPE wires only
@@ -607,19 +601,6 @@ void GateMateAxis::build(Context *ctx, std::function<bool(PipId)> avail, int pru
             tile_class[tile] = c;
     }
 
-    int far_entries = 0, max_reach = 0;
-    for (int c = 0; c < 16; c++)
-        for (int r : classes[c].entry_reach) {
-            far_entries += r > 4;
-            max_reach = std::max(max_reach, r);
-        }
-    log_info("GateMate axis: %d wires have entries more than 4 tiles away (at most %d)\n", far_entries, max_reach);
-    float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
-    log_info("Built the GateMate axis tables: %zu exit/entry states (%.1f per wire, %.1f exit and entry groups), "
-             "turn %d/%d ps (small/big SB, least %d), plane step %d ps, %.1fs\n",
-             total, wire_jobs.empty() ? 0.0 : double(total) / (2 * wire_jobs.size()),
-             wire_jobs.empty() ? 0.0 : double(groups) / wire_jobs.size(),
-             turn[sb_class(cx, cy)][1][2][0], turn[sb_class(cx + 2, cy)][1][2][0], min_turn, ring_turn[1], seconds);
     if (!key.empty()) {
         std::lock_guard<std::mutex> lock(kept_mutex);
         kept.emplace(key, *this);
