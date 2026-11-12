@@ -154,7 +154,7 @@ void GateMateImpl::route_learning(int runs)
 // ripped up, or with `free_only` all of it (A* guided by the delay tables), within `margin` tiles of
 // their bounding box if not negative; the pips in order, or none
 std::vector<PipId> GateMateImpl::ideal_path(NetInfo *net, WireId src, WireId sink, delay_t &delay, bool free_only,
-                                            int margin) const
+                                            int margin, bool empty_chip) const
 {
     BoundingBox box{0, 0, ctx->getGridDimX(), ctx->getGridDimY()};
     if (margin >= 0) {
@@ -176,15 +176,16 @@ std::vector<PipId> GateMateImpl::ideal_path(NetInfo *net, WireId src, WireId sin
             break;
         delay_t d = best.at(w).first;
         for (PipId pip : ctx->getPipsDownhill(w)) {
-            if (!checkPipAvail(pip) || resource_taken(pip))
+            // (empty_chip: as if neither the cells of this design nor its routing were there)
+            if (!empty_chip && (!checkPipAvail(pip) || resource_taken(pip)))
                 continue;
             WireId next = ctx->getPipDstWire(pip);
             NetInfo *held = ctx->getBoundWireNet(next);
-            if (held && held != net && (free_only || held->wires.at(next).strength > STRENGTH_WEAK))
+            if (!empty_chip && held && held != net && (free_only || held->wires.at(next).strength > STRENGTH_WEAK))
                 continue;
             // (only while the multiplexer inputs are routed: no way into the inputs held for other nets)
             auto select = held_ways.find(next);
-            if (select != held_ways.end() && select->second != net)
+            if (!empty_chip && select != held_ways.end() && select->second != net)
                 continue;
             if (margin >= 0) {
                 int x, y;
@@ -276,6 +277,34 @@ void GateMateImpl::report_critical_routing()
             }
             log_info("         ideal path %.2f ns, held by:%s\n", ctx->getDelayNS(ideal),
                      holders.empty() ? " nobody" : holders.c_str());
+            // Where even that path is slower than the least: the fastest path on the empty chip, and what of this
+            // design is in its way (the configuration of a cell, a multiplexer set for another net, a wire)
+            delay_t empty = 0;
+            std::vector<PipId> empty_path = ideal_path(net, src, sink, empty, false, -1, true);
+            if (empty_path.empty() || empty + 100 > ideal)
+                continue;
+            std::string blocks;
+            for (PipId pip : empty_path) {
+                WireId w = ctx->getPipDstWire(pip);
+                std::string why;
+                if (!checkPipAvail(pip))
+                    why += " cell configuration";
+                GroupId key = getResourceKeyForPip(pip);
+                if (key != GroupId())
+                    for (PipId other : ctx->getGroupPips(key)) {
+                        NetInfo *user = ctx->getBoundPipNet(other);
+                        if (other != pip && user && getResourceValueForPip(other) != getResourceValueForPip(pip))
+                            why += stringf(" %s set for %s", ctx->getGroupName(key)[1].c_str(ctx),
+                                           user == net ? "this net" : user->name.c_str(ctx));
+                    }
+                NetInfo *held = ctx->getBoundWireNet(w);
+                if (held && held != net)
+                    why += stringf(" wire of %s", held->name.c_str(ctx));
+                if (!why.empty())
+                    blocks += stringf(" %s:%s;", ctx->nameOfPip(pip), why.c_str());
+            }
+            log_info("         empty chip %.2f ns, in its way:%s\n", ctx->getDelayNS(empty),
+                     blocks.empty() ? " nothing" : blocks.c_str());
         }
     }
 }

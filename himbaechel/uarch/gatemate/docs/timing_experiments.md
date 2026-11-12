@@ -56,7 +56,9 @@ marked `TEMPORARY` in the sources; delete them after the repeat if they still gi
 - `fusable.py`: on a synthesised netlist, how many LUTs could fuse into all their users within a
   CPE half.
 - `--vopt report-crit-routing`: for each critical-path connection, the routed delay, the table
-  minimum, the muxes passed, the ideal path (A* ignoring other nets) and who holds it.
+  minimum, the muxes passed, the ideal path (A* ignoring other nets) and who holds it; where that
+  path is slower than the minimum, also the fastest path on the empty chip and what of the design is
+  in its way (the configuration of a cell, a multiplexer set for another net, a wire).
 - `place_learn.py`, `learn_analysis.py`: the placement and routing learning experiments.
 - `perf record -F 99` and `perf report --tid <main thread>` for where the run time goes.
 
@@ -687,9 +689,18 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   arbiter and the CPU to the address of the instruction cache's RAMs (10.7 ns logic, 14 to 16.5 ns routing):
   connections between CPEs next to each other that take 0.95 to 1.2 ns where 0.3 to 0.45 ns is the least,
   because another input of the same LUT or another net of the source CPE holds the direct line (`--vopt
-  report-crit-routing` for seed 10, 36.7 MHz: three such connections, 2 ns of the 27.2). That is the open
-  point of the estimates above: an estimate that knows the other inputs of the cell, or an assignment of the
-  inputs by criticality.
+  report-crit-routing` for seed 10, 36.7 MHz: three such connections, 2 ns of the 27.2). Over the 16 seeds
+  the critical path has 2.7 connections that are routed more than 0.25 ns above the least delay, 1.5 ns per
+  seed together (5.7% of the period): 0.77 ns where a sibling input holds the fast way, 0.59 ns where nothing
+  routed does, 0.16 ns other nets. What is in the way of the fastest path on the empty chip is, in 29 of
+  the 44, the exchange of a LUT tree's two input pairs (`LUT2_10X`, `LUT2_11X`): one setting for all four
+  inputs, and the critical input would need the other one than its siblings have (often the direct line
+  itself is free then); in 19 of the 44 a line of a CPE (`C_SELX`, `C_SELY1`, `C_PX_I`, `C_PY1_I`) set for
+  the CPE's other output or for a net passing through. (In sum the routed critical path is 0.4 ns *below* the
+  least delays of the table, which are too high for many of the longer connections: 15.99 against 16.38
+  ns.) That is the open point of the estimates above: an estimate that knows the other inputs of the cell,
+  or an assignment of a tree's inputs by criticality; `lut-swap-rounds` does the latter after routing by
+  trial and re-routing and was last measured before the placers saw these paths.
 
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed

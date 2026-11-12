@@ -392,3 +392,46 @@ TEST_F(GateMateTimingTest, fmax_of_the_two_edges_of_a_clock_counts_the_skew)
     EXPECT_NEAR(half_period(3000, 1000), level + 2.0, 0.01);
     EXPECT_NEAR(half_period(1000, 1500), level - 0.5, 0.01);
 }
+
+// --vopt report-crit-routing compares each connection of the critical path with the fastest path that the other
+// nets leave (ideal_path), and, where that one is slower than the least delay, with the fastest path on the empty
+// chip and what of the design is in its way: the configuration of a cell, a multiplexer set for another net, a
+// wire. The path on the empty chip is never slower than the one around the design.
+TEST_F(GateMateTimingTest, path_on_the_empty_chip_is_the_fastest)
+{
+    init_context("CCGM1A1", {"--allow-unconstrained", "--report-crit-routing"});
+    NetInfo *clk = global_clock("clk");
+    std::vector<NetInfo *> nets;
+    for (int i = 0; i < 4; i++)
+        nets.push_back(dff(stringf("in%d", i), input(stringf("i%d", i)), clk)->getPort(id_Q));
+    for (int n = 0; n < 40; n++)
+        nets.push_back(lut2(stringf("f%d", n), n % 2 ? 0b0110 : 0b1000, nets[nets.size() - 1], nets[nets.size() - 3]));
+    output("o", dff("out", nets.back(), clk)->getPort(id_Q));
+    std::string log;
+    {
+        LogCapture info(LogLevel::INFO_MSG);
+        place_and_route();
+        log = info.str();
+    }
+    EXPECT_NE(log.find("Critical path routing for clock"), std::string::npos);
+    EXPECT_NE(log.find("ideal path"), std::string::npos);
+    int arcs = 0;
+    for (auto &net : ctx->nets) {
+        NetInfo *ni = net.second.get();
+        WireId src = ctx->getNetinfoSourceWire(ni);
+        if (src == WireId() || ni->wires.empty())
+            continue;
+        for (auto &user : ni->users) {
+            WireId sink = ctx->getNetinfoSinkWire(ni, user, 0);
+            if (sink == WireId() || !ni->wires.count(sink))
+                continue;
+            delay_t ideal = 0, empty = 0;
+            if (impl->ideal_path(ni, src, sink, ideal).empty())
+                continue;
+            ASSERT_FALSE(impl->ideal_path(ni, src, sink, empty, false, -1, true).empty()) << ni->name.c_str(ctx);
+            EXPECT_LE(empty, ideal) << ni->name.c_str(ctx);
+            arcs++;
+        }
+    }
+    EXPECT_GT(arcs, 40);
+}
