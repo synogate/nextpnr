@@ -23,6 +23,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 
@@ -55,8 +56,8 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
 
     QFormLayout *form = new QFormLayout();
     form->setContentsMargins(0, 0, 0, 0);
-    form->addRow("Launch clock", launchCombo);
-    form->addRow("Latch clock", latchCombo);
+    form->addRow("Launch clock edge", launchCombo);
+    form->addRow("Latch clock edge", latchCombo);
     form->addRow("Sort by", sortCombo);
     form->addRow("Paths", countSpin);
 
@@ -180,12 +181,17 @@ void TimingWidget::analyse()
         }
     }
 
-    // The clocks to filter for, on both sides all of them and async (so that every combination can be
-    // chosen), keeping the chosen ones if they are still there
-    std::set<std::string> clocks{"async"};
+    // The clock edges to filter for, on both sides all of them and async (so that every combination can be
+    // chosen), keeping the chosen ones if they are still there. Ordered by clock, rising edge first.
+    std::map<std::pair<std::string, int>, QString> clocks;
+    auto addClock = [&](const ClockEvent &clock) {
+        clocks.emplace(std::make_pair(clockNet(clock).toStdString(), clock.clock == IdString() ? 0 : int(clock.edge)),
+                       clockName(clock));
+    };
+    addClock(ClockEvent{IdString(), RISING_EDGE});
     for (auto &ep : endpoints) {
-        clocks.insert(clockNet(ep.clock_pair.start).toStdString());
-        clocks.insert(clockNet(ep.clock_pair.end).toStdString());
+        addClock(ep.clock_pair.start);
+        addClock(ep.clock_pair.end);
     }
     for (QComboBox *combo : {launchCombo, latchCombo}) {
         QString current = combo->currentData().toString();
@@ -193,7 +199,7 @@ void TimingWidget::analyse()
         combo->clear();
         combo->addItem("All", QString());
         for (auto &clock : clocks)
-            combo->addItem(QString::fromStdString(clock), QString::fromStdString(clock));
+            combo->addItem(clock.second, clock.second);
         combo->setCurrentIndex(std::max(0, combo->findData(current)));
         combo->blockSignals(false);
     }
@@ -224,8 +230,8 @@ void TimingWidget::updatePaths()
 
     std::vector<const TimingAnalyser::EndpointTiming *> selected;
     for (auto &ep : endpoints) {
-        if ((!launch.isEmpty() && clockNet(ep.clock_pair.start) != launch) ||
-            (!latch.isEmpty() && clockNet(ep.clock_pair.end) != latch))
+        if ((!launch.isEmpty() && clockName(ep.clock_pair.start) != launch) ||
+            (!latch.isEmpty() && clockName(ep.clock_pair.end) != latch))
             continue;
         if (sortBy == HOLD_SLACK && ep.hold_slack == NO_SLACK)
             continue;
@@ -290,7 +296,7 @@ void TimingWidget::updatePaths()
     }
 
     if (selected.empty())
-        summary->setText(endpoints.empty() ? "No timing paths." : "No paths between these clocks.");
+        summary->setText(endpoints.empty() ? "No timing paths." : "No paths between these clock edges.");
     else
         summary->setText(QString("%1 of %2 paths. Select one for its details. %3")
                                  .arg(count)

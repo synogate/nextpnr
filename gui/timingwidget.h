@@ -28,7 +28,7 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-// Lists the worst timing paths, optionally only from one launch clock or to one latch clock (or async),
+// Lists the worst timing paths, optionally only from one launch clock edge or to one latch clock edge (or async),
 // sorted by setup slack, hold slack or delay. A selected path is selected in the device view and its segments are listed below.
 class TimingWidget : public QWidget
 {
@@ -49,7 +49,7 @@ class TimingWidget : public QWidget
     std::vector<DecalXY> getPathDecals(const CriticalPath &path);
     std::vector<DecalXY> getSegmentDecals(const CriticalPath::Segment &segment);
     QString formatDelay(delay_t delay);
-    // The clock net (also for filtering), and that with the edge
+    // The clock net (for ordering), and that with the edge (also for filtering)
     QString clockNet(const ClockEvent &clock);
     QString clockName(const ClockEvent &clock);
 
