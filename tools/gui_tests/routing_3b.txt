@@ -2,9 +2,9 @@
 # undo; NetStatus of GateMate's CP-line nets (no false unrouted arcs on a routed design).
 # design: counter_pnr
 resize 1400 1000
-# (nw() leaves out the routing inside the sink CPE below the sink pin wire X77Y116/CPE.IN8_int: part of the
-# CPE configuration of this design routed before, rip-up keeps it)
-py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; TAIL={str(w) for w,m in ctx.nets[N].wires if str(w).startswith("X77Y116/CPE.") and str(w).endswith("_int") and str(w) != "X77Y116/CPE.IN8_int"}; print("tail", TAIL); nw=lambda: sum(1 for w,m in ctx.nets[N].wires if str(w) not in TAIL); W0=nw(); print(W0)
+# (the net from the adder's OUT2 on X78Y116 through the switch box SB_SML.P08 on X77Y115 and the input mux IM.P08
+# to IN4 of the LUT on X77Y116, sink pin wire X77Y116/CPE.IN8_int)
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[1]"; nw=lambda: len(ctx.nets[N].wires); W0=nw(); print(W0)
 # --- a routed design has no unrouted arcs (the CP-line nets split off after routing count as routed)
 key U
 wait 300
@@ -14,28 +14,28 @@ key U
 key E
 # --- rip the net up, then route it again by hand
 zoombel X77Y116/CPE_LT_L 1.2
-clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+clickpip X77Y116/IM.P08.Y/IM.P08.D1/INV right
 menu Unroute net
 wait 300
 assert_py nw() <= 1
-selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[1]
 key R
 wait 300
 status
-assert_status Routing $auto$alumacc.cc:512:replace_alu$26.Y[0] from X78Y116/CPE.COMBOUT1_int
+assert_status Routing $auto$alumacc.cc:512:replace_alu$26.Y[1] from X78Y116/CPE.COMBOUT2_int
 route
-zoomwire X78Y116/CPE.COMBOUT1_int 0.4
+zoomwire X78Y116/CPE.COMBOUT2_int 0.4
 wait 500
 shot 01_route_mode.png
-hovercand X78Y116/CPE.OUT1_int/CPE.COMBOUT1_int
+hovercand X78Y116/CPE.OUT2_int/CPE.COMBOUT2_int
 wait 500
 shot 02_hover_candidate.png
-clickcand X78Y116/CPE.OUT1_int/CPE.COMBOUT1_int
+clickcand X78Y116/CPE.OUT2_int/CPE.COMBOUT2_int
 wait 200
 status
-assert_status Route $auto$alumacc.cc:512:replace_alu$26.Y[0] through X78Y116/CPE.OUT1_int/CPE.COMBOUT1_int
+assert_status Route $auto$alumacc.cc:512:replace_alu$26.Y[1] through X78Y116/CPE.OUT2_int/CPE.COMBOUT2_int
 assert_py nw() == 2
-clickcand X78Y116/CPE.OUT1/CPE.OUT1_int
+clickcand X78Y116/CPE.OUT2/CPE.OUT2_int
 assert_py nw() == 3
 route
 zoombel X78Y116/CPE_LT_L 1.2
@@ -46,23 +46,24 @@ focus view
 key Backspace
 wait 200
 assert_py nw() == 2
-assert_status Routing $auto$alumacc.cc:512:replace_alu$26.Y[0] from X78Y116/CPE.OUT1_int
-clickcand X78Y116/CPE.OUT1/CPE.OUT1_int
+assert_status Routing $auto$alumacc.cc:512:replace_alu$26.Y[1] from X78Y116/CPE.OUT2_int
+clickcand X78Y116/CPE.OUT2/CPE.OUT2_int
 assert_py nw() == 3
 # --- through the switch box and the input mux, the right-click menu lists the pips by destination
-clickcand X78Y116/SB_BIG.P08.D0/SB_BIG.P08.D0_n
+clickcand X77Y115/SB_SML.P08.D0/SB_SML.P08.D0_n
 route
-clickcand X78Y116/SB_BIG.P08.Y3/SB_BIG.P08.D0/INV right
-assert_menu X74Y116/SB_BIG.P08.D3_3_n
+clickcand X77Y115/SB_SML.P08.Y2_int/SB_SML.P08.D0 right
+assert_menu X77Y115/SB_SML.P08.Y2_int
 assert_menu End routing
 shot 04_route_menu.png
-menu X74Y116/SB_BIG.P08.D3_3_n
+menu X77Y115/SB_SML.P08.Y2_int
 wait 200
 assert_py nw() == 5
-assert_status from X74Y116/SB_BIG.P08.D3_3_n
+assert_status from X77Y115/SB_SML.P08.Y2_int
+clickcand X77Y115/SB_SML.P08.Y2/SB_SML.P08.Y2_int/INV
 zoombel X76Y116/CPE_LT_L 1.6
-clickcand X77Y116/IM.P08.D2/IM.P08.D2_n
-clickcand X77Y116/IM.P08.Y/IM.P08.D2/INV
+clickcand X77Y116/IM.P08.D1/IM.P08.D1_n
+clickcand X77Y116/IM.P08.Y/IM.P08.D1/INV
 clickcand X77Y116/CPE.IN8/IM.P08.Y
 wait 200
 status
@@ -71,17 +72,8 @@ py print(nw(), [str(w) for w, p in ctx.nets[N].wires])
 zoombel X77Y116/CPE_LT_L 0.5
 wait 300
 shot 05_routed_to_cpe.png
-# --- the rest inside the CPE, up to the sink wire (the arc is then routed)
+# --- on to the sink pin wire inside the CPE: the arc is routed
 clickcand X77Y116/CPE.IN8_int/CPE.IN8
-clickcand X77Y116/CPE.TI8_int/CPE.IN8_int
-clickcand X77Y116/CPE.D0_03_int/CPE.TI8_int
-route
-# (the pip on to D0_11_int, taken by another net, lies under the free one: the menu lists it greyed)
-clickcand X77Y116/CPE.D1_11_int/CPE.D0_03_int right
-assert_menu_disabled X77Y116/CPE.D0_11_int
-wait 300
-shot 05b_menu_refused.png
-menu X77Y116/CPE.D1_11_int
 wait 200
 status
 py print(nw(), W0)
@@ -101,11 +93,11 @@ key Ctrl+Y
 assert_py nw() == W0
 # --- route mode from the pip context menu: the head at the pip's destination
 zoombel X78Y116/CPE_LT_L 0.6
-clickpip X78Y116/CPE.OUT1/CPE.OUT1_int right
+clickpip X78Y116/CPE.OUT2/CPE.OUT2_int right
 menu Route net
 wait 200
 status
-assert_status from X77Y115/OM.P09.D3_n
+assert_status from X77Y115/OM.P10.D3_n
 route
 wait 300
 shot 07_route_from_pip.png

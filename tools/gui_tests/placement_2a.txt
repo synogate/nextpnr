@@ -1,50 +1,91 @@
-# Phase 2a: arming from the tree, place/move/swap by click, refused clicks, greyed refused context
-# entries, Lock/Unlock all, FIXED cells.
+# Phase 2a: arming from the tree, place/move/swap by click, refused clicks, greyed refused context entries,
+# Lock/Unlock all, FIXED cells. (In this design each LUT forms a cluster with the register it feeds: arming,
+# moving and locking take the cluster; a cluster only moves to free bels, swapping with clusters is refused. The
+# single-cell swap uses new unclustered cells made with Logic > New cell like.)
 # design: counter_pnr
 resize 1400 1000
 zoombel X77Y116/CPE_LT_L 1.2
-py L1="$abc$348$auto$blifparse.cc:397:parse_blif$384"; L2="$abc$348$auto$blifparse.cc:397:parse_blif$381"
-assert_py str(ctx.cells[L1].bel) == "X77Y116/CPE_LT_L" and str(ctx.cells[L2].bel) == "X77Y117/CPE_LT_L"
-assert_py ctx.checkBelAvail("X76Y116/CPE_LT_L")
+py L1="$abc$348$auto$blifparse.cc:397:parse_blif$383"; L2="$abc$348$auto$blifparse.cc:397:parse_blif$381"; F1="$auto$ff.cc:337:slice$107"
+assert_py str(ctx.cells[L1].bel) == "X77Y116/CPE_LT_L" and str(ctx.cells[L2].bel) == "X77Y117/CPE_LT_L" and str(ctx.cells[F1].bel) == "X77Y116/CPE_FF_L"
+assert_py ctx.checkBelAvail("X76Y116/CPE_LT_L") and ctx.checkBelAvail("X76Y116/CPE_FF_L")
 # --- tree arming: not in edit mode -> selecting does not arm
-selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
 assert_nostatus Moving
 # edit mode on, select again -> armed
 key E
 assert_status Edit mode on
 selectcell $abc$348$auto$blifparse.cc:397:parse_blif$381
-selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
-assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$383 (2 cells)
 # Esc cancels, P re-arms the tree selection
 key Esc
 assert_nostatus Moving
 key P
-assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
 # selecting another cell re-arms that one
 selectcell $abc$348$auto$blifparse.cc:397:parse_blif$381
-assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$381
-selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
-assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$381
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
 hoverbel X76Y116/CPE_LT_L
 wait 300
 shot 01_armed_hover_free.png
-# --- move to a free bel by click
+# --- move to a free bel by click: the register goes along
 clickbel X76Y116/CPE_LT_L
 wait 200
-assert_status Move $abc$348$auto$blifparse.cc:397:parse_blif$384 to X76Y116/CPE_LT_L
-assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L"
-# --- swap onto an occupied (unlocked) bel
-selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+status
+assert_status Move cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
+assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L" and str(ctx.cells[F1].bel) == "X76Y116/CPE_FF_L"
+# --- onto an occupied (unlocked) bel: refused, a cluster only moves to free bels
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
 key P
 hoverbel X77Y117/CPE_LT_L
 wait 300
-shot 02_armed_hover_swap.png
+shot 02_armed_hover_occupied.png
 clickbel X77Y117/CPE_LT_L
 wait 200
-assert_status Swap $abc$348$auto$blifparse.cc:397:parse_blif$384 with $abc$348$auto$blifparse.cc:397:parse_blif$381
-assert_py str(ctx.cells[L1].bel) == "X77Y117/CPE_LT_L" and str(ctx.cells[L2].bel) == "X76Y116/CPE_LT_L"
-key Ctrl+Z
+status
+assert_status a cluster can only be moved to free bels
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
 assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L" and str(ctx.cells[L2].bel) == "X77Y117/CPE_LT_L"
+# --- swap of single cells: two new cells like L1 (Logic > New cell like: unclustered, armed for placement),
+# placed by click on free bels, then one clicked onto the other
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
+treemenu
+menu Logic > New cell like
+dialog sw_a
+wait 300
+clickbel X76Y118/CPE_LT_L
+wait 200
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
+treemenu
+menu Logic > New cell like
+dialog sw_b
+wait 300
+clickbel X76Y119/CPE_LT_L
+wait 200
+assert_py str(ctx.cells["sw_a"].bel) == "X76Y118/CPE_LT_L" and str(ctx.cells["sw_b"].bel) == "X76Y119/CPE_LT_L"
+selectcell sw_a
+key P
+hoverbel X76Y119/CPE_LT_L
+wait 300
+shot 02b_armed_hover_swap.png
+clickbel X76Y119/CPE_LT_L
+wait 200
+status
+assert_status Swap sw_a with sw_b
+assert_py str(ctx.cells["sw_a"].bel) == "X76Y119/CPE_LT_L" and str(ctx.cells["sw_b"].bel) == "X76Y118/CPE_LT_L"
+key Ctrl+Z
+assert_py str(ctx.cells["sw_a"].bel) == "X76Y118/CPE_LT_L" and str(ctx.cells["sw_b"].bel) == "X76Y119/CPE_LT_L"
+# --- a single cell onto a bel of a cluster: refused, swapping with clusters is not supported
+selectcell sw_a
+key P
+clickbel X77Y117/CPE_LT_L
+wait 200
+status
+assert_status swapping with clusters is not supported
+assert_py str(ctx.cells["sw_a"].bel) == "X76Y118/CPE_LT_L" and str(ctx.cells[L2].bel) == "X77Y117/CPE_LT_L"
+key Esc
 # --- lock L2 via the bel context menu
 key Esc
 clickbel X77Y117/CPE_LT_L right
@@ -52,28 +93,29 @@ menu Lock
 wait 200
 assert_status Lock
 assert_py ctx.cells[L2].belStrength == STRENGTH_USER
-# --- refused click (onto the locked cell) keeps the armed cell and the selection
-selectcell $abc$348$auto$blifparse.cc:397:parse_blif$384
+# --- refused click (onto the locked cell; refused as for any occupied bel) keeps the armed cell and the selection
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$383
 key P
 status
 clickbel X77Y117/CPE_LT_L
 wait 200
 status
-assert_status locked cell
-assert_status Moving $abc$348$auto$blifparse.cc:397:parse_blif$384
-assert_status CELL $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status a cluster can only be moved to free bels
+assert_status Moving cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
+assert_status CELL $abc$348$auto$blifparse.cc:397:parse_blif$383
 assert_py str(ctx.cells[L1].bel) == "X76Y116/CPE_LT_L"
 shot 03_refused.png
 # --- the context menu greys the refused placement, with the reason as tooltip
 clickbel X77Y117/CPE_LT_L right
-assert_menu_disabled Swap
+assert_menu_disabled Move cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
 assert_menu Unlock
 shot 04_refused_menu.png
 menuclose
-# --- Unlock all: the USER-locked cell becomes STRONG, FIXED cells stay
+# --- Unlock all: the USER-locked cells become STRONG, FIXED cells stay
 key Esc
 action Unlock all cells
-assert_status Unlock all cells (1 cells
+status
+assert_status Unlock all cells (2 cells
 assert_status FIXED by the packer kept
 assert_py ctx.cells[L2].belStrength == STRENGTH_STRONG
 assert_py all(c.belStrength == STRENGTH_FIXED for n, c in ctx.cells if c.type in ("IOSEL", "CPE_RAMO"))

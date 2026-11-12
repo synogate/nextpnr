@@ -4,7 +4,7 @@
 # design: counter_pnr
 resize 1400 1000
 zoombel X77Y116/CPE_LT_L 1.2
-hoverpip X77Y116/IM.P08.Y/IM.P08.D2/INV
+hoverpip X77Y116/IM.P08.Y/IM.P08.D1/INV
 wait 300
 shot 01_hover_pip.png
 hoverpip X77Y116/CPE.IN8/IM.P08.Y
@@ -13,7 +13,7 @@ key E
 # a fast drag across pips
 dragbel X77Y116/CPE_LT_L X76Y116/CPE_LT_L
 wait 300
-assert_py str(ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$384"].bel) == "X76Y116/CPE_LT_L"
+assert_py str(ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$383"].bel) == "X76Y116/CPE_LT_L"
 shot 02_dragged.png
 # undo with the mouse on the vacated bel, then keep hovering there
 hoverbel X77Y116/CPE_LT_L
@@ -21,6 +21,6 @@ key Ctrl+Z
 hoverbel X77Y116/CPE_LT_L
 move 300 300
 hoverbel X77Y116/CPE_LT_L
-hoverpip X77Y116/IM.P08.Y/IM.P08.D2/INV
-assert_py str(ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$384"].bel) == "X77Y116/CPE_LT_L"
+hoverpip X77Y116/IM.P08.Y/IM.P08.D1/INV
+assert_py str(ctx.cells["$abc$348$auto$blifparse.cc:397:parse_blif$383"].bel) == "X77Y116/CPE_LT_L"
 shot 03_undone.png

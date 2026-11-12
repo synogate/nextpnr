@@ -3,7 +3,7 @@
 # also on a partially placed / routed design.
 # design: counter_pnr
 resize 1600 1000
-py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; L1="$abc$348$auto$blifparse.cc:397:parse_blif$384"
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[1]"; L1="$abc$348$auto$blifparse.cc:397:parse_blif$383"
 # --- both docks closed by default
 # --- timing on the routed design: T opens the dock
 key T
@@ -33,7 +33,7 @@ dock checkList
 # --- rip up a net: the check refreshes by itself, the net is listed
 key E
 zoombel X77Y116/CPE_LT_L 1.2
-clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+clickpip X77Y116/IM.P08.Y/IM.P08.D1/INV right
 menu Unroute net
 wait 900
 label checkHeader
@@ -41,39 +41,40 @@ assert_label checkHeader Unrouted nets: 1,
 assert_label checkHeader Conflicts: 0
 dock checkList
 zoomfit
-dock checkList $auto$alumacc.cc:512:replace_alu$26.Y[0]
+dock checkList $auto$alumacc.cc:512:replace_alu$26.Y[1]
 wait 400
 status
-assert_status $auto$alumacc.cc:512:replace_alu$26.Y[0]
+assert_status $auto$alumacc.cc:512:replace_alu$26.Y[1]
 shot 03_check_unrouted_net_focus.png
 # timing now estimates that arc (if it is on the critical path) and stays usable
 key T
 wait 500
 label timingHeader
 assert_label timingHeader Fmax:
-# --- unplace a cell: listed as unplaced; double-click arms it for placement
+# --- unplace a cell (with its register: the LUT is the root of a cluster): listed as unplaced; double-click arms it
+# for placement
 zoombel X77Y116/CPE_LT_L 1.2
 clickbel X77Y116/CPE_LT_L right
 menu Unplace
 wait 900
 assert_py ctx.cells[L1].bel is None
 label checkHeader
-assert_label checkHeader Unplaced: 1,
+assert_label checkHeader Unplaced: 2,
 # (the routing of its other input nets now ends without a sink: stubs under Dangling)
 assert_nolabel checkHeader Dangling: 0
 dock checkList
 key Esc
-dock checkList $abc$348$auto$blifparse.cc:397:parse_blif$384
+dock checkList $abc$348$auto$blifparse.cc:397:parse_blif$383
 wait 400
 status
-assert_status Placing $abc$348$auto$blifparse.cc:397:parse_blif$384
+assert_status Placing cluster $abc$348$auto$blifparse.cc:397:parse_blif$383
 shot 04_check_unplaced_armed.png
 key Esc
 # timing on the partially placed design: no crash, the header says what is left out
 key T
 wait 500
 label timingHeader
-assert_label timingHeader 1 of
+assert_label timingHeader 2 of
 assert_label timingHeader unplaced
 check Highlight critical path on
 wait 300
@@ -88,13 +89,13 @@ assert_label checkHeader Unplaced: 0,
 assert_label checkHeader Unrouted nets: 1,
 assert_label checkHeader Dangling: 0
 # --- per-arc delay of the selected net in the Routing properties (routed arcs: ns, unrouted: est.)
-selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[1]
 wait 300
 shot 06_net_arc_delay_est.png
 key Ctrl+Z
 wait 900
 assert_label checkHeader Unplaced: 0, Unrouted nets: 0, Conflicts: 0
-selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[1]
 wait 300
 shot 07_net_arc_delay_routed.png
 key T

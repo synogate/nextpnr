@@ -2751,6 +2751,23 @@ int FPGAViewWidget::routePick(int x, int y)
             best = int(i);
             best_dist = dist + thin;
         }
+        // A candidate the Arch draws itself (a path of several pips, see getRouteRetargets): what is shown is
+        // what is clicked
+        float drawn = std::numeric_limits<float>::infinity();
+        for (auto &ge : c.graphics) {
+            if (ge.type != GraphicElement::TYPE_LINE && ge.type != GraphicElement::TYPE_ARROW)
+                continue;
+            float vx = ge.x2 - ge.x1, vy = ge.y2 - ge.y1, len2 = vx * vx + vy * vy;
+            float t = len2 > 0 ? std::max(0.0f, std::min(1.0f, ((world.x() - ge.x1) * vx + (world.y() - ge.y1) * vy) /
+                                                                       len2))
+                               : 0.0f;
+            float px = ge.x1 + t * vx - world.x(), py = ge.y1 + t * vy - world.y();
+            drawn = std::min(drawn, std::sqrt(px * px + py * py));
+        }
+        if (drawn < std::numeric_limits<float>::infinity() && better(drawn)) {
+            best = int(i);
+            best_dist = drawn;
+        }
     }
     return best;
 }

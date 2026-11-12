@@ -2,32 +2,32 @@
 # net), undo of each, View > Show unrouted arcs.
 # design: counter_pnr
 resize 1400 1000
-# (nw() leaves out the routing inside the sink CPE below the sink pin wire X77Y116/CPE.IN8_int: part of the
-# CPE configuration of this design routed before, rip-up keeps it)
-py N="$auto$alumacc.cc:512:replace_alu$26.Y[0]"; TAIL={str(w) for w,m in ctx.nets[N].wires if str(w).startswith("X77Y116/CPE.") and str(w).endswith("_int") and str(w) != "X77Y116/CPE.IN8_int"}; print("tail", TAIL); nw=lambda: sum(1 for w,m in ctx.nets[N].wires if str(w) not in TAIL); W0=nw(); print(W0, len(ctx.nets[N].users))
+# (the net from the adder's OUT2 on X78Y116 through a switch box and the input mux IM.P08 to IN4 of the LUT on
+# X77Y116, sink pin wire X77Y116/CPE.IN8_int)
+py N="$auto$alumacc.cc:512:replace_alu$26.Y[1]"; nw=lambda: len(ctx.nets[N].wires); W0=nw(); print(W0, len(ctx.nets[N].users))
 zoombel X77Y116/CPE_LT_L 1.2
 key E
 # --- selecting the net shows its routing (tree, source, sinks)
-selectnet $auto$alumacc.cc:512:replace_alu$26.Y[0]
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[1]
 wait 500
 status
-assert_status $auto$alumacc.cc:512:replace_alu$26.Y[0]
+assert_status $auto$alumacc.cc:512:replace_alu$26.Y[1]
 shot 01_net_view.png
 # --- Remove pip (and what only it feeds), undo
-clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+clickpip X77Y116/IM.P08.Y/IM.P08.D1/INV right
 assert_menu Unroute net
 shot 02_pip_menu.png
 menu Remove pip
 wait 300
 status
-assert_status Remove pip X77Y116/IM.P08.Y/IM.P08.D2/INV
+assert_status Remove pip X77Y116/IM.P08.Y/IM.P08.D1/INV
 py print(W0, nw())
 assert_py nw() < W0
 shot 03_pip_removed.png
 key Ctrl+Z
 assert_py nw() == W0
 # --- Unroute arc, undo
-clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+clickpip X77Y116/IM.P08.Y/IM.P08.D1/INV right
 menu Unroute arc
 wait 300
 status
@@ -37,7 +37,7 @@ assert_py 0 < nw() < W0
 key Ctrl+Z
 assert_py nw() == W0
 # --- Unroute net, undo
-clickpip X77Y116/IM.P08.Y/IM.P08.D2/INV right
+clickpip X77Y116/IM.P08.Y/IM.P08.D1/INV right
 menu Unroute net
 wait 300
 assert_status Unroute net

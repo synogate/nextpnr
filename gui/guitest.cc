@@ -479,7 +479,20 @@ bool GuiTest::elementPoint(const QString &kind, const QString &name, QPointF &po
     // over its bounding box
     std::vector<std::pair<float, float>> pts;
     float x0 = std::numeric_limits<float>::infinity(), y0 = x0, x1 = -x0, y1 = -x0;
-    for (auto &el : ctx->getDecalGraphics(decal.decal)) {
+    // (a candidate the Arch draws itself, a path of several pips: on its first line, where the path starts, away
+    // from the decal of the pip it binds, as a user clicks on what is shown)
+    std::vector<GraphicElement> graphics;
+    if (cand >= 0 && !v->routeCands_[cand].graphics.empty()) {
+        for (auto &el : v->routeCands_[cand].graphics)
+            if (el.type == GraphicElement::TYPE_LINE || el.type == GraphicElement::TYPE_ARROW) {
+                graphics.push_back(el);
+                break;
+            }
+        decal.x = decal.y = 0;
+    } else {
+        graphics = ctx->getDecalGraphics(decal.decal);
+    }
+    for (auto &el : graphics) {
         if (el.type != GraphicElement::TYPE_BOX && el.type != GraphicElement::TYPE_LINE &&
             el.type != GraphicElement::TYPE_ARROW && el.type != GraphicElement::TYPE_LOCAL_LINE &&
             el.type != GraphicElement::TYPE_LOCAL_ARROW)

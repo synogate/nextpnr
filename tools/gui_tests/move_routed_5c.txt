@@ -1,21 +1,22 @@
 # Moving a cell of a ROUTED design and routing again. postRoute renamed the LUT inputs of the cell to the CPE
 # inputs its routing reached; two came from carry lines (PINX / PINY1 with C_I4 / C_I3 set), driven by CP-line
-# cells fixed at the old place. Those only reach the old place: moving the LUT and the register it feeds (a
-# design loaded from JSON has no clusters: both selected, Move selection by) takes them back to the CPE inputs
+# cells fixed at the old place. Those only reach the old place: moving the LUT and the register it feeds (one
+# cluster; both selected, Move selection by) takes them back to the CPE inputs
 # they replace (IN4 / IN2, C_I flags cleared) on the nets the CP lines pass on; undo restores everything
 # exactly, and Route routes both at the new place.
 # design: counter_pnr
 resize 1400 1000
-py L="$abc$348$auto$blifparse.cc:397:parse_blif$376"; c=ctx.cells[L]; ports=lambda n: sorted((str(p), str(pi.net.name) if pi.net is not None else "") for p, pi in ctx.cells[n].ports); cip=lambda n: sorted((str(k), str(v)) for k, v in ctx.cells[n].params if str(k).startswith("C_I")); P0=ports(L); C0=cip(L); B0=str(c.bel); print(c.type, B0, P0, C0)
+py L="$abc$348$auto$blifparse.cc:397:parse_blif$357"; c=ctx.cells[L]; ports=lambda n: sorted((str(p), str(pi.net.name) if pi.net is not None else "") for p, pi in ctx.cells[n].ports); cip=lambda n: sorted((str(k), str(v)) for k, v in ctx.cells[n].params if str(k).startswith("C_I")); P0=ports(L); C0=cip(L); B0=str(c.bel); print(c.type, B0, P0, C0)
 assert_py dict(P0).get("PINX", "").startswith("cplines$") and dict(P0).get("PINY1", "").startswith("cplines$") and B0.endswith("CPE_LT_L")
-py F=[n for n, x in ctx.cells if str(x.type) == "CPE_FF" and str(x.bel).split("/")[0] == B0.split("/")[0]]; print("register(s) in the CPE:", F, [ports(n) for n in F])
+# (the CPE holds the register of its upper half too: F is the one the LUT feeds)
+py F=[n for n, x in ctx.cells if str(x.type) == "CPE_FF" and str(x.bel).split("/")[0] == B0.split("/")[0] and dict(ports(n)).get("DIN") == dict(P0)["OUT"]]; print("register in the CPE:", F, [ports(n) for n in F])
 py bad=lambda: sorted(n for n, ni in ctx.nets if ni.driver.cell is not None and any(True for u in ni.users) and not len(ni.wires)); N0=set(bad()); W0=sum(len(ni.wires) for n, ni in ctx.nets); print("nets without routing (IO):", sorted(N0))
 key E
 assert_py len(F) == 1 and dict(ports(F[0]))["DIN"] == dict(P0)["OUT"]
-selectcell $abc$348$auto$blifparse.cc:397:parse_blif$376
-selectcell $auto$ff.cc:337:slice$114 ctrl
+selectcell $abc$348$auto$blifparse.cc:397:parse_blif$357
+selectcell $auto$ff.cc:337:slice$133 ctrl
 key M
-dialog -39 -60
+dialog -39 -69
 wait 300
 status
 zoombel X40Y60/CPE_LT_FULL 0.6
@@ -38,6 +39,6 @@ py print("after Route:", ctx.cells[L].bel, ports(L), cip(L), "nets without routi
 assert_py set(bad()) <= N0
 assert_py all(len(ctx.nets[n].wires) > 0 for p, n in ports(L) if n != "")
 assert_action Route on
-zoomcell $abc$348$auto$blifparse.cc:397:parse_blif$376 1.2
+zoomcell $abc$348$auto$blifparse.cc:397:parse_blif$357 1.2
 shotview 02_routed.png
 savejson moved_routed_5c.json

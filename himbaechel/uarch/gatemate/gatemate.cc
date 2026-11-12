@@ -918,14 +918,8 @@ void GateMateImpl::check_regions()
         log_error("A placement region is too small for its cells, see the utilisation above.\n");
 }
 
-// (also after a placed and routed design was loaded, and after routing, see postRoute). A finished design (loaded,
-// or saved before finishRoute dropped the routing behind the LUT inputs) has no routing there.
-void GateMateImpl::assignArchInfo()
-{
-    if (!ctx->route_finish_pending)
-        unbind_virtual_tails();
-    update_gui_labels();
-}
+// (also after a placed and routed design was loaded, and after routing, see postRoute)
+void GateMateImpl::assignArchInfo() { update_gui_labels(); }
 
 void GateMateImpl::postPlace()
 {
