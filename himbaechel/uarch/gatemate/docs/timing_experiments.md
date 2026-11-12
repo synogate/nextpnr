@@ -636,13 +636,60 @@ all numbers below are from these runs, in parallel on one machine, so the times 
   the default, and `--placer static` is the choice for a design of several loosely coupled modules like
   dmg_soc, with `--vopt refine-temp=3e-5` where the run time allows.
 
-  What limits dmg_soc then (static, pull, `refine-temp`; 16 seeds): in 11 seeds the loop through the caches
+  What limited dmg_soc then (static, pull, `refine-temp`; 16 seeds): in 11 seeds the loop through the caches
   and the CPU at 26.1 to 27.7 ns, in 5 seeds, three of the four slowest among them, the half period from the RAM of
   a FIFO through the HyperBus controller to the output registers at the pads (12.0 to 14.3 ns for half of
-  26 to 29 ns). That RAM lies up to 88 tiles from the pads: the static placer snaps the block RAMs to
-  sites early (the step more than doubles the wirelength of that moment) and each to the nearest free
-  one in turn. Not done: an
-  assignment of the RAMs to the sites as a whole, by the timing of their paths.
+  26 to 29 ns). The second was for the larger part the way Fmax was computed, and both have to do with where
+  the block RAMs are.
+
+  *Fmax of the two edges of a clock.* The path printed for those 5 seeds did not give the Fmax printed: 12.24 ns
+  from the rising to the falling edge is 40.8 MHz, the report said 38.1. For a pair of two domains
+  `max_delay_by_domain_pairs` took the clock delays out of the path again, as for two clocks without a common
+  reference, and the two edges of one clock are two domains (it also looked the launching clock up under the
+  number of the capturing domain). The slack, the criticality and the printed path count the skew, so the
+  placers and the router worked on the right path, and the number at the end was that of another one: a
+  longer path whose capturing register gets the clock later. Fixed in `common/kernel/timing.cc`. It changes the
+  report only: the same runs of the static placer with `refine-temp` give 37.83 instead of 37.30 MHz (five
+  seeds 0.4 to 3.9 MHz more, the others as they were), the analytic default 35.99 MHz (35.33 before, with
+  the router of that day). **All Fmax above this paragraph are as computed before.**
+
+  *The block RAMs to their places as a whole* (`placerStatic/ipAssign`, on for GateMate). The static placer
+  gives the block RAMs their places once they overlap by less than 15%, which is long before the logic is
+  spread (85% of it lies on other logic then). The RAMs of a module are nearly on one spot at that time (the
+  five of the second data cache within 15 by 10 tiles: a RAM counts as 1 by 2 tiles in the density, and the
+  blocks are 32 columns apart), and the strict legaliser gives each the first free block it draws in a growing
+  box around that spot, one RAM after the other: 35 tiles from the solver's position on average, the 13 RAMs
+  of the three caches over three of the four columns, the FIFO in front of the HyperBus 72 to 88 tiles from the
+  pads in 6 of 16 seeds, the five limited by that path among them.
+
+  - Now each RAM (any macro of the placer's IP groups, with its cluster) goes to the place where the wirelength
+    of its nets is least, weighted as the solver weights it (1 + 5 crit^2 for a net, and the pull of its critical
+    arcs), the largest first. Then each in turn moves to a cheaper place that is free, or takes the place of one or
+    two others, which go to the best places left to them, where that makes the nets of all of them cheaper;
+    until a pass changes nothing. dmg_soc: 31 RAMs, 16 to 31 moves in 3 to 6 passes, which take another 15%
+    off the weighted wirelength of the RAMs' nets; no run time to speak of. The RAMs are 30 tiles from the
+    solver's positions then: the blocks are where they are.
+  - dmg_soc, 16 seeds, static with `refine-temp`: 37.83 -> 38.44 MHz, +1.6% (9 of 16), the worst seed 36.56
+    instead of 35.06 MHz, the router 10% faster. The loop through the caches and the CPU limits 15 of the 16
+    seeds now, at 24.8 to 27.4 ns.
+  - Tried with it and not kept: the RAMs get their places only once the logic overlaps by 50% or less, when the
+    islands have formed (38.51 MHz, the same within the noise); and only once the RAMs lie on blocks (the
+    overlap counted against the area of the bels): they never do, the density does not bring them nearer
+    than 30 tiles to the blocks in hundreds of iterations (a block is two tiles in a dark plane).
+
+  | dmg_soc, 16 seeds, Fmax as computed now | Fmax (geometric mean, range) | Against the analytic placer |
+  |---|---|---|
+  | analytic (default) | 35.99 MHz, 30.98 - 38.51 | |
+  | static with the pull, `refine-temp=3e-5` | 37.83 MHz, 35.06 - 39.71 | +5.1% (15 of 16) |
+  | and the block RAMs placed as a whole | 38.44 MHz, 36.56 - 40.28 | +6.8% (14 of 16) |
+
+  What limits dmg_soc now, in the loop of 21 LUT levels from the tag RAM of the data cache through the bus
+  arbiter and the CPU to the address of the instruction cache's RAMs (10.7 ns logic, 14 to 16.5 ns routing):
+  connections between CPEs next to each other that take 0.95 to 1.2 ns where 0.3 to 0.45 ns is the least,
+  because another input of the same LUT or another net of the source CPE holds the direct line (`--vopt
+  report-crit-routing` for seed 10, 36.7 MHz: three such connections, 2 ns of the 27.2). That is the open
+  point of the estimates above: an estimate that knows the other inputs of the cell, or an assignment of the
+  inputs by criticality.
 
 What was tried on the way and gave nothing (8 seeds unless noted, against the runs before the fix;
 the environment switches they were behind are not in the tree). The builds with these switches computed

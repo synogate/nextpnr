@@ -637,6 +637,12 @@ void GateMateImpl::init(Context *ctx)
     // +2.2% over 16 seeds and no seed below 33.6 MHz, the benchmark designs +1.0% (docs/timing_experiments.md)
     if (!ctx->settings.count(ctx->id("placerStatic/arcWeight")))
         ctx->settings[ctx->id("placerStatic/arcWeight")] = std::to_string(3.0f);
+    // The electrostatic placer gives the block RAMs their places as a whole, by the weighted wirelength of their
+    // nets: it has the RAMs of a module nearly on one spot when they get their places, and the first free block
+    // drawn around it, one RAM after the other, left them 35 tiles from there on average. dmg_soc +1.6% over 16
+    // seeds, the worst seed 36.6 instead of 35.1 MHz (docs/timing_experiments.md)
+    if (!ctx->settings.count(ctx->id("placerStatic/ipAssign")))
+        ctx->settings[ctx->id("placerStatic/ipAssign")] = std::string("1");
     // The annealer picks a new bel for a cell near its place, or anywhere for the types with fewer bels than this:
     // near a block RAM there is no other. By default that is fewer than 64, which the 32 RAM sites of a die are
     // and their 64 halves are not, so that half RAMs never moved in the refinement

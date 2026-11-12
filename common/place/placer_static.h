@@ -80,6 +80,10 @@ struct PlacerStaticCfg
     float arc_weight = 0.0f;
     float arc_exponent = 4.0f;
     float arc_min_crit = 0.5f;
+    // The macros of the IP groups (block RAMs, DSPs) go to their places as a whole, by the weighted wirelength of
+    // their nets, instead of each to the first free place found around the solver's position (setting
+    // placerStatic/ipAssign)
+    bool ip_assign = false;
     // groups of cells that should be placed together.
     // groups < logic_groups are logic like LUTs and FFs, further groups for BRAM/DSP/misc
     std::vector<StaticCellGroupCfg> cell_groups;

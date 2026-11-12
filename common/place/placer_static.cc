@@ -1340,12 +1340,337 @@ class StaticPlacer
         }
     }
 
-    void legalise_step(bool dsp_bram)
+    // The IP macros (block RAMs, DSPs) to their places as a whole (PlacerStaticCfg::ip_assign): each to the place
+    // where the wirelength of its nets, weighted as in the solver, is least, then moves and exchanges for as long
+    // as the total falls. The strict legaliser below takes the first free place it draws around the solver's
+    // position, one macro after the other, and the solver has the macros of a module nearly on one spot at that
+    // time, so that they end up anywhere.
+    struct IpItem
     {
+        CellInfo *root = nullptr;
+        int ip_cells = 0;
+        std::vector<int> nets;
+        // The placements that nothing fixed stands in the way of
+        std::vector<std::vector<std::pair<CellInfo *, BelId>>> cands;
+        std::vector<std::pair<int, RealPair>> solver_pos;
+        int curr = -1;
+    };
+    struct IpNet
+    {
+        bool known = false;
+        float weight = 1;
+        std::vector<std::pair<CellInfo *, float>> arcs;
+    };
+    std::vector<IpItem> ip_items;
+    std::vector<IpNet> ip_nets;
+    dict<IdString, int> ip_item_of_root;
+
+    double ip_net_cost(int idx)
+    {
+        NetInfo *ni = nets.at(idx).ni;
+        const IpNet &w = ip_nets.at(idx);
+        RealPair d = cell_loc(ni->driver.cell, false);
+        float x0 = d.x, x1 = d.x, y0 = d.y, y1 = d.y;
+        for (auto &usr : ni->users) {
+            RealPair u = cell_loc(usr.cell, false);
+            x0 = std::min(x0, u.x);
+            x1 = std::max(x1, u.x);
+            y0 = std::min(y0, u.y);
+            y1 = std::max(y1, u.y);
+        }
+        double cost = w.weight * (cfg.hpwl_scale_x * (x1 - x0) + cfg.hpwl_scale_y * (y1 - y0));
+        for (auto &arc : w.arcs) {
+            RealPair u = cell_loc(arc.first, false);
+            cost += arc.second * (cfg.hpwl_scale_x * std::abs(u.x - d.x) + cfg.hpwl_scale_y * std::abs(u.y - d.y));
+        }
+        return cost;
+    }
+
+    double ip_cost(const std::vector<int> &net_idxs)
+    {
+        double cost = 0;
+        for (int idx : net_idxs)
+            cost += ip_net_cost(idx);
+        return cost;
+    }
+
+    void ip_set_pos(IpItem &it, int cand)
+    {
+        if (cand == -1) {
+            for (auto &p : it.solver_pos)
+                mcells.at(p.first).pos = mcells.at(p.first).ref_pos = p.second;
+            return;
+        }
+        for (auto &t : it.cands.at(cand)) {
+            if (t.first->udata == -1)
+                continue;
+            auto &mc = mcells.at(t.first->udata);
+            mc.pos = mc.ref_pos = RealPair(get_place_loc(ctx->getBelLocation(t.second)), 0.5);
+        }
+    }
+
+    bool ip_bind(IpItem &it, int cand)
+    {
+        auto &targets = it.cands.at(cand);
+        for (auto &t : targets)
+            if (!ctx->checkBelAvail(t.second))
+                return false;
+        for (auto &t : targets)
+            ctx->bindBel(t.second, t.first, targets.size() > 1 ? STRENGTH_STRONG : STRENGTH_WEAK);
+        for (auto &t : targets)
+            if (!ctx->isBelLocationValid(t.second)) {
+                for (auto &u : targets)
+                    ctx->unbindBel(u.second);
+                return false;
+            }
+        it.curr = cand;
+        ip_set_pos(it, cand);
+        return true;
+    }
+
+    void ip_unbind(IpItem &it)
+    {
+        if (it.curr == -1)
+            return;
+        for (auto &t : it.cands.at(it.curr))
+            ctx->unbindBel(t.second);
+        it.curr = -1;
+    }
+
+    // The candidates of an item by the cost of its nets with the item there (whether free or not)
+    std::vector<std::pair<double, int>> ip_rank(IpItem &it)
+    {
+        std::vector<std::pair<double, int>> ranked;
+        int at = it.curr;
+        for (int c = 0; c < int(it.cands.size()); c++) {
+            ip_set_pos(it, c);
+            ranked.emplace_back(ip_cost(it.nets), c);
+        }
+        ip_set_pos(it, at);
+        std::stable_sort(ranked.begin(), ranked.end());
+        return ranked;
+    }
+
+    // Binds an unbound item at the cheapest of its candidates that is free and legal
+    bool ip_bind_best(IpItem &it)
+    {
+        for (auto &r : ip_rank(it))
+            if (ip_bind(it, r.second))
+                return true;
+        ip_set_pos(it, -1);
+        return false;
+    }
+
+    // The other items in the way of a candidate; false if something else is, or more than two of them
+    bool ip_blockers(IpItem &it, int cand, std::vector<int> &blockers)
+    {
+        blockers.clear();
+        for (auto &t : it.cands.at(cand)) {
+            CellInfo *bound = ctx->getBoundBelCell(t.second);
+            if (bound == nullptr)
+                continue;
+            IdString root = (bound->cluster != ClusterId()) ? ctx->getClusterRootCell(bound->cluster)->name : bound->name;
+            auto fnd = ip_item_of_root.find(root);
+            if (fnd == ip_item_of_root.end() || ip_items.at(fnd->second).curr == -1)
+                return false;
+            if (std::find(blockers.begin(), blockers.end(), fnd->second) == blockers.end()) {
+                if (blockers.size() == 2)
+                    return false;
+                blockers.push_back(fnd->second);
+            }
+        }
+        return true;
+    }
+
+    void assign_ip()
+    {
+        ip_items.clear();
+        ip_item_of_root.clear();
+        ip_nets.assign(nets.size(), IpNet());
+        dict<IdString, std::vector<BelId>> bels_of_type;
+        // The macros and single cells of the IP groups that have no place yet, with their nets and candidates
         for (int i = 0; i < int(ccells.size()); i++) {
             auto &mc = mcells.at(i);
             auto &cc = ccells.at(i);
-            mc.solver_pos = mc.pos;
+            if (mc.group < cfg.logic_groups || mc.is_fixed)
+                continue;
+            CellInfo *root = cc.base_cell;
+            if (cc.macro_idx != -1) {
+                root = macros.at(cc.macro_idx).root;
+                if (i != root->udata)
+                    continue;
+            }
+            if (root->bel != BelId())
+                continue;
+            IpItem it;
+            it.root = root;
+            if (!bels_of_type.count(root->type)) {
+                auto &bels = bels_of_type[root->type];
+                for (BelId bel : ctx->getBels())
+                    if (ctx->isValidBelForCellType(root->type, bel))
+                        bels.push_back(bel);
+            }
+            for (BelId bel : bels_of_type.at(root->type)) {
+                std::vector<std::pair<CellInfo *, BelId>> targets;
+                if (root->cluster != ClusterId()) {
+                    if (!ctx->getClusterPlacement(root->cluster, bel, targets))
+                        continue;
+                } else {
+                    targets.emplace_back(root, bel);
+                }
+                bool usable = true;
+                for (auto &t : targets)
+                    usable &= t.second != BelId() && t.first->testRegion(t.second) && ctx->checkBelAvail(t.second) &&
+                              t.first->bel == BelId();
+                if (usable)
+                    it.cands.push_back(targets);
+            }
+            if (it.cands.empty())
+                continue;
+            NEXTPNR_NAMESPACE_PREFIX pool<int> seen_cells, seen_nets;
+            for (auto &t : it.cands.front()) {
+                CellInfo *ci = t.first;
+                if (ci->udata == -1)
+                    continue;
+                if (mcells.at(ci->udata).group >= cfg.logic_groups)
+                    it.ip_cells++;
+                if (seen_cells.insert(ci->udata).second)
+                    it.solver_pos.emplace_back(ci->udata, mcells.at(ci->udata).pos);
+                for (auto &port : ci->ports) {
+                    NetInfo *ni = port.second.net;
+                    if (ni == nullptr || ni->driver.cell == nullptr || nets.at(ni->udata).skip)
+                        continue;
+                    if (!seen_nets.insert(ni->udata).second)
+                        continue;
+                    it.nets.push_back(ni->udata);
+                    auto &w = ip_nets.at(ni->udata);
+                    if (w.known || !cfg.timing_driven)
+                        continue;
+                    w.known = true;
+                    float max_crit = 0;
+                    for (auto &usr : ni->users) {
+                        float crit = tmg.get_criticality(CellPortKey(usr));
+                        max_crit = std::max(max_crit, crit);
+                        if (cfg.arc_weight > 0 && crit >= cfg.arc_min_crit)
+                            w.arcs.emplace_back(usr.cell, cfg.arc_weight * std::pow(crit, cfg.arc_exponent));
+                    }
+                    w.weight = 1.0f + cfg.timing_weight * std::pow(max_crit, cfg.crit_exponent);
+                }
+            }
+            std::sort(it.nets.begin(), it.nets.end());
+            ip_item_of_root[root->name] = int(ip_items.size());
+            ip_items.push_back(std::move(it));
+        }
+        if (ip_items.empty())
+            return;
+        std::vector<int> all_nets;
+        for (auto &it : ip_items)
+            all_nets.insert(all_nets.end(), it.nets.begin(), it.nets.end());
+        std::sort(all_nets.begin(), all_nets.end());
+        all_nets.erase(std::unique(all_nets.begin(), all_nets.end()), all_nets.end());
+        double solver_cost = ip_cost(all_nets);
+
+        // The largest first, each to the best place left
+        std::vector<int> order(ip_items.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(),
+                         [&](int a, int b) { return ip_items.at(a).ip_cells > ip_items.at(b).ip_cells; });
+        int placed = 0;
+        for (int i : order)
+            placed += ip_bind_best(ip_items.at(i));
+        double first_cost = ip_cost(all_nets);
+
+        // An item moves to a cheaper place that is free, or takes the place of one or two others, which then go to
+        // the best places left to them (the one it leaves among those), where the nets of all of them get cheaper
+        const int max_passes = 10, max_tries = 8;
+        int passes = 0, moves = 0;
+        std::vector<int> blockers, pair_nets;
+        while (passes < max_passes) {
+            passes++;
+            int accepted = 0;
+            for (int i : order) {
+                IpItem &it = ip_items.at(i);
+                if (it.curr == -1)
+                    continue;
+                int at = it.curr;
+                double cost_at = ip_cost(it.nets);
+                auto ranked = ip_rank(it);
+                ip_unbind(it);
+                bool moved = false;
+                int tries = 0;
+                for (auto &r : ranked) {
+                    if (r.second == at || r.first >= cost_at - 1e-3 * std::abs(cost_at) || tries >= max_tries)
+                        break;
+                    if (!ip_blockers(it, r.second, blockers))
+                        continue;
+                    tries++;
+                    if (blockers.empty()) {
+                        moved = ip_bind(it, r.second);
+                        if (moved)
+                            break;
+                        continue;
+                    }
+                    pair_nets = it.nets;
+                    for (int b : blockers)
+                        pair_nets.insert(pair_nets.end(), ip_items.at(b).nets.begin(), ip_items.at(b).nets.end());
+                    std::sort(pair_nets.begin(), pair_nets.end());
+                    pair_nets.erase(std::unique(pair_nets.begin(), pair_nets.end()), pair_nets.end());
+                    ip_set_pos(it, at);
+                    double before = ip_cost(pair_nets);
+                    std::vector<int> blocker_at;
+                    for (int b : blockers) {
+                        blocker_at.push_back(ip_items.at(b).curr);
+                        ip_unbind(ip_items.at(b));
+                    }
+                    bool ok = ip_bind(it, r.second);
+                    for (int b : blockers)
+                        ok = ok && ip_bind_best(ip_items.at(b));
+                    if (ok && ip_cost(pair_nets) < before - 1e-3 * std::abs(before)) {
+                        moved = true;
+                        break;
+                    }
+                    // Back to where they were
+                    ip_unbind(it);
+                    for (int b : blockers)
+                        ip_unbind(ip_items.at(b));
+                    for (size_t k = 0; k < blockers.size(); k++)
+                        if (!ip_bind(ip_items.at(blockers.at(k)), blocker_at.at(k)))
+                            log_error("Placing the IP macros: '%s' can not go back to its place.\n",
+                                      ctx->nameOf(ip_items.at(blockers.at(k)).root));
+                }
+                if (moved) {
+                    accepted++;
+                } else if (!ip_bind(it, at)) {
+                    log_error("Placing the IP macros: '%s' can not go back to its place.\n", ctx->nameOf(it.root));
+                }
+            }
+            moves += accepted;
+            if (accepted == 0)
+                break;
+        }
+        for (auto &it : ip_items) {
+            if (it.curr == -1)
+                continue;
+            for (auto &t : it.cands.at(it.curr))
+                if (t.first->udata != -1)
+                    mcells.at(t.first->udata).is_fixed = true;
+        }
+        log_info("Placed %d of %d IP macros as a whole: weighted wirelength of their nets %.0f at the solver's "
+                 "positions, %.0f at the first places, %.0f after %d moves in %d passes\n",
+                 placed, int(ip_items.size()), solver_cost, first_cost, ip_cost(all_nets), moves, passes);
+        ip_items.clear();
+        ip_nets.clear();
+    }
+
+    void legalise_step(bool dsp_bram)
+    {
+        for (int i = 0; i < int(ccells.size()); i++)
+            mcells.at(i).solver_pos = mcells.at(i).pos;
+        if (dsp_bram && cfg.ip_assign)
+            assign_ip();
+        for (int i = 0; i < int(ccells.size()); i++) {
+            auto &mc = mcells.at(i);
+            auto &cc = ccells.at(i);
             if (dsp_bram && mc.group < cfg.logic_groups)
                 continue;
             if (!dsp_bram && mc.group >= cfg.logic_groups)
@@ -1369,6 +1694,15 @@ class StaticPlacer
         update_nets(true);
         float post_hpwl = system_hpwl();
         log_info("HPWL after legalise: %f (delta: %f)\n", post_hpwl, post_hpwl - pre_hpwl);
+        if (ctx->verbose && dsp_bram) {
+            for (int i = 0; i < int(ccells.size()); i++) {
+                auto &mc = mcells.at(i);
+                if (mc.group < cfg.logic_groups || ccells.at(i).base_cell->bel == BelId())
+                    continue;
+                log_info("    %s: solver (%.1f, %.1f) -> %s\n", ctx->nameOf(ccells.at(i).base_cell), mc.solver_pos.x,
+                         mc.solver_pos.y, ctx->nameOfBel(ccells.at(i).base_cell->bel));
+            }
+        }
         if (ctx->verbose) {
             std::vector<float> disp_by_group(cfg.cell_groups.size());
             for (int i = 0; i < int(ccells.size()); i++) {
@@ -1765,6 +2099,7 @@ PlacerStaticCfg::PlacerStaticCfg(Context *ctx)
     arc_weight = ctx->setting<float>("placerStatic/arcWeight", 0.0f);
     arc_exponent = ctx->setting<float>("placerStatic/arcExponent", 4.0f);
     arc_min_crit = ctx->setting<float>("placerStatic/arcMinCrit", 0.5f);
+    ip_assign = ctx->setting<bool>("placerStatic/ipAssign", false);
 
     hpwl_scale_x = 1;
     hpwl_scale_y = 1;

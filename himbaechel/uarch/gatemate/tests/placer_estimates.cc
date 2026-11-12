@@ -353,3 +353,100 @@ TEST_F(GateMateStaticPlacerTest, design_placed_without_the_pull_matches_referenc
     use_static({"placerStatic/arcWeight", "0"});
     EXPECT_TRUE(implementation_matches_reference([&] { build(); }, 200, 1));
 }
+
+// The block RAMs get their places while the solver still has the logic on a heap, and the RAMs of a module nearly on
+// one spot. The strict legaliser then gave each RAM the first free place it drew around that spot, one after the
+// other (dmg_soc: 35 tiles from the solver's position on average, the 13 RAMs of the caches all over three
+// columns, the FIFO in front of the HyperBus pads 72 to 88 tiles from them in 6 of 16 seeds). With
+// placerStatic/ipAssign they go to their places as a whole: each where the weighted wirelength of its nets is
+// least, then moves and exchanges while the total falls.
+class GateMateStaticRamTest : public GateMateStaticPlacerTest
+{
+  protected:
+    // `count` 20K block RAMs read at one address, which comes from registers, with a register for a data bit each
+    void build_rams(int count)
+    {
+        NetInfo *clk = global_clock("clk");
+        std::vector<NetInfo *> address;
+        for (int i = 0; i < 6; i++)
+            address.push_back(dff(stringf("a%d", i), input(stringf("i%d", i)), clk)->getPort(id_Q));
+        for (int r = 0; r < count; r++) {
+            CellInfo *ram = ctx->createCell(ctx->idf("ram%d", r), id_CC_BRAM_20K);
+            ram->params[id_RAM_MODE] = Property("TDP");
+            for (auto p : {id_A_RD_WIDTH, id_A_WR_WIDTH})
+                ram->params[p] = Property(5, 32);
+            connect_input(ram, id_A_CLK, clk);
+            connect_input(ram, id_A_EN, vcc());
+            connect_input(ram, id_A_WE, gnd());
+            for (int i = 0; i < 6; i++)
+                connect_input(ram, ctx->idf("A_ADDR[%d]", i + 7), address[i]);
+            output(stringf("o%d", r),
+                   dff(stringf("q%d", r), connect_output(ram, ctx->id("A_DO[0]")), clk)->getPort(id_Q));
+        }
+    }
+
+    // Places the RAM design; returns the log, with the places the RAMs got from the placer's step for them
+    std::string place_rams(int count)
+    {
+        LogCapture info(LogLevel::INFO_MSG);
+        build_rams(count);
+        ctx->pack();
+        ctx->verbose = true;
+        ctx->place();
+        ctx->verbose = false;
+        return info.str();
+    }
+
+    // The blocks the RAMs went to in that step (before the refinement, which moves them in a design as small as
+    // this), and the half perimeter of the box around them
+    static std::pair<int, int> ram_blocks(const std::string &log)
+    {
+        pool<std::pair<int, int>> blocks;
+        int x0 = 1000, x1 = -1, y0 = 1000, y1 = -1;
+        std::regex line("solver [(][0-9.]+, [0-9.]+[)] -> X([0-9]+)Y([0-9]+)/(RAM_HALF_L|RAM)");
+        for (auto it = std::sregex_iterator(log.begin(), log.end(), line); it != std::sregex_iterator(); ++it) {
+            int x = std::stoi((*it)[1]), y = std::stoi((*it)[2]) - ((*it)[3] == "RAM_HALF_L" ? 8 : 0);
+            x0 = std::min(x0, x);
+            x1 = std::max(x1, x);
+            y0 = std::min(y0, y);
+            y1 = std::max(y1, y);
+            blocks.emplace(x, y);
+        }
+        return std::make_pair(int(blocks.size()), blocks.empty() ? -1 : (x1 - x0) + (y1 - y0));
+    }
+};
+
+TEST_F(GateMateStaticRamTest, block_rams_of_a_module_take_neighbouring_places)
+{
+    use_static();
+    // (on by default on GateMate)
+    EXPECT_TRUE(PlacerStaticCfg(ctx).ip_assign);
+    use_static({"placerStatic/ipAssign", "0"});
+    std::string log = place_rams(6);
+    EXPECT_EQ(log.find("IP macros as a whole"), std::string::npos);
+    auto drawn = ram_blocks(log);
+    use_static({"placerStatic/ipAssign", "1"});
+    log = place_rams(6);
+    std::smatch m;
+    ASSERT_TRUE(std::regex_search(log, m,
+                                  std::regex("Placed ([0-9]+) of ([0-9]+) IP macros as a whole: weighted wirelength of "
+                                             "their nets ([0-9]+) at the solver's positions, ([0-9]+) at the first "
+                                             "places, ([0-9]+) after")));
+    EXPECT_EQ(std::stoi(m[1]), 6);
+    EXPECT_EQ(std::stoi(m[2]), 6);
+    EXPECT_LE(std::stoi(m[5]), std::stoi(m[4]));
+    auto assigned = ram_blocks(log);
+    RecordProperty("drawn", stringf("%d blocks, box %d", drawn.first, drawn.second));
+    RecordProperty("assigned", stringf("%d blocks, box %d", assigned.first, assigned.second));
+    // Six halves in three blocks next to each other
+    EXPECT_EQ(assigned.first, 3);
+    EXPECT_LE(assigned.second, 48);
+    EXPECT_GT(drawn.first, 3);
+    EXPECT_GT(drawn.second, assigned.second);
+}
+
+TEST_F(GateMateStaticRamTest, design_with_assigned_block_rams_matches_reference)
+{
+    use_static();
+    EXPECT_TRUE(implementation_matches_reference([&] { build_rams(6); }, 100, 1));
+}
