@@ -59,6 +59,7 @@ struct PlacerStaticCfg;
 struct Router2Cfg;
 struct CellEvalInputs;
 struct CellEvalResult;
+struct RouteRetarget;
 
 namespace po = boost::program_options;
 
@@ -105,6 +106,12 @@ struct HimbaechelAPI
     virtual void notifyDesignEdited() {}
     // See ArchAPI::prepareCellForMove
     virtual std::string prepareCellForMove(CellInfo *cell, bool check_only) { return {}; }
+    // See ArchAPI::getRouteRetargets / applyRouteRetarget
+    virtual std::vector<RouteRetarget> getRouteRetargets(const NetInfo *net, WireId wire) const { return {}; }
+    virtual std::string applyRouteRetarget(CellInfo *cell, IdString port, WireId wire, bool check_only)
+    {
+        return "this architecture has no such edit";
+    }
     // See ArchAPI::archStateToAttributes / attributesToArchState
     virtual void archStateToAttributes() {}
     virtual void attributesToArchState() {}

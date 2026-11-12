@@ -792,6 +792,14 @@ struct Arch : BaseArch<ArchRanges>
     {
         return uarch->prepareCellForMove(cell, check_only);
     }
+    std::vector<RouteRetarget> getRouteRetargets(const NetInfo *net, WireId wire) const override
+    {
+        return uarch->getRouteRetargets(net, wire);
+    }
+    std::string applyRouteRetarget(CellInfo *cell, IdString port, WireId wire, bool check_only) override
+    {
+        return uarch->applyRouteRetarget(cell, port, wire, check_only);
+    }
     void archStateToAttributes() override { uarch->archStateToAttributes(); }
     bool evaluateCell(const CellInfo *cell, const CellEvalInputs &inputs, CellEvalResult &result) const override
     {

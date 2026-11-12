@@ -24,6 +24,7 @@
 #include <cmath>
 #include <map>
 #include <random>
+#include <iostream>
 #include <set>
 #include "known_bugs.h"
 #include "testing.h"
@@ -286,49 +287,205 @@ TEST_F(GateMateGuiTest, lut_function_and_inputs)
 }
 
 // The GUI routes without finishing the routing (Arch::defer_route_finish): the cells keep their logical LUT2
-// tables until finishRoute writes the ones the routing configures. The drawing shows those already, so that the
-// LUT2s match the routing drawn into the CPE: e.g. the CPE of an output takes its signal on D0_10, which the
-// router brings through L02 or L03 (in a lower half), and that LUT2 passes it on, not L11 its other input. The
-// labels and the LUT2 functions of a selected bel are the same before and after finishing.
-TEST_F(GateMateGuiTest, lut_drawing_does_not_change_when_the_routing_is_finished)
+// tables until finishRoute writes the physical ones. The drawing shows the logical tables, and in front of each
+// first-level LUT2 input a 4:1 mux showing which physical input the virtual LUT2 input and subtree swaps of the
+// routing select for it; after finishing, the physical tables, with those selects all 0. Both compute the same:
+// the LUT2 tree of each half, as drawn (labels from the cell's tables, each input the net routed to it), before and
+// after finishing, for every value of its nets.
+TEST_F(GateMateGuiTest, lut_drawing_after_finishing_the_routing_computes_the_same)
 {
     routed_mix(5);
     ctx->defer_route_finish = true;
     place_and_route();
     ASSERT_TRUE(ctx->route_finish_pending);
-    auto functions = [&](BelId bel) {
-        std::map<std::string, std::string> f;
-        for (auto &kv : props(ctx->getBelAttrs(bel)))
-            if (kv.first.size() > 9 && kv.first.compare(kv.first.size() - 9, 9, " function") == 0)
-                f.insert(kv);
-        return f;
+    auto table = [&](const CellInfo *cell, const char *name) {
+        return cell->params.count(ctx->id(name)) ? int_or_default(cell->params, ctx->id(name), 0) : -1;
     };
-    std::map<BelId, std::pair<std::vector<std::string>, std::map<std::string, std::string>>> before;
-    int through_first_level = 0;
-    for (auto &cell : ctx->cells) {
-        BelId bel = cell.second->bel;
-        if (bel == BelId() || !ctx->getBelType(bel).in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL))
+    auto eval = [](int lut, int a, int b) { return lut < 0 ? 0 : (lut >> (a | (b << 1))) & 1; };
+    // The half's result for each assignment of values to its nets (bit i: the i-th net), as the cell's tables and
+    // inputs say
+    auto results = [&](const CellInfo *cell, const std::vector<const NetInfo *> &nets, bool finished) {
+        auto value = [&](IdString port, int assignment) {
+            const NetInfo *net = cell->getPort(port);
+            for (size_t i = 0; i < nets.size(); i++)
+                if (net != nullptr && nets[i] == net)
+                    return (assignment >> i) & 1;
+            return 0;
+        };
+        std::vector<int> r;
+        for (int v = 0; v < (1 << nets.size()); v++) {
+            int l00 = table(cell, "INIT_L00"), l01 = table(cell, "INIT_L01"), l10 = table(cell, "INIT_L10");
+            int out;
+            // (a cell the packer gave physical inputs already is drawn as finished)
+            bool logical = false;
+            for (IdString port : {id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10})
+                logical |= cell->getPort(port) != nullptr;
+            if (finished || !logical) {
+                // (the second input of a first-level LUT2 may be a carry line, by C_I1..C_I4)
+                auto either = [&](IdString a, IdString b) { return cell->getPort(a) ? value(a, v) : value(b, v); };
+                out = eval(l10, eval(l00, value(id_IN1, v), either(id_IN2, id_PINY1)),
+                           eval(l01, value(id_IN3, v), either(id_IN4, cell->getPort(id_CINX) ? id_CINX : id_PINX)));
+            } else if (cell->getPort(id_D0_10) || cell->getPort(id_D1_10)) {
+                out = eval(l10, value(id_D0_10, v), value(id_D1_10, v));
+            } else {
+                out = eval(l10, eval(l00, value(id_D0_00, v), value(id_D1_00, v)),
+                           eval(l01, value(id_D0_01, v), value(id_D1_01, v)));
+            }
+            r.push_back(out);
+        }
+        return r;
+    };
+    // (the labels are the cell's tables)
+    auto check_labels = [&](const CellInfo *cell, const char *when) {
+        auto labels = impl->gui_labels(cell->bel);
+        bool lower = ctx->getBelType(cell->bel) == id_CPE_LT_L;
+        int l10 = table(cell, "INIT_L10");
+        ASSERT_GE(labels.size(), 6u);
+        if (l10 >= 0)
+            EXPECT_EQ(labels.at(lower ? 5 : 4), gui_lut_label(l10))
+                    << cell->name.c_str(ctx) << " " << when;
+        for (int k = 0; k < 2; k++) {
+            int t = table(cell, k ? "INIT_L01" : "INIT_L00");
+            if (t >= 0)
+                EXPECT_EQ(labels.at((lower ? 2 : 0) + k), gui_lut_label(t)) << cell->name.c_str(ctx) << " " << when;
+        }
+    };
+    struct Half
+    {
+        std::vector<const NetInfo *> nets;
+        std::vector<int> before;
+    };
+    std::map<IdString, Half> halves;
+    int swapped = 0;
+    for (auto &c : ctx->cells) {
+        const CellInfo *cell = c.second.get();
+        if (cell->type != id_CPE_L2T4 || cell->bel == BelId())
             continue;
-        before[bel] = {impl->gui_labels(bel), functions(bel)};
-        through_first_level += cell.second->getPort(id_D0_10) != nullptr || cell.second->getPort(id_D1_10) != nullptr;
+        Half h;
+        for (auto &port : cell->ports)
+            if (port.second.type == PORT_IN && port.second.net != nullptr &&
+                std::find(h.nets.begin(), h.nets.end(), port.second.net) == h.nets.end())
+                h.nets.push_back(port.second.net);
+        h.before = results(cell, h.nets, false);
+        check_labels(cell, "routed");
+        // (whether the case the test is about came up: a subtree swap in the routing)
+        for (auto &port : cell->ports)
+            if (port.second.net != nullptr) {
+                WireId w = ctx->getBelPinWire(cell->bel, port.first);
+                auto found = port.second.net->wires.find(w);
+                if (found != port.second.net->wires.end() && found->second.pip != PipId()) {
+                    const auto &extra = *impl->pip_extra_data(found->second.pip);
+                    swapped += extra.name != 0 && IdString(extra.name).in(id_LUT2_10X, id_LUT2_11X) && extra.value;
+                }
+            }
+        halves[c.first] = h;
     }
-    // (the case the test is about came up)
-    EXPECT_GT(through_first_level, 0);
+    EXPECT_GT(halves.size(), 5u);
     ctx->finishRoute();
-    for (auto &b : before) {
-        const CellInfo *cell = ctx->getBoundBelCell(b.first);
-        ASSERT_NE(cell, nullptr) << ctx->nameOfBel(b.first);
-        auto now = impl->gui_labels(b.first);
-        std::string all_before, all_now;
-        for (auto &l : b.second.first)
-            all_before += " '" + l + "'";
-        for (auto &l : now)
-            all_now += " '" + l + "'";
-        EXPECT_EQ(b.second.first, now) << ctx->nameOfBel(b.first) << " " << cell->name.c_str(ctx) << ":" << all_before
-                                       << " routed, finished:" << all_now;
-        EXPECT_EQ(b.second.second, functions(b.first)) << ctx->nameOfBel(b.first) << describe(b.second.second)
-                                                        << "\nfinished:" << describe(functions(b.first));
+    int compared = 0;
+    for (auto &h : halves) {
+        const CellInfo *cell = ctx->cells.at(h.first).get();
+        check_labels(cell, "finished");
+        // (an input from a carry line comes on the net of a CP-line cell finishRoute made: not compared)
+        bool same_nets = true;
+        for (auto &port : cell->ports)
+            if (port.second.type == PORT_IN && port.second.net != nullptr &&
+                std::find(h.second.nets.begin(), h.second.nets.end(), port.second.net) == h.second.nets.end())
+                same_nets = false;
+        if (!same_nets)
+            continue;
+        compared++;
+        std::string ports;
+        for (auto &port : cell->ports)
+            ports += " " + port.first.str(ctx) + "=" + (port.second.net ? port.second.net->name.str(ctx) : "-");
+        for (auto &prm : cell->params)
+            ports += " " + prm.first.str(ctx) + "=" + prm.second.to_string();
+        EXPECT_EQ(h.second.before, results(cell, h.second.nets, true)) << cell->name.c_str(ctx) << ", finished:"
+                                                                        << ports;
     }
+    EXPECT_GT(compared, 5);
+    // (logged for the record; the design may route without swaps)
+    std::cout << compared << " LUT trees compared, " << swapped << " logical LUT inputs through a subtree swap\n";
+}
+
+// The virtual LUT2 input and subtree swaps (LUT2_0x, LUT2_10X / LUT2_11X) are drawn through the 4:1 muxes in front
+// of the first-level LUT2 inputs: a pip of theirs runs along a source's bus (vertical, left of the muxes) or stays
+// within one mux, never from one LUT2 input's row to another's. And a routed way through a subtree swap is one line:
+// the pip into the physical input P ends in the mux of the logical input it goes on to, where the swap's pip
+// starts, which ends at that input.
+TEST_F(GateMateGuiTest, lut_input_swaps_are_drawn_through_the_input_muxes)
+{
+    auto is_virtual = [&](PipId pip) {
+        const auto &extra = *impl->pip_extra_data(pip);
+        if (extra.type != PipExtra::PIP_EXTRA_MUX || extra.name == 0)
+            return false;
+        std::string name = IdString(extra.name).str(ctx);
+        return name.compare(0, 6, "LUT2_0") == 0 || name == "LUT2_10X" || name == "LUT2_11X";
+    };
+    // (left of the muxes: the buses; a mux is about 0.012 high, the rows 0.0645 apart)
+    auto stays_in_place = [&](const std::vector<GraphicElement> &g) {
+        for (auto &e : g) {
+            float fx = std::min(e.x1, e.x2) - std::floor(std::min(e.x1, e.x2));
+            bool bus = near(e.x1, e.x2) && fx < 0.51f;
+            if (!bus && std::abs(e.y1 - e.y2) > 0.0065f)
+                return false;
+        }
+        return true;
+    };
+    // Unused, in the schematic's place
+    int checked = 0;
+    for (int t = 0; t < ctx->chip_info->tile_insts.ssize() && checked == 0; t++) {
+        int x, y;
+        tile_xy(ctx->chip_info, t, x, y);
+        if (std::abs(x - ctx->getGridDimX() / 2) > 2 || std::abs(y - ctx->getGridDimY() / 2) > 2)
+            continue;
+        const auto &tt = chip_tile_info(ctx->chip_info, t);
+        for (int i = 0; i < tt.pips.ssize(); i++) {
+            PipId pip(t, i);
+            if (!is_virtual(pip))
+                continue;
+            auto g = lines(ctx->getPipDecal(pip).decal);
+            EXPECT_FALSE(g.empty()) << ctx->nameOfPip(pip);
+            EXPECT_TRUE(stays_in_place(g)) << ctx->nameOfPip(pip);
+            checked++;
+        }
+    }
+    EXPECT_GE(checked, 32); // (16 per half: 8 input swaps, 8 subtree swaps)
+    // Routed (not finished: the virtual selects are as the router set them)
+    routed_mix(5);
+    ctx->defer_route_finish = true;
+    place_and_route();
+    int swaps = 0;
+    for (auto &n : ctx->nets) {
+        const NetInfo *net = n.second.get();
+        for (auto &w : net->wires) {
+            PipId swap = w.second.pip;
+            if (swap == PipId() || !is_virtual(swap))
+                continue;
+            auto g2 = lines(ctx->getPipDecal(swap).decal);
+            EXPECT_TRUE(stays_in_place(g2)) << ctx->nameOfPip(swap);
+            const auto &extra = *impl->pip_extra_data(swap);
+            if (!IdString(extra.name).in(id_LUT2_10X, id_LUT2_11X))
+                continue;
+            // The pip into P, ending where the swap's starts
+            WireId p = ctx->getPipSrcWire(swap);
+            ASSERT_TRUE(net->wires.count(p)) << ctx->nameOfPip(swap);
+            PipId into = net->wires.at(p).pip;
+            ASSERT_NE(into, PipId()) << ctx->nameOfWire(p);
+            auto g1 = lines(ctx->getPipDecal(into).decal);
+            ASSERT_FALSE(g1.empty() || g2.empty()) << ctx->nameOfPip(into);
+            bool joined = false;
+            for (auto &e : g1)
+                joined |= same_point(e.x2, e.y2, g2.front().x1, g2.front().y1);
+            EXPECT_TRUE(joined) << ctx->nameOfPip(into) << " -> " << ctx->nameOfPip(swap);
+            // and the swap's at the logical input
+            auto d = impl->gui_position(swap.tile, chip_pip_info(ctx->chip_info, swap).dst_wire);
+            EXPECT_TRUE(same_point(g2.back().x2, g2.back().y2, d.first, d.second)) << ctx->nameOfPip(swap);
+            swaps += extra.value;
+        }
+    }
+    // (the design routes some inputs through a subtree swap)
+    EXPECT_GT(swaps, 0);
 }
 
 TEST_F(GateMateGuiTest, register_modes)
@@ -826,9 +983,14 @@ TEST_F(GateMateGuiTest, routed_drawings_join_up_and_keep_apart)
             bool vertical = line.first.first;
             for (size_t i = 0; i < segs.size() && failures < 20; i++)
                 for (size_t j = i + 1; j < segs.size() && failures < 20; j++) {
-                    // (a bridge's net starts on the wire of the net it copies: the same signal)
+                    // (a bridge's net starts on the wire of the net it copies, a CP-line cell's net where the net
+                    // it passes on ends: the same signal, also where the routing the configuration makes, drawn
+                    // with the pip into that wire, goes on beside it)
+                    PipId pi = std::get<2>(segs[i]), pj = std::get<2>(segs[j]);
                     if (std::get<0>(segs[i]) == std::get<0>(segs[j]) ||
-                        ctx->getPipSrcWire(std::get<2>(segs[i])) == ctx->getPipSrcWire(std::get<2>(segs[j])))
+                        ctx->getPipSrcWire(pi) == ctx->getPipSrcWire(pj) ||
+                        ctx->getPipDstWire(pi) == ctx->getPipSrcWire(pj) ||
+                        ctx->getPipDstWire(pj) == ctx->getPipSrcWire(pi))
                         continue;
                     const auto &a = std::get<1>(segs[i]), &b = std::get<1>(segs[j]);
                     float a0 = vertical ? std::min(a.y1, a.y2) : std::min(a.x1, a.x2);
@@ -1066,4 +1228,125 @@ TEST_F(GateMateGuiTest, input_mux_selection)
         }
     }
     EXPECT_GT(checked, 0);
+}
+
+// A LUT2 alone in its half sits on L10 / L11: the routing takes its inputs through a first-level LUT2 (with the
+// virtual subtree swap, through the other one), which the cell has no table for. Before finishing, that LUT2 is
+// labelled with what it passes on (A, or B through the bypass), wherever the routing takes the inputs through.
+TEST_F(GateMateGuiTest, a_first_level_lut2_passing_an_input_on_is_labelled)
+{
+    std::mt19937 rng(5);
+    NetInfo *clk = global_clock("clk");
+    std::vector<NetInfo *> signals;
+    for (int i = 0; i < 12; i++)
+        signals.push_back(dff(stringf("in_ff%d", i), input(stringf("in%d", i)), clk)->getPort(id_Q));
+    for (int n = 0; n < 60; n++) {
+        auto pick = [&]() { return signals.at(rng() % signals.size()); };
+        NetInfo *y = n % 3 == 2 ? lut2(stringf("l%d", n), rng() & 0xf, pick(), pick())
+                                : l2t4(stringf("t%d", n), rng() & 0xf, rng() & 0xf, rng() & 0xf, pick(), pick(),
+                                       pick(), pick());
+        signals.push_back(dff(stringf("ff%d", n), y, clk)->getPort(id_Q));
+    }
+    for (int i = 0; i < 12; i++)
+        output(stringf("out%d", i), signals.at(signals.size() - 1 - i));
+    ctx->defer_route_finish = true;
+    place_and_route();
+    ASSERT_TRUE(ctx->route_finish_pending);
+    int passes = 0, swapped = 0;
+    for (auto &c : ctx->cells) {
+        const CellInfo *cell = c.second.get();
+        if (cell->type != id_CPE_L2T4 || cell->bel == BelId() ||
+            !(cell->getPort(id_D0_10) || cell->getPort(id_D1_10)))
+            continue;
+        bool lower = ctx->getBelType(cell->bel) == id_CPE_LT_L;
+        auto labels = impl->gui_labels(cell->bel);
+        ASSERT_GE(labels.size(), 4u);
+        // The first-level LUT2s the routing passes through: a bound pip from a first-level input on to L10 / L11
+        for (IdString port : {id_D0_10, id_D1_10}) {
+            const NetInfo *net = cell->getPort(port);
+            if (net == nullptr)
+                continue;
+            WireId w = ctx->getBelPinWire(cell->bel, port);
+            ASSERT_TRUE(net->wires.count(w)) << cell->name.c_str(ctx);
+            PipId pip = net->wires.at(w).pip;
+            ASSERT_NE(pip, PipId());
+            std::string src = ctx->getWireName(ctx->getPipSrcWire(pip))[1].str(ctx); // CPE.D{d}_0k_int
+            ASSERT_EQ(src.compare(0, 5, "CPE.D"), 0) << src;
+            int k = src[8] - '0';
+            EXPECT_EQ(k / 2, lower ? 1 : 0) << src;
+            // (k: the logical first-level LUT2; behind it the virtual swap may take another physical one)
+            WireId sw = ctx->getPipSrcWire(pip);
+            if (net->wires.count(sw) && net->wires.at(sw).pip != PipId()) {
+                std::string p = ctx->getWireName(ctx->getPipSrcWire(net->wires.at(sw).pip))[1].str(ctx);
+                swapped += p.size() > 8 && p.compare(0, 5, "CPE.P") == 0 && p[8] != src[8];
+            }
+            std::string label = labels.at(k);
+            EXPECT_TRUE(label == "A" || label == "B" || cell->params.count(k % 2 ? id_INIT_L01 : id_INIT_L00))
+                    << cell->name.c_str(ctx) << " through " << src << ": '" << label << "'";
+            passes++;
+        }
+    }
+    EXPECT_GT(passes, 10);
+    EXPECT_GT(swapped, 0);
+}
+
+// Every wire of a CPE has a place in the schematic: none is left at the stand-in position a wire the drawing does
+// not know gets (spread() in gfx.cc, from a hash of its name), from where its pips would run through the CPE to
+// nothing (as CP_PROP_int / CP_CARRY_int did, the carry and propagate lines back into CPOUT1 / CPOUT2).
+TEST_F(GateMateGuiTest, every_cpe_pip_runs_between_places_of_the_schematic)
+{
+    // (as spread() in gfx.cc)
+    auto spread = [](const std::string &name) {
+        size_t h = std::hash<std::string>{}(name);
+        return std::make_pair(0.22f + 0.72f * float(h % 997) / 997, 0.24f + 0.70f * float((h / 997) % 991) / 991);
+    };
+    int checked = 0;
+    for (BelId bel : ctx->getBels()) {
+        if (ctx->getBelType(bel) != id_CPE_LT_U)
+            continue;
+        int tile = bel.tile, x, y;
+        tile_xy(ctx->chip_info, tile, x, y);
+        float column = ctx->getGuiColumnX(x);
+        const auto &tt = chip_tile_info(ctx->chip_info, tile);
+        for (int i = 0; i < tt.pips.ssize(); i++) {
+            PipId pip(tile, i);
+            auto ends = impl->gui_pip_ends(pip);
+            for (int e = 0; e < 2; e++) {
+                std::string name = IdString(tt.wires[e ? tt.pips[i].dst_wire : tt.pips[i].src_wire].name).str(ctx);
+                if (name.compare(0, 4, "CPE.") != 0 || name.compare(name.size() - 2, 2, "_n") == 0)
+                    continue;
+                auto s = spread(name);
+                EXPECT_FALSE(std::abs(ends[2 * e] - (column + s.first)) < 1e-4f &&
+                             std::abs(ends[2 * e + 1] - (y + s.second)) < 1e-4f)
+                        << ctx->nameOfPip(pip) << ": " << name << " has no place";
+                checked++;
+            }
+        }
+        break;
+    }
+    EXPECT_GT(checked, 200);
+    // The carry and propagate lines back into the CPE outputs: simple paths, from the lines' ends to the rails and
+    // on into CPOUT1 / CPOUT2
+    for (BelId bel : ctx->getBels()) {
+        if (ctx->getBelType(bel) != id_CPE_LT_U)
+            continue;
+        std::string tile = ctx->getBelName(bel)[0].str(ctx);
+        for (const char *name : {"CPE.CPOUT2_int/CPE.CP_PROP_int", "CPE.CPOUT1_int/CPE.CP_CARRY_int",
+                                 "CPE.CP_PROP_int/CPE.POUTY1", "CPE.CP_CARRY_int/CPE.COUTX"}) {
+            PipId pip = ctx->getPipByName(IdStringList::parse(ctx, tile + "/" + name));
+            ASSERT_NE(pip, PipId()) << name;
+            auto g = ctx->getDecalGraphics(ctx->getPipDecal(pip).decal);
+            ASSERT_FALSE(g.empty()) << name;
+            for (auto &el : g)
+                if (el.type == GraphicElement::TYPE_LINE || el.type == GraphicElement::TYPE_ARROW)
+                    EXPECT_TRUE(el.x1 == el.x2 || el.y1 == el.y2) << name << ": a slanted line";
+            // (one of its lines ends at the destination)
+            auto ends = impl->gui_pip_ends(pip);
+            bool at_end = false;
+            for (auto &el : g)
+                at_end |= std::abs(el.x2 - ends[2]) < 1e-4f && std::abs(el.y2 - ends[3]) < 1e-4f;
+            EXPECT_TRUE(at_end) << name;
+        }
+        break;
+    }
 }

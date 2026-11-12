@@ -21,6 +21,7 @@
 // in words (LUT functions, register modes, carry line sources, IO settings) and what a routing
 // wire or mux is.
 
+#include <cstring>
 #include <functional>
 #include <map>
 
@@ -175,6 +176,19 @@ void describe_cpe_logic(const Context *ctx, const CellInfo *cell, IdString bel_t
     std::function<std::string(const char *)> input = [&](const char *src) -> std::string {
         if (*src != '=') {
             std::string net = net_on(ctx, tile, std::string("CPE.") + src);
+            // (a finished design has no routing behind the CPE inputs: a 2:1 mux TI* passes on what its
+            // configuration selects, the CPE input beside it or a carry line)
+            static const struct
+            {
+                const char *ti, *sel, *in, *carry;
+            } tis[] = {{"TI2_int", "C_I1", "IN2_int", "PINY1"},
+                       {"TI4_int", "C_I2", "IN4_int", "CINX"},
+                       {"TI6_int", "C_I3", "IN6_int", "PINY1"},
+                       {"TI8_int", "C_I4", "IN8_int", "PINX"}};
+            for (auto &t : tis)
+                if (net.empty() && strcmp(src, t.ti) == 0)
+                    net = net_on(ctx, tile,
+                                 std::string("CPE.") + (param(cell, ctx->id(t.sel), 0) == 1 ? t.carry : t.in));
             return net.empty() ? "unused" : net;
         }
         std::string text = src + 1;
@@ -529,6 +543,8 @@ const char *lut2_short(int init)
 
 } // namespace
 
+const char *gui_lut_label(int init) { return lut2_short(init); }
+
 const PadInfoPOD *GateMateImpl::tile_pad(Loc loc) const
 {
     // The package data refers to the IOSEL bel of a pad
@@ -552,25 +568,48 @@ void GateMateImpl::update_gui_labels()
             return ci->params.count(id) ? lut2_short(param(ci, id, 0)) : "";
         };
         if (type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL)) {
-            // The LUT2s by position in the CPE: L00, L01, L02, L03, L10, L11, L20; then the mode. The tables
-            // the routing configures (as finishRoute writes them), so that the drawing matches the routing
-            // drawn into the CPE also before the routing is finished
-            l.assign(7, "");
-            RoutedLuts routed = routed_luts(ci);
-            auto table = [&](int routed_init, const char *name) {
-                return routed_init >= 0 ? std::string(lut2_short(routed_init)) : lut(name);
+            // The LUT2s by position in the CPE: L00, L01, L02, L03, L10, L11, L20; then the mode. The cell's
+            // (logical) tables: the 4:1 muxes in front of the first-level LUT2 inputs show which physical input
+            // each logical one takes, as the virtual LUT2 input and subtree swaps of the routing select (see
+            // gfx.cc, LB_X0). After finishRoute the tables are the physical ones and those selects all 0.
+            // A first-level LUT2 the cell does not have (a LUT2 alone in the half, on L10) passes on what the
+            // routing takes through it to L10: its input A (D0_0k_int on to L10), or B (D1_0k_int, the bypass)
+            auto first = [&](const char *name, int k) {
+                std::string f = lut(name);
+                if (!f.empty())
+                    return f;
+                for (int d : {0, 1}) {
+                    WireId w = ctx->getWireByName(IdStringList::concat(ctx->getBelName(ci->bel)[0],
+                                                                       ctx->id(stringf("CPE.D%d_0%d_int", d, k))));
+                    if (w == WireId())
+                        continue;
+                    const NetInfo *net = ctx->getBoundWireNet(w);
+                    if (net == nullptr)
+                        continue;
+                    for (PipId pip : ctx->getPipsDownhill(w)) {
+                        WireId dst = ctx->getPipDstWire(pip);
+                        auto found = net->wires.find(dst);
+                        if (found != net->wires.end() && found->second.pip == pip &&
+                            ctx->getWireName(dst)[1].str(ctx).compare(0, 5, "CPE.D") == 0 &&
+                            ctx->getWireName(dst)[1].str(ctx)[7] == '1')
+                            return std::string(lut2_short(d ? 0b1100 : 0b1010));
+                    }
+                }
+                return std::string();
             };
+            l.assign(7, "");
+            int k0 = type == id_CPE_LT_L ? 2 : 0;
             if (type == id_CPE_LT_U) {
-                l[0] = table(routed.luts[0], "INIT_L00"), l[1] = table(routed.luts[1], "INIT_L01");
-                l[4] = table(routed.l10, "INIT_L10");
+                l[0] = first("INIT_L00", k0), l[1] = first("INIT_L01", k0 + 1);
+                l[4] = lut("INIT_L10");
             } else if (type == id_CPE_LT_L) {
-                l[2] = table(routed.luts[0], "INIT_L00"), l[3] = table(routed.luts[1], "INIT_L01");
-                l[5] = table(routed.l10, "INIT_L10"), l[6] = lut("INIT_L20");
+                l[2] = first("INIT_L00", k0), l[3] = first("INIT_L01", k0 + 1);
+                l[5] = lut("INIT_L10"), l[6] = lut("INIT_L20");
             } else {
                 const char *names[7] = {"INIT_L00", "INIT_L01", "INIT_L02", "INIT_L03",
                                         "INIT_L10", "INIT_L11", "INIT_L20"};
                 for (int i = 0; i < 7; i++)
-                    l[i] = table(i < 4 ? routed.luts[i] : -1, names[i]);
+                    l[i] = lut(names[i]);
             }
             std::string mode = ci->type.str(ctx);
             if (mode.compare(0, 4, "CPE_") == 0)

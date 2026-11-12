@@ -97,7 +97,18 @@ float om_centre(int plane) { return row(plane) - 0.032f; }
 //    bridge from below), the outputs and their lanes, and the carry column.
 constexpr float CPE_PIN = 0.455f, CPE_INT = 0.46f, BRIDGE_LANE = 0.4625f;
 constexpr float TI_X0 = 0.485f, TI_X1 = 0.494f;
-constexpr float L1_X0 = 0.505f, L1_X1 = 0.544f, L2_X0 = 0.558f, L2_X1 = 0.6f, L20_X0 = 0.614f, L20_X1 = 0.652f;
+// In front of each first-level LUT2 input (the logical D{d}_0k_int), a 4:1 mux choosing among the half's four
+// physical sources (IN1, TI2, IN3, TI4; in the lower half IN5, TI6, IN7, TI8): what the virtual LUT2 input swap
+// (LUT2_0x, to the physical input P{d}_0j_int) and the virtual subtree swap (LUT2_10X / LUT2_11X, P to D) select
+// together. Each source runs into a vertical bus of its own (slot 0..3 from the left), each bus into all four muxes
+// of its half, at the mux input of its slot (slot 0 at the top). The mux's output is the LUT2 input.
+constexpr float LB_X0 = 0.4975f, LB_DX = 0.003f;
+constexpr float M4_X0 = 0.512f, M4_H_IN = 0.0062f, M4_H_OUT = 0.0018f;
+float lut_bus_x(int slot) { return LB_X0 + slot * LB_DX; }
+float lut_mux_in(int slot) { return 0.0045f - slot * 0.003f; }
+// (the CPE's outline starts left of the buses)
+constexpr float CPE_BOX_X0 = 0.4955f;
+constexpr float L1_X0 = 0.52f, L1_X1 = 0.544f, L2_X0 = 0.558f, L2_X1 = 0.6f, L20_X0 = 0.614f, L20_X1 = 0.652f;
 constexpr float COMBIN_X = 0.607f, BYPASS_X = 0.661f;
 // The 8:1 mux (MX8, its output MUXOUT), below the SR row: IN1..IN8 on its left (IN1 at the top), its
 // selects S0..S2 (CLK, EN and SR in an MX8; set by C_SN where it is a bridge, as nextpnr uses it) at
@@ -158,6 +169,14 @@ constexpr float CIY12_X0 = 0.902f, CIY12_X1 = 0.89f, CIY12_Y = 0.27f, PIY12_X0 =
 // The 2:1 muxes where the X lines leave, on their band near the right edge (COUTX, POUTX at their
 // output); the carry logic comes in above the band
 constexpr float COUTX_X0 = 0.948f, COUTX_X1 = 0.96f, POUTX_X0 = 0.928f, POUTX_X1 = 0.94f, XMUX_IN_DY = 0.004f;
+// The carry and propagate lines back into the CPE outputs (CPOUT1 / CPOUT2, see the output muxes): C_HORIZ picks the
+// carry (COUTY1 or COUTX) and the propagate line (POUTY1 or POUTX), each on a rail between the output muxes and the
+// output lanes; C_C_P sends one of them to each CPOUT, which comes in from below its place. From a Y line's end at
+// the top of the column up and along its own track above everything, from an X line's end on its band up and along
+// its own track above the bands (below where the Y lines start).
+constexpr float CP_CARRY_X = 0.805f, CP_PROP_X = 0.81f, CP_RAIL_Y = 0.71f;
+constexpr float CP_CARRY_TOP_Y = 0.982f, CP_PROP_TOP_Y = 0.986f, CP_CARRY_BOTTOM_Y = 0.197f, CP_PROP_BOTTOM_Y = 0.2f;
+constexpr float CP_IN_DX = 0.005f, CP_CARRY_IN_DY = -0.006f, CP_PROP_IN_DY = -0.01f;
 // Block RAMs: each RAM column of the chip (beside a CPE column) is drawn as a column of its own,
 // right of that CPE column (see gui_column). In it, a RAM is a block 16 tiles high with its pins
 // on its left and their lanes in front of it.
@@ -327,8 +346,10 @@ Anchor cpe_anchor(const std::string &n)
     if (n == "EN_int")
         return cpe(TI_X1, row(10));
     if (n.size() == 9 && n[0] == 'P' && n[2] == '_' && ends_with(n, "_int") && isdigit(n[1])) {
-        // Physical first-level LUT2 inputs P{0,1}_{lut}_int: where the logical ones D{0,1}_{lut}_int are
-        return cpe(L1_X0, row(2 * (n[4] - '0') + 1 + (n[1] - '0')));
+        // Physical first-level LUT2 inputs P{d}_0j_int: at the input of the 4:1 mux of the logical input D{d}_0j,
+        // between the slots of LUT2 j's two sources (where the drawing of its pips into that mux meet)
+        int j = n[4] - '0', d = n[1] - '0';
+        return cpe(M4_X0, row(2 * j + 1 + d) + (j % 2 == 0 ? 1 : -1) * 0.003f);
     }
     if (n.size() >= 7 && n[0] == 'D' && n[2] == '_' && ends_with(n, "_int") && isdigit(n[1])) {
         // LUT2 inputs D{0,1}_{lut}_int
@@ -389,6 +410,10 @@ Anchor cpe_anchor(const std::string &n)
         return cpe(CMP_X1, CMP_OUT_Y);
     if (n == "COMPOUT_IN_int")
         return cpe(CL_RAIL_COMP, CMP_OUT_Y);
+    if (n == "CP_CARRY_int")
+        return cpe(CP_CARRY_X, CP_RAIL_Y);
+    if (n == "CP_PROP_int")
+        return cpe(CP_PROP_X, CP_RAIL_Y);
     // The RAM pin paths: RAM_O drives a RAM input, RAM_I takes a RAM output
     if (n == "RAM_O2" || n == "RAM_O1")
         return make(Pt{RAMIO_X1, (n == "RAM_O2" ? mu() : ml()) + RAMIO_O_Y}, n == "RAM_O2" ? RAM_O2_LANE : RAM_O1_LANE,
@@ -853,6 +878,57 @@ static bool lut2_reads(const std::string &f, int input)
     return !(f == "0" || f == "1" || f == (input ? "A" : "B") || f == (input ? "~A" : "~B"));
 }
 
+// The slot (0..3, see LB_X0) of a source of a half's first-level LUT2 inputs (n after "CPE.": IN1_int, TI2_int, ...,
+// TI8_int), or -1
+static int lut_source_slot(const std::string &n)
+{
+    if (n.size() != 7 || !ends_with(n, "_int") || !isdigit(n[2]))
+        return -1;
+    int i = n[2] - '0';
+    if (i < 1 || i > 8 || !(starts_with(n, i % 2 ? "IN" : "TI")))
+        return -1;
+    return (i - 1) % 4;
+}
+
+// The physical first-level LUT2 input P{d}_0j_int (n after "CPE."): its j and d
+static bool physical_lut_input(const std::string &n, int &j, int &d)
+{
+    if (n.size() != 9 || n[0] != 'P' || n[2] != '_' || n[3] != '0' || !isdigit(n[1]) || !isdigit(n[4]) ||
+        !ends_with(n, "_int"))
+        return false;
+    j = n[4] - '0', d = n[1] - '0';
+    return true;
+}
+
+// A pip of the virtual LUT2 input swap (a source X of the half to P{d}_0j_int) or subtree swap (P{d}_0j_int to
+// D{d}_0k_int), through the 4:1 mux of a logical input: X from its source along its bus and into the mux's input of
+// its slot, P to D from a mux input across the mux to its output. Into the mux of first-level LUT2 `into` (-1: j's
+// own; the routing draws X to P into the mux where the signal goes on), from the slot `from` (-1: that of the first
+// of LUT2 j's two sources; the routing draws P to D from the slot of the source the signal comes from). False if
+// the pip is none of these.
+static bool lut_input_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, const PlacedAnchor &s,
+                          const PlacedAnchor &d, int into, int from)
+{
+    const std::string sn = s.name->substr(4), dn = d.name->substr(4);
+    auto at = [&](float x, float y) { return Pt{s.tx + x, s.ty + y}; };
+    int j, dd;
+    int slot = lut_source_slot(sn);
+    if (slot >= 0 && physical_lut_input(dn, j, dd)) {
+        int k = into >= 0 ? into : j;
+        float in_y = row(2 * k + 1 + dd) + lut_mux_in(slot), bus = lut_bus_x(slot);
+        polyline(g, style, {at(s.a.p.x, s.a.p.y), at(bus, s.a.p.y), at(bus, in_y), at(M4_X0, in_y)});
+        return true;
+    }
+    int lut, input;
+    if (physical_lut_input(sn, j, dd) && lut_input_of("CPE." + dn, lut, input)) {
+        float out_y = d.a.p.y;
+        float in_y = out_y + lut_mux_in(from >= 0 ? from : 2 * (j % 2));
+        polyline(g, style, {at(M4_X0, in_y), at(d.a.p.x, out_y)});
+        return true;
+    }
+    return false;
+}
+
 // A connection inside the CPE, following its schematic: a pip of a mux runs from the input it
 // selects through the mux symbol to the output; connections between the parts run in their own
 // lanes, horizontally and vertically.
@@ -885,16 +961,26 @@ static void cpe_internal(std::vector<GraphicElement> &g, GraphicElement::style_t
         path({Pt{L1_X1, m}, Pt{L2_X0, m}});
         return;
     }
-    // The virtual subtree swap (P*_0n_int to D*_0n_int): the physical input goes into its LUT2 (postRoute moves
-    // the tables to where the signals are), so only a short hook into the box and back to its edge at the logical
-    // input's row
-    if (lut_input(dn) && sn.size() == 9 && sn[0] == 'P') {
-        path({S, Pt{L1_X0 + 0.004f, S.y}, Pt{L1_X0, D.y + 0.004f}});
+    // The carry and propagate lines back into the CPE outputs (see CP_CARRY_X): onto their rails, and from there
+    // into a CPOUT from below its place
+    if (dn == "CP_CARRY_int" || dn == "CP_PROP_int") {
+        bool carry = dn == "CP_CARRY_int", y_line = starts_with(sn, "COUTY") || starts_with(sn, "POUTY");
+        float y = y_line ? (carry ? CP_CARRY_TOP_Y : CP_PROP_TOP_Y) : (carry ? CP_CARRY_BOTTOM_Y : CP_PROP_BOTTOM_Y);
+        path({S, Pt{S.x, y}, Pt{D.x, y}, D});
         return;
     }
-    // A first-level LUT2 input (logical D or physical P): straight in, in the source's row (each input has its
-    // own row)
-    if (lut_input(dn) || (dn.size() == 9 && dn[0] == 'P' && ends_with(dn, "_int"))) {
+    if ((sn == "CP_CARRY_int" || sn == "CP_PROP_int") && starts_with(dn, "CPOUT")) {
+        float y = D.y + (sn == "CP_CARRY_int" ? CP_CARRY_IN_DY : CP_PROP_IN_DY);
+        path({S, Pt{S.x, y}, Pt{D.x + CP_IN_DX, y}, Pt{D.x + CP_IN_DX, D.y}, D});
+        return;
+    }
+    // The virtual LUT2 input and subtree swaps: through the 4:1 mux in front of the logical input (see LB_X0),
+    // where the routing does not say otherwise (see lut_input_pip) into the mux of its own LUT2
+    if (lut_input_pip(g, style, s, d, -1, -1))
+        return;
+    // A first-level LUT2 input from its source directly (a chip database without the virtual swaps): straight in,
+    // in the source's row
+    if (lut_input(dn)) {
         path({S, Pt{L1_X0, S.y}});
         return;
     }
@@ -1245,8 +1331,12 @@ static bool cpe_mux_symbol(std::vector<GraphicElement> &g, GraphicElement::style
                            float y)
 {
     float my = y + cpe_anchor(n).p.y;
+    int lut, input;
     if (starts_with(n, "TI") || n == "CLK_int" || n == "EN_int")
         mux(g, style, x + TI_X0, x + TI_X1, my, 0.01f, 0.005f);
+    else if (lut_input_of("CPE." + n, lut, input) && lut < 4)
+        // the 4:1 mux in front of a first-level LUT2 input (see LB_X0)
+        mux(g, style, x + M4_X0, x + L1_X0, my, M4_H_IN, M4_H_OUT);
     else if (n == "OUT1_int" || n == "OUT2_int")
         mux(g, style, x + OMUX_X0, x + OMUX_X1, my, 0.045f, 0.015f);
     else if (n == "MUXOUT_int") {
@@ -1523,6 +1613,24 @@ static const TileSchematic &tile_schematic(const Context *ctx, int tile_type)
                 if (kind == "CPE") {
                     cpe = true;
                     cpe_mux_symbol(sch.graphics, GraphicElement::STYLE_INACTIVE, rest, 0, 0);
+                    // The buses of the 4:1 muxes in front of the first-level LUT2 inputs: each source's down from
+                    // its row past all four muxes of its half, and into each at its slot (the pips draw the ways
+                    // the routing takes; these are all there are)
+                    int slot = lut_source_slot(rest);
+                    if (slot >= 0) {
+                        int base = num(rest, 2) <= 4 ? 1 : 5;
+                        float bus = lut_bus_x(slot), top = row(base) + lut_mux_in(0),
+                              bottom = row(base + 3) + lut_mux_in(3);
+                        line(sch.graphics, GraphicElement::STYLE_INACTIVE, bus, std::max(top, p.y), bus,
+                             std::min(bottom, p.y));
+                        // (and inside each mux, from that input to the output)
+                        for (int r = base; r < base + 4; r++) {
+                            line(sch.graphics, GraphicElement::STYLE_INACTIVE, bus, row(r) + lut_mux_in(slot), M4_X0,
+                                 row(r) + lut_mux_in(slot));
+                            line(sch.graphics, GraphicElement::STYLE_INACTIVE, M4_X0, row(r) + lut_mux_in(slot), L1_X0,
+                                 row(r));
+                        }
+                    }
                 } else if (kind == "IM") {
                     std::string port_name = rest.substr(rest.find('.') + 1);
                     if (port_name == "Y")
@@ -1710,6 +1818,7 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
         int pip;
         IdString param;
         int value;
+        IdString select; // a virtual select (LUT2_0x, LUT2_10X / LUT2_11X): set as the routing sets it, else 0
     };
     static std::mutex cache_mutex;
     static std::map<int, std::vector<ConfigPip>> cache;
@@ -1733,10 +1842,11 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
                 if (lut_input_of(src, lut, input) && lut_input_of(dst, lut, input))
                     continue;
                 std::string name = IdString(extra.name).str(ctx);
-                if (starts_with(name, "LUT2_0"))
-                    found.push_back({i, IdString(), extra.value});
+                if (starts_with(name, "LUT2_0") || name == "LUT2_10X" || name == "LUT2_11X")
+                    found.push_back({i, IdString(), extra.value, IdString(extra.name)});
                 else if (!starts_with(name, "LUT2_"))
-                    found.push_back({i, ctx->id(starts_with(name, "CPE.") ? name.substr(4) : name), extra.value});
+                    found.push_back({i, ctx->id(starts_with(name, "CPE.") ? name.substr(4) : name), extra.value,
+                                     IdString()});
             }
             it = cache.emplace(type, std::move(found)).first;
         }
@@ -1752,13 +1862,24 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
         auto it = net->wires.find(wire);
         return it != net->wires.end() && it->second.pip != PipId();
     };
+    // (the virtual selects: as a routed pip of theirs in this CPE sets them, else 0, which is what the tables say
+    // where nothing is routed through them, as after finishRoute)
+    dict<IdString, int> virtual_value;
+    for (auto &c : candidates)
+        if (c.select != IdString() && ctx->getBoundPipNet(PipId(tile, c.pip)) != nullptr)
+            virtual_value[c.select] = c.value;
     std::map<int, std::vector<int>> from; // source wire -> selected pips
     for (auto &c : candidates) {
         PipId pip(tile, c.pip);
         if (ctx->getBoundPipNet(pip) != nullptr || routed_into(tdata.pips[c.pip].dst_wire))
             continue;
-        if (c.param == IdString() ? c.value != 0 : (!params.count(c.param) || params.at(c.param) != c.value))
+        if (c.select != IdString()) {
+            auto v = virtual_value.find(c.select);
+            if (c.value != (v == virtual_value.end() ? 0 : v->second))
+                continue;
+        } else if (!params.count(c.param) || params.at(c.param) != c.value) {
             continue;
+        }
         from[tdata.pips[c.pip].src_wire].push_back(c.pip);
     }
     // Ways start at a used wire, and end at one or at a pin of a used bel
@@ -1800,9 +1921,33 @@ void GateMateImpl::configured_cpe_paths(std::vector<GraphicElement> &g, int tile
     };
     if (from.count(start) && is_used(start))
         walk(start);
+    // (through the virtual swaps' 4:1 muxes as one line, see lut_input_pip: into the mux where the signal goes
+    // on, from the slot of the source it comes from, configured or routed)
+    dict<int, int> p_source, p_into;
     for (int p : drawn) {
         int s = tdata.pips[p].src_wire, d = tdata.pips[p].dst_wire;
-        connect(g, GraphicElement::STYLE_ACTIVE, placed_routed(tile, s), placed_routed(tile, d));
+        int j, dd, lut, input;
+        if (lut_source_slot(tile_wire_name(ctx, tile, s).substr(4)) >= 0 &&
+            physical_lut_input(tile_wire_name(ctx, tile, d).substr(4), j, dd))
+            p_source[d] = lut_source_slot(tile_wire_name(ctx, tile, s).substr(4));
+        if (physical_lut_input(tile_wire_name(ctx, tile, s).substr(4), j, dd) &&
+            lut_input_of(tile_wire_name(ctx, tile, d), lut, input))
+            p_into[s] = lut;
+    }
+    for (int p : drawn) {
+        int s = tdata.pips[p].src_wire, d = tdata.pips[p].dst_wire;
+        int into = -1, from = -1;
+        lut_input_routing(tile, s, d, into, from);
+        if (p_into.count(d))
+            into = p_into.at(d);
+        if (p_source.count(s))
+            from = p_source.at(s);
+        size_t start = g.size();
+        if (lut_input_pip(g, GraphicElement::STYLE_ACTIVE, placed_routed(tile, s), placed_routed(tile, d), into,
+                          from))
+            lod(g, start, LOD_DETAIL);
+        else
+            connect(g, GraphicElement::STYLE_ACTIVE, placed_routed(tile, s), placed_routed(tile, d));
         size_t first = g.size();
         if (cpe_mux_symbol(g, GraphicElement::STYLE_ACTIVE, tile_wire_name(ctx, tile, d).substr(4), x, y))
             lod(g, first, LOD_DETAIL);
@@ -2184,9 +2329,9 @@ void GateMateImpl::drawBel(std::vector<GraphicElement> &g, GraphicElement::style
     case id_CPE_LT_FULL.index: {
         // The outline of the CPE logic: shown for unused CPEs as well once zoomed in a bit
         size_t from = g.size();
-        box(g, style, x + L1_X0 - 0.006f, y + row(8) - 0.022f, x + L20_X1 + 0.003f, y + row(1) + 0.022f);
+        box(g, style, x + CPE_BOX_X0, y + row(8) - 0.022f, x + L20_X1 + 0.003f, y + row(1) + 0.022f);
         lod(g, from, used ? 0 : LOD_TILE);
-        name(L1_X0 - 0.005f, row(1) + 0.013f, L1_X0 + 0.02f, row(1) + 0.021f, "CPE", LOD_TEXT);
+        name(CPE_BOX_X0 + 0.001f, row(1) + 0.013f, CPE_BOX_X0 + 0.026f, row(1) + 0.021f, "CPE", LOD_TEXT);
         if (used) {
             upper_tree();
             lower_tree();
@@ -2404,6 +2549,15 @@ std::array<float, 4> GateMateImpl::gui_pip_ends(PipId pip) const
     if (ends_with(tile_wire_name(ctx, pip.tile, pd.src_wire), "_n"))
         from = node_driver(ctx, ctx->getPipSrcWire(pip), pip.tile, pd.src_wire);
     Pt a = placed(ctx, from.tile, from.index).pos(), b = placed(ctx, pip.tile, pd.dst_wire).pos();
+    // (a pip of the virtual LUT2 swaps ends at the mux input of its slot and starts at one, see lut_input_pip)
+    std::vector<GraphicElement> g;
+    int into = -1, into_from = -1;
+    if (starts_with(tile_wire_name(ctx, pip.tile, pd.src_wire), "CPE."))
+        lut_input_routing(pip.tile, pd.src_wire, pd.dst_wire, into, into_from);
+    if (lut_input_pip(g, GraphicElement::STYLE_ACTIVE, placed(ctx, pip.tile, pd.src_wire),
+                      placed(ctx, pip.tile, pd.dst_wire), into, into_from) &&
+        !g.empty())
+        return {g.front().x1, g.front().y1, g.back().x2, g.back().y2};
     return {a.x, a.y, b.x, b.y};
 }
 
@@ -2562,6 +2716,44 @@ void GateMateImpl::configured_from(std::vector<GraphicElement> &g, WireId tile_w
     configured_cpe_paths(g, tile_wire.tile, tile_wire.index, gui_column(ctx, x), y);
 }
 
+// For a pip of the virtual LUT2 swaps (see lut_input_pip), where the routing through its wires goes: for one from a
+// source X to P{d}_0j_int, the first-level LUT2 into whose 4:1 mux P goes on (into); for one from P{d}_0j_int to a
+// logical input, the slot of the source that drives P (from). -1 where the routing does not say.
+void GateMateImpl::lut_input_routing(int tile, int src, int dst, int &into, int &from) const
+{
+    into = from = -1;
+    const std::string sn = tile_wire_name(ctx, tile, src).substr(4), dn = tile_wire_name(ctx, tile, dst).substr(4);
+    int j, d;
+    if (physical_lut_input(dn, j, d) && lut_source_slot(sn) >= 0) {
+        WireId p = ctx->normalise_wire(tile, dst);
+        const NetInfo *net = ctx->getBoundWireNet(p);
+        if (net == nullptr)
+            return;
+        for (int k : {j, j ^ 1}) {
+            int index = tile_wire_index(ctx, tile, stringf("CPE.D%d_0%d_int", d, k));
+            if (index < 0)
+                continue;
+            auto found = net->wires.find(ctx->normalise_wire(tile, index));
+            if (found != net->wires.end() && found->second.pip != PipId() &&
+                ctx->getPipSrcWire(found->second.pip) == p) {
+                into = k;
+                return;
+            }
+        }
+    } else if (physical_lut_input(sn, j, d)) {
+        WireId p = ctx->normalise_wire(tile, src);
+        const NetInfo *net = ctx->getBoundWireNet(p);
+        if (net == nullptr)
+            return;
+        auto found = net->wires.find(p);
+        if (found == net->wires.end() || found->second.pip == PipId())
+            return;
+        const auto &pd = chip_pip_info(ctx->chip_info, found->second.pip);
+        if (found->second.pip.tile == tile)
+            from = lut_source_slot(tile_wire_name(ctx, tile, pd.src_wire).substr(4));
+    }
+}
+
 void GateMateImpl::draw_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip,
                             bool assigned) const
 {
@@ -2571,12 +2763,57 @@ void GateMateImpl::draw_pip(std::vector<GraphicElement> &g, GraphicElement::styl
     const std::string &src_name = tile_wire_name(ctx, tile, src_id);
     auto at = [&](int t, int index) { return assigned ? placed_routed(t, index) : placed(ctx, t, index); };
     PlacedAnchor to = at(tile, dst_id);
+    // The virtual LUT2 input and subtree swaps: drawn as the routing goes on, so that a routed way from a source's
+    // bus through the 4:1 mux of a logical LUT2 input is one line
+    if (assigned && starts_with(src_name, "CPE.")) {
+        int into = -1, from = -1;
+        lut_input_routing(tile, src_id, dst_id, into, from);
+        size_t first = g.size();
+        if (lut_input_pip(g, style, at(tile, src_id), to, into, from)) {
+            lod(g, first, LOD_DETAIL);
+            return;
+        }
+    }
     if (ends_with(src_name, "_n")) {
         // The signal comes from another tile: start where it is driven
         draw_route_from_driver(g, style, WireId(tile, src_id), to, assigned);
         return;
     }
     connect(g, style, at(tile, src_id), to);
+}
+
+// A way of pips drawn as one line, the virtual LUT2 input and subtree swaps as the way says (not as the routing
+// does, see draw_pip): a source's pip to P{d}_0j into the 4:1 mux of the logical input the next pip goes on to,
+// that pip from the slot of the source before. For a way that is offered, not bound (hand routing, see
+// getRouteRetargets).
+std::vector<GraphicElement> GateMateImpl::draw_pip_path(const std::vector<PipId> &path) const
+{
+    std::vector<GraphicElement> g;
+    for (size_t i = 0; i < path.size(); i++) {
+        PipId pip = path[i];
+        const auto &pd = chip_pip_info(ctx->chip_info, pip);
+        const std::string &sn = tile_wire_name(ctx, pip.tile, pd.src_wire);
+        const std::string &dn = tile_wire_name(ctx, pip.tile, pd.dst_wire);
+        int into = -1, from = -1, j, d, lut, input;
+        if (starts_with(sn, "CPE.") && starts_with(dn, "CPE.")) {
+            if (i + 1 < path.size() && path[i + 1].tile == pip.tile && physical_lut_input(dn.substr(4), j, d)) {
+                const auto &next = chip_pip_info(ctx->chip_info, path[i + 1]);
+                if (next.src_wire == pd.dst_wire &&
+                    lut_input_of(tile_wire_name(ctx, pip.tile, next.dst_wire), lut, input))
+                    into = lut;
+            }
+            if (i > 0 && path[i - 1].tile == pip.tile && physical_lut_input(sn.substr(4), j, d)) {
+                const auto &prev = chip_pip_info(ctx->chip_info, path[i - 1]);
+                if (prev.dst_wire == pd.src_wire)
+                    from = lut_source_slot(tile_wire_name(ctx, pip.tile, prev.src_wire).substr(4));
+            }
+            if (lut_input_pip(g, GraphicElement::STYLE_ACTIVE, placed(ctx, pip.tile, pd.src_wire),
+                              placed(ctx, pip.tile, pd.dst_wire), into, from))
+                continue;
+        }
+        draw_pip(g, GraphicElement::STYLE_ACTIVE, pip, false);
+    }
+    return g;
 }
 
 // The lane bands of a tile: wires whose lane lies in one share it, and after routing each used one

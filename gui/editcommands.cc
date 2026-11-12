@@ -426,12 +426,18 @@ std::string PrepareCellForMoveCmd::checkApply(Context *ctx)
     return {};
 }
 
-void PrepareCellForMoveCmd::apply(Context *ctx)
+void PrepareCellForMoveCmd::record(CellInfo *ci)
 {
-    CellInfo *ci = findCell(ctx, cell);
+    cell = ci->name;
     prev_ports = ports(ci);
     prev_params = ci->params;
     prev_bel_pins = ci->cell_bel_pins;
+}
+
+void PrepareCellForMoveCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    record(ci);
     ctx->prepareCellForMove(ci, false);
     new_ports = ports(ci);
 }
@@ -480,6 +486,35 @@ void PrepareCellForMoveCmd::revert(Context *ctx)
 std::string PrepareCellForMoveCmd::describe(Context *ctx) const
 {
     return "Undo the post-route changes of " + cell.str(ctx);
+}
+
+std::string RetargetSinkCmd::checkApply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    if (ci == nullptr)
+        return "cell " + q(cell.str(ctx)) + " does not exist";
+    std::string err = ctx->applyRouteRetarget(ci, port, wire, true);
+    if (!err.empty())
+        return "cannot move " + q(cell.str(ctx) + "." + port.str(ctx)) + " to " + q(ctx->nameOfWire(wire)) + ": " +
+               err;
+    return {};
+}
+
+void RetargetSinkCmd::apply(Context *ctx)
+{
+    CellInfo *ci = findCell(ctx, cell);
+    snapshot.record(ci);
+    ctx->applyRouteRetarget(ci, port, wire, false);
+    snapshot.new_ports = PrepareCellForMoveCmd::ports(ci);
+}
+
+std::string RetargetSinkCmd::checkRevert(Context *ctx) { return snapshot.checkRevert(ctx); }
+
+void RetargetSinkCmd::revert(Context *ctx) { snapshot.revert(ctx); }
+
+std::string RetargetSinkCmd::describe(Context *ctx) const
+{
+    return "Move " + cell.str(ctx) + "." + port.str(ctx) + " to " + ctx->nameOfWire(wire);
 }
 
 // ---------------------------------------------------------------------------

@@ -219,6 +219,7 @@ class PrepareCellForMoveCmd : public EditCommand
     std::string describe(Context *ctx) const override;
 
   private:
+    friend class RetargetSinkCmd;
     struct PortState
     {
         IdString name;
@@ -226,10 +227,32 @@ class PrepareCellForMoveCmd : public EditCommand
         IdString net;
     };
     static std::vector<PortState> ports(const CellInfo *ci);
+    // (for RetargetSinkCmd: record the cell before a change; checkRevert / revert then restore it)
+    void record(CellInfo *ci);
     IdString cell;
     std::vector<PortState> prev_ports, new_ports;
     dict<IdString, Property> prev_params;
     dict<IdString, std::vector<IdString>> prev_bel_pins;
+};
+
+// Hand routing: move the unrouted sink `port` of `cell` to the input whose sink wire is `wire`, changing the cell as
+// the arch allows (ArchAPI::applyRouteRetarget; on GateMate the LUT inputs and tables permuted as the virtual LUT2
+// input and subtree swaps would). Revert restores the cell's ports (names, directions, nets), parameters and bel pin
+// mapping as they were.
+class RetargetSinkCmd : public EditCommand
+{
+  public:
+    RetargetSinkCmd(IdString cell, IdString port, WireId wire) : cell(cell), port(port), wire(wire) {}
+    std::string checkApply(Context *ctx) override;
+    void apply(Context *ctx) override;
+    std::string checkRevert(Context *ctx) override;
+    void revert(Context *ctx) override;
+    std::string describe(Context *ctx) const override;
+
+  private:
+    IdString cell, port;
+    WireId wire;
+    PrepareCellForMoveCmd snapshot{IdString()};
 };
 
 // Change the placement strength of a cell.

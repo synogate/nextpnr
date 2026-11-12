@@ -10,6 +10,7 @@
     counter_pnr   008-counter synthesized with yosys and placed and routed without the GUI (placer cells
                   WEAK, IO cells FIXED); tools/gui_tests/designs/counter_pnr.json (else built once into
                   <OutDir>/designs)
+    counter_pnr_now  the same placed and routed by this build (<OutDir>/designs/counter_pnr_now.json)
     counter_synth the synthesized 008-counter with its CCF (not packed; Pack in the GUI)
     counter_synth_bit  the same, also writing the bitstream (-o out=bitstream.txt) when routed
     counter_part  008-counter as module core synthesized without IO pads, with --vopt as-partition
@@ -54,7 +55,7 @@ function Get-Design([string]$name) {
         "dff_synth" {
             return @{ Json = "$Cases\035-dff-ffobf\dff-ffobf.json"; Extra = "-o ccf=$Cases\035-dff-ffobf\olimex.ccf" }
         }
-        { $_ -in "counter_pnr", "counter_synth", "counter_synth_bit" } {
+        { $_ -in "counter_pnr", "counter_synth", "counter_synth_bit", "counter_pnr_now" } {
             $synth = Join-Path $designs "counter.json"
             $pnr = Join-Path $designs "counter_pnr.json"
             if (-not (Test-Path $synth)) {
@@ -69,8 +70,11 @@ function Get-Design([string]$name) {
             # The scripts click on the cells and wires where this placement and routing put them: a fixed copy
             # (designs/counter_pnr.json, made by this procedure), so that changes of the placer or router do not
             # move them
+            # (counter_pnr_now: placed and routed by this build instead, for scripts that need the routing as the
+            # current chip database and router make it)
+            if ($name -eq "counter_pnr_now") { $pnr = Join-Path $designs "counter_pnr_now.json" }
             $fixed = Join-Path $here "designs\counter_pnr.json"
-            if ((Test-Path $fixed) -and -not (Test-Path $pnr)) { Copy-Item $fixed $pnr }
+            if ($name -eq "counter_pnr" -and (Test-Path $fixed) -and -not (Test-Path $pnr)) { Copy-Item $fixed $pnr }
             if (-not (Test-Path $pnr)) {
                 # without --gui no window opens; run it on the hidden desktop anyway (no console either)
                 & (Join-Path $root "tools\hidden_desktop.ps1") -Exe $exe -WorkDir $designs `

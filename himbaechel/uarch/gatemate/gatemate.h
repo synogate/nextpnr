@@ -47,6 +47,9 @@ enum MultiDieStrategy
 struct TimingAnalyser;
 struct PlacedAnchor; // gfx.cc
 
+// The label of a LUT2 table in the drawing (gui_attrs.cc)
+const char *gui_lut_label(int init);
+
 struct GateMateImpl : HimbaechelAPI
 {
     ~GateMateImpl();
@@ -94,6 +97,13 @@ struct GateMateImpl : HimbaechelAPI
     // register's clock / enable renamed to the CPE inputs the routing reached, carry-line selects; inputs fed
     // through CP-line cells reconnected to the net those pass on)
     std::string prepareCellForMove(CellInfo *cell, bool check_only) override;
+    // Hand routing into a finished LUT cell (lut_swap.cc): a net routed to another physical input of a half (of the
+    // LUT2 for a merged cell) than its unrouted sink there takes that input, the inputs and tables permuted as the
+    // virtual LUT2 input and subtree swaps would (the selects stay 0); the pips standing for them are what the GUI
+    // shows. Virtual pips downhill of the head are not to be bound by hand on finished routing.
+    std::vector<RouteRetarget> getRouteRetargets(const NetInfo *net, WireId wire) const override;
+    std::string applyRouteRetarget(CellInfo *cell, IdString port, WireId wire, bool check_only) override;
+    std::string retarget_check(const CellInfo *cell, IdString port, WireId wire) const;
     // The logic check: the logic of a cell for 64 input patterns, the same before and after routing and
     // prepareCellForMove (logic_eval.cc)
     bool evaluateCell(const CellInfo *cell, const CellEvalInputs &inputs, CellEvalResult &result) const override;
@@ -292,6 +302,7 @@ struct GateMateImpl : HimbaechelAPI
     // and after routing, while the context is locked; read while drawing, which may happen in
     // another thread.
     void update_gui_labels();
+    void unbind_virtual_tails();
     std::vector<std::string> gui_labels(BelId bel) const;
     // The pad of an IO tile, or nullptr
     const PadInfoPOD *tile_pad(Loc loc) const;
@@ -314,6 +325,8 @@ struct GateMateImpl : HimbaechelAPI
     // the assigned lanes and tracks or the default ones
     PlacedAnchor placed_routed(int tile, int index) const;
     void draw_pip(std::vector<GraphicElement> &g, GraphicElement::style_t style, PipId pip, bool assigned) const;
+    void lut_input_routing(int tile, int src, int dst, int &into, int &from) const;
+    std::vector<GraphicElement> draw_pip_path(const std::vector<PipId> &path) const;
     void draw_route_from_driver(std::vector<GraphicElement> &g, GraphicElement::style_t style, WireId tile_wire,
                                 const PlacedAnchor &to, bool assigned) const;
     void configured_cpe_paths(std::vector<GraphicElement> &g, int tile, int start, float x, float y) const;

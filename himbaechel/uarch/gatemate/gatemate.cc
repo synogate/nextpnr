@@ -918,8 +918,14 @@ void GateMateImpl::check_regions()
         log_error("A placement region is too small for its cells, see the utilisation above.\n");
 }
 
-// (also after a placed and routed design was loaded, and after routing, see postRoute)
-void GateMateImpl::assignArchInfo() { update_gui_labels(); }
+// (also after a placed and routed design was loaded, and after routing, see postRoute). A finished design (loaded,
+// or saved before finishRoute dropped the routing behind the LUT inputs) has no routing there.
+void GateMateImpl::assignArchInfo()
+{
+    if (!ctx->route_finish_pending)
+        unbind_virtual_tails();
+    update_gui_labels();
+}
 
 void GateMateImpl::postPlace()
 {
@@ -1944,12 +1950,84 @@ void GateMateImpl::finishRoute()
     }
     if (tree_swaps > 0)
         log_info("    %d LUT trees routed with their subtrees swapped.\n", tree_swaps);
+    unbind_virtual_tails();
     ctx->assignArchInfo();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {
         write_bitstream(args.device, args.options["out"].as<std::string>());
     }
+}
+
+// After finishRoute the LUT inputs are the CPE inputs the routing reached, with the tables as that routing
+// configures them. The routing behind those pins (TI*, the virtual LUT2 input and subtree swaps, the passes into
+// L10 / L11) leads to no pin any more and would still say the virtual selects are set: it goes, so that they are
+// all 0, which is what the tables now say (and the drawing, a later Finish or a JSON round trip read the same).
+// Only wires downhill of an input pin of a LUT cell that lead to no sink of the net.
+void GateMateImpl::unbind_virtual_tails()
+{
+    int unbound = 0;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->bel == BelId() || !ci->type.in(id_CPE_L2T4, id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2))
+            continue;
+        for (auto &port : ci->ports) {
+            NetInfo *net = port.second.net;
+            if (port.second.type != PORT_IN || net == nullptr)
+                continue;
+            WireId pin = ctx->getBelPinWire(ci->bel, port.first);
+            if (pin == WireId() || !net->wires.count(pin))
+                continue;
+            // The tail: the net's wires downhill of the pin through its own pips
+            std::vector<WireId> tail, todo{pin};
+            while (!todo.empty()) {
+                WireId w = todo.back();
+                todo.pop_back();
+                for (PipId pip : ctx->getPipsDownhill(w)) {
+                    WireId dst = ctx->getPipDstWire(pip);
+                    auto found = net->wires.find(dst);
+                    if (found == net->wires.end() || found->second.pip != pip)
+                        continue;
+                    tail.push_back(dst);
+                    todo.push_back(dst);
+                }
+            }
+            if (tail.empty())
+                continue;
+            // What the sinks of the net need: the way back from each of their wires
+            // (finishRoute renamed ports before the cells' pin maps are updated: a port not in it is its own bel pin)
+            pool<WireId> needed;
+            auto sink_wires = [&](const PortRef &usr) {
+                std::vector<WireId> wires;
+                if (usr.cell == nullptr || usr.cell->bel == BelId())
+                    return wires;
+                if (usr.cell->isPseudo())
+                    return std::vector<WireId>{usr.cell->pseudo_cell->getPortWire(usr.port)};
+                auto pins = usr.cell->cell_bel_pins.find(usr.port);
+                if (pins == usr.cell->cell_bel_pins.end())
+                    wires.push_back(ctx->getBelPinWire(usr.cell->bel, usr.port));
+                else
+                    for (IdString p : pins->second)
+                        wires.push_back(ctx->getBelPinWire(usr.cell->bel, p));
+                return wires;
+            };
+            for (auto &usr : net->users)
+                for (WireId w : sink_wires(usr))
+                    for (int i = 0; i < 10000 && net->wires.count(w) && needed.insert(w).second; i++) {
+                        PipId pip = net->wires.at(w).pip;
+                        if (pip == PipId())
+                            break;
+                        w = ctx->getPipSrcWire(pip);
+                    }
+            for (WireId w : tail)
+                if (!needed.count(w) && net->wires.count(w)) {
+                    ctx->unbindWire(w);
+                    unbound++;
+                }
+        }
+    }
+    if (unbound > 0)
+        log_info("    %d wires behind the LUT inputs unbound (the virtual selects follow the tables).\n", unbound);
 }
 
 std::string GateMateImpl::prepareCellForMove(CellInfo *cell, bool check_only)

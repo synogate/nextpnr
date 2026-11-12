@@ -334,6 +334,15 @@ template <typename R> struct BaseArch : ArchAPI<R>
     virtual bool guiDrawsUnusedRouting() const override { return true; }
     virtual void notifyDesignEdited() override {}
     virtual std::string prepareCellForMove(CellInfo * /*cell*/, bool /*check_only*/) override { return {}; }
+    virtual std::vector<RouteRetarget> getRouteRetargets(const NetInfo * /*net*/, WireId /*wire*/) const override
+    {
+        return {};
+    }
+    virtual std::string applyRouteRetarget(CellInfo * /*cell*/, IdString /*port*/, WireId /*wire*/,
+                                           bool /*check_only*/) override
+    {
+        return "this architecture has no such edit";
+    }
     virtual void archStateToAttributes() override {}
     virtual bool evaluateCell(const CellInfo * /*cell*/, const CellEvalInputs & /*inputs*/,
                               CellEvalResult & /*result*/) const override

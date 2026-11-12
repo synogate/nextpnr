@@ -122,6 +122,14 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         bool bound = false; // already a pip of the net: a click only moves the head
         std::string why;    // for ROUTE_OTHER / ROUTE_UNAVAIL
         float delay = 0;    // ns
+        // A sink of the net moved to the head instead of a pip bound (ArchAPI::getRouteRetargets): the sink, what
+        // it does, and the pips drawn for it (pip the last of them)
+        IdString cell, port;
+        std::string text;
+        std::vector<PipId> path;
+        // (how the arch draws the way as a whole, if it does; else as the pips of path)
+        std::vector<GraphicElement> graphics;
+        bool retarget() const { return cell != IdString(); }
     };
     const std::vector<RouteCand> &routeCandidates() const { return routeCands_; }
     // The pips bound in this route session, in order
@@ -474,6 +482,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     WireId routeTreeWire(const std::vector<PickedElement> &cands);
     // Bind the candidate's pip (or follow it if bound) and move the head; "" or the reason
     std::string routeThrough(int index);
+    std::string retargetSink(const RouteCand &c);
     // Ctrl+click: the wire to route to for the elements under the cursor (the first unrouted sink
     // wire of the net on a bel here, else the hovered / first wire, else the destination of a pip)
     WireId routeTarget(const std::vector<PickedElement> &cands);
@@ -592,6 +601,7 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         bool netChanged = false;
         // Route mode overlay (ROUTE_OK ...), and whether it changed
         std::vector<DecalXY> routeDecals[ROUTE_SLOTS];
+        std::vector<GraphicElement> routeGraphics[ROUTE_SLOTS];
         bool routeChanged = false;
         // Hint text
         std::string hintText;

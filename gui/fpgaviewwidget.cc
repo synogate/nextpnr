@@ -825,6 +825,7 @@ void FPGAViewWidget::renderLines(void)
     std::vector<std::array<float, 4>> netLines[NET_LINE_SETS];
     bool netChanged;
     std::vector<DecalXY> routeDecals[ROUTE_SLOTS];
+    std::vector<GraphicElement> routeGraphics[ROUTE_SLOTS];
     bool routeChanged;
     bool highlightedOrSelectedChanged;
     bool gridChanged;
@@ -858,8 +859,10 @@ void FPGAViewWidget::renderLines(void)
         routeChanged = rendererArgs_->routeChanged;
         rendererArgs_->routeChanged = false;
         if (routeChanged)
-            for (int i = 0; i < ROUTE_SLOTS; i++)
+            for (int i = 0; i < ROUTE_SLOTS; i++) {
                 routeDecals[i] = rendererArgs_->routeDecals[i];
+                routeGraphics[i] = rendererArgs_->routeGraphics[i];
+            }
 
         highlightedOrSelectedChanged = rendererArgs_->changed;
         gridChanged = rendererArgs_->gridChanged;
@@ -1088,9 +1091,12 @@ void FPGAViewWidget::renderLines(void)
     if (routeChanged) {
         LineShaderData gfx[ROUTE_SLOTS];
         PickQuadTree::BoundingBox bb;
-        for (int i = 0; i < ROUTE_SLOTS; i++)
+        for (int i = 0; i < ROUTE_SLOTS; i++) {
             for (auto &decal : routeDecals[i])
                 renderDecal(gfx[i], bb, decal);
+            for (auto &el : routeGraphics[i])
+                renderGraphicElement(gfx[i], bb, el, 0, 0);
+        }
         QMutexLocker locker(&rendererDataLock_);
         for (int i = 0; i < ROUTE_SLOTS; i++) {
             int last = rendererData_->gfxRoute[i].last_render;
@@ -2602,6 +2608,7 @@ void FPGAViewWidget::cancelInteraction()
 void FPGAViewWidget::updateRouteCandidates()
 {
     std::vector<DecalXY> sets[ROUTE_SLOTS];
+    std::vector<GraphicElement> graphics[ROUTE_SLOTS];
     routeCands_.clear();
     if (routeNet_ != IdString() && ctx_ != nullptr) {
         std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
@@ -2641,9 +2648,40 @@ void FPGAViewWidget::updateRouteCandidates()
                 } else {
                     c.cls = ROUTE_OK;
                 }
-                sets[c.cls].push_back(ctx_->getPipDecal(pip));
-                sets[ROUTE_DST].push_back(ctx_->getWireDecal(c.dst));
                 routeCands_.push_back(std::move(c));
+            }
+            // What the arch offers besides the pips (on GateMate: moving an unrouted LUT input of the net to the
+            // head through the virtual LUT input swaps, and refusing the virtual pips otherwise). The pips of such an
+            // offer are no candidates of their own.
+            for (RouteRetarget &r : ctx_->getRouteRetargets(ni, routeHead_)) {
+                for (size_t i = 0; i < routeCands_.size();)
+                    if (std::find(r.path.begin(), r.path.end(), routeCands_[i].pip) != r.path.end())
+                        routeCands_.erase(routeCands_.begin() + i);
+                    else
+                        i++;
+                RouteCand c;
+                c.pip = r.pip;
+                c.dst = r.dst;
+                c.cell = r.cell;
+                c.port = r.port;
+                c.text = r.text;
+                c.path = r.path;
+                c.graphics = r.graphics;
+                c.cls = r.why.empty() ? ROUTE_OK : ROUTE_UNAVAIL;
+                c.why = r.why;
+                for (PipId pip : r.path)
+                    c.delay += ctx_->getDelayNS(ctx_->getPipDelay(pip).maxDelay());
+                routeCands_.push_back(std::move(c));
+            }
+            for (auto &c : routeCands_) {
+                if (!c.graphics.empty())
+                    graphics[c.cls].insert(graphics[c.cls].end(), c.graphics.begin(), c.graphics.end());
+                else if (c.path.empty())
+                    sets[c.cls].push_back(ctx_->getPipDecal(c.pip));
+                else
+                    for (PipId pip : c.path)
+                        sets[c.cls].push_back(ctx_->getPipDecal(pip));
+                sets[ROUTE_DST].push_back(ctx_->getWireDecal(c.dst));
             }
             // The head: its wire and, as many wires have no graphics of their own, the pip driving it
             sets[ROUTE_HEAD].push_back(ctx_->getWireDecal(routeHead_));
@@ -2654,8 +2692,10 @@ void FPGAViewWidget::updateRouteCandidates()
     }
     {
         QMutexLocker locker(&rendererArgsLock_);
-        for (int i = 0; i < ROUTE_SLOTS; i++)
+        for (int i = 0; i < ROUTE_SLOTS; i++) {
             rendererArgs_->routeDecals[i] = std::move(sets[i]);
+            rendererArgs_->routeGraphics[i] = std::move(graphics[i]);
+        }
         rendererArgs_->routeChanged = true;
     }
     pokeRenderer();
@@ -2741,6 +2781,15 @@ WireId FPGAViewWidget::routeTreeWire(const std::vector<PickedElement> &cands)
 std::string FPGAViewWidget::routeCandText(const RouteCand &c)
 {
     std::string text = "PIP " + std::string(ctx_->nameOfPip(c.pip)) + "\nto wire " + ctx_->nameOfWire(c.dst);
+    if (c.retarget()) {
+        // (a virtual select: nothing is bound, the cell changes)
+        text = "Virtual LUT input select " + std::string(ctx_->nameOfPip(c.pip)) + "\n" + c.text;
+        if (c.cls == ROUTE_OK)
+            text += "\nClick: move the input (the pips stay unbound, the selects 0)";
+        else
+            text += "\nNot allowed: " + c.why;
+        return text;
+    }
     char delay[32];
     snprintf(delay, sizeof(delay), "%.3f", c.delay);
     text += "\ndelay " + std::string(delay) + " ns";
@@ -2768,6 +2817,8 @@ std::string FPGAViewWidget::routeThrough(int index)
     if (editStack_ == nullptr || ctx_ == nullptr || index < 0 || index >= int(routeCands_.size()))
         return "no candidate";
     RouteCand c = routeCands_.at(index);
+    if (c.retarget() && c.cls == ROUTE_OK)
+        return retargetSink(c);
     if (c.bound) {
         setRouteHead(c.dst);
         return {};
@@ -2814,6 +2865,45 @@ std::string FPGAViewWidget::routeThrough(int index)
                 if (arc.sink == c.dst && arc.state == NetStatus::ArcState::ROUTED)
                     reached = QString("%1: arc to %2.%3 routed (%4)")
                                       .arg(text)
+                                      .arg(arc.cell.c_str(ctx_))
+                                      .arg(arc.port.c_str(ctx_))
+                                      .arg(QString::fromStdString(NetStatus::summary(st)));
+        }
+    }
+    if (!reached.isEmpty())
+        editStack_->notify(reached);
+    applyHover();
+    return {};
+}
+
+// A route candidate that moves a sink of the net to the head (ArchAPI::getRouteRetargets): one undoable edit of the
+// cell; the head stays, now the sink's wire
+std::string FPGAViewWidget::retargetSink(const RouteCand &c)
+{
+    IdString net = routeNet_;
+    WireId head = routeHead_;
+    QString text = QString("Route %1: %2.%3 to %4")
+                           .arg(net.c_str(ctx_))
+                           .arg(c.cell.c_str(ctx_))
+                           .arg(c.port.c_str(ctx_))
+                           .arg(ctx_->nameOfWire(head));
+    std::string err = editStack_->run(
+            text, [&](EditBatch &b) { return b.add(std::make_unique<RetargetSinkCmd>(c.cell, c.port, head)); });
+    if (!err.empty())
+        return err; // shown in the status bar by the stack
+    updateRouteCandidates();
+    emitRouteStatus();
+    QString reached;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx_->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx_->mutex);
+        auto fnd = ctx_->nets.find(net);
+        if (fnd != ctx_->nets.end()) {
+            NetStatus::Status st = NetStatus::compute(ctx_, fnd->second.get());
+            for (auto &arc : st.arcs)
+                if (arc.sink == head && arc.state == NetStatus::ArcState::ROUTED)
+                    reached = QString("%1: arc to %2.%3 routed (%4)")
+                                      .arg(QString::fromStdString(c.text))
                                       .arg(arc.cell.c_str(ctx_))
                                       .arg(arc.port.c_str(ctx_))
                                       .arg(QString::fromStdString(NetStatus::summary(st)));

@@ -32,6 +32,24 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+// Hand routing (GUI): a sink of a net that a route head can take over by changing the cell instead of binding pips,
+// as the arch's virtual selects allow (on GateMate the LUT2 input and subtree swaps in front of the LUT inputs). See
+// ArchAPI::getRouteRetargets.
+struct RouteRetarget
+{
+    // The pip a click on the candidate picks (the last of `path`, into dst), and all pips drawn for it (none of
+    // them is bound by the edit: they stand for the virtual selects)
+    PipId pip;
+    std::vector<PipId> path;
+    WireId dst;
+    // The sink that moves to the head wire (its arc is not routed); empty for a virtual pip that moves nothing
+    IdString cell, port;
+    // What the edit does, and "" if it can be done now, else what is in the way
+    std::string text, why;
+    // How the arch draws the way as a whole (in the device view's coordinates); empty: as the pips of `path`
+    std::vector<GraphicElement> graphics;
+};
+
 // The logic of a cell for the logic check (logic_check.h, ArchAPI::evaluateCell): the values of its inputs, 64
 // patterns at once (bit i of each word is pattern i).
 struct CellEvalInputs
@@ -127,6 +145,14 @@ template <typename R> struct ArchAPI : BaseCtx
     // router can route it again elsewhere. Returns "" (also when there is nothing to undo) or why it can not be
     // done; with check_only nothing changes. Called with the context lock held.
     virtual std::string prepareCellForMove(CellInfo *cell, bool check_only) = 0;
+    // Hand routing: what a route head `wire` of `net` offers besides its downhill pips. Each entry either moves an
+    // unrouted sink of the net to the head wire by changing its cell (ports and configuration, the function kept;
+    // applyRouteRetarget), or (cell empty) marks a pip downhill of the head that hand routing must not bind, with
+    // why. Called with the context lock held.
+    virtual std::vector<RouteRetarget> getRouteRetargets(const NetInfo *net, WireId wire) const = 0;
+    // Move the sink `port` of `cell` to the input whose sink wire is `wire`, as getRouteRetargets offers it.
+    // Returns "" or why it can not be done; with check_only nothing changes. Called with the context lock held.
+    virtual std::string applyRouteRetarget(CellInfo *cell, IdString port, WireId wire, bool check_only) = 0;
     // Saving and loading a design part way through the flow (JSON): the arch's own state beyond the netlist,
     // placement and routing (e.g. clusters, what the packer worked out) as cell, net and design attributes before
     // writing (archStateToAttributes, from write_json_file), and back after loading (attributesToArchState, from

@@ -70,6 +70,7 @@ set(TEST_SOURCES
     tests/pll.cc
     tests/qor.cc
     tests/random_logic.cc
+    tests/route_retarget.cc
     tests/router_cost.cc
     tests/seq_semantics.cc
     tests/testing.cc

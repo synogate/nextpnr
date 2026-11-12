@@ -1,0 +1,43 @@
+# Phase 3e: hand routing into a finished LUT cell through the virtual LUT input swaps. The upper-half LUT tree on
+# X79Y117 has IN1 and IN3 (L01.A); IN3's arc is ripped up and routed by hand to IN4 (L01.B, CPE.IN4_int) instead.
+# There the route candidates offer the MUX4 path to L01.A: clicking it moves the cell's input to IN4 and swaps
+# L01's table (the virtual selects stay 0, nothing virtual is bound), and the arc counts as routed. Undo restores
+# the cell. (Cell and wires as this build places and routes the counter: design counter_pnr_now.)
+# design: counter_pnr_now
+resize 1400 1000
+py C="$abc$348$auto$blifparse.cc:397:parse_blif$382"; N="$auto$alumacc.cc:512:replace_alu$26.Y[2]"; cell=lambda: ctx.cells[C]; net_of=lambda p: (cell().ports[p].net.name if p in cell().ports and cell().ports[p].net is not None else None); L01=lambda: str(cell().params["INIT_L01"]); print(str(cell().bel), net_of("IN1"), net_of("IN3"), L01())
+assert_py str(cell().bel) == "X79Y117/CPE_LT_U" and net_of("IN3") == N and net_of("IN4") is None
+py T0=L01()
+key E
+# --- rip up the arc into IN3 (sink wire CPE.IN3_int)
+zoompip X79Y117/CPE.IN3_int/CPE.IN3 0.3
+clickpip X79Y117/CPE.IN3_int/CPE.IN3 right
+menu Unroute arc to
+wait 300
+assert_py "X79Y117/CPE.IN3_int" not in [str(w) for w, p in ctx.nets[N].wires]
+# --- route the net by hand (route dock: Route to) to the second input of L01 instead, CPE.IN4_int
+selectnet $auto$alumacc.cc:512:replace_alu$26.Y[2]
+key R
+wait 300
+settext routeTarget X79Y117/CPE.IN4_int
+button Route to
+wait 500
+assert_status from X79Y117/CPE.IN4_int
+route
+zoompip X79Y117/CPE.D0_01_int/CPE.P0_01_int 0.3
+wait 300
+shotview 01_swap_offered.png
+# --- the offer: the MUX4 path from the TI4 bus to L01.A (the input swap of L01)
+clickcand X79Y117/CPE.D0_01_int/CPE.P0_01_int
+wait 300
+status
+assert_status moves to X79Y117/CPE.IN4_int
+assert_py net_of("IN4") == N and net_of("IN3") is None
+assert_py L01() != T0
+assert_py all("/CPE.P" not in str(p) for w, p in ctx.nets[N].wires if p is not None)
+shotview 02_swapped.png
+# --- undo: the cell is as before (IN3 unrouted again)
+key Esc
+key Ctrl+Z
+wait 300
+assert_py net_of("IN3") == N and net_of("IN4") is None and L01() == T0

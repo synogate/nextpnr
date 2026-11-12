@@ -547,4 +547,279 @@ int GateMateImpl::improve_lut_inputs(int rounds, bool test_undo)
     return tried;
 }
 
+// --- Hand routing into a finished LUT cell ---
+//
+// After finishRoute a LUT cell's inputs are the physical CPE inputs its routing reached, its tables the physical
+// ones and the virtual selects in front of the first-level LUT2s (LUT2_0x: a LUT2's two inputs swapped; LUT2_10X /
+// LUT2_11X: the half's two subtrees swapped) 0. A net routed by hand to another physical input of the half than its
+// unrouted sink there can still take that input: the inputs and tables are permuted as those selects would, so
+// that the function stays and the selects stay 0. The GUI shows the virtual pips the selects stand for.
+
+namespace {
+// The physical first-level inputs of a finished LUT cell a sink can move between: position q is input q % 2 (A, B)
+// of the cell's LUT2 q / 2
+struct LutInputs
+{
+    std::vector<IdString> pins;  // the bel pin (= port) of each position
+    std::vector<IdString> inits; // the cell's table of each LUT2
+    std::vector<IdString> carry; // per position: the select that feeds it a carry line instead (C_I1..C_I4)
+    int first_lut = 0;           // the CPE's number of the cell's LUT2 0 (L00, or L02 in the lower half)
+    bool tree = false;           // a plain L2T4: its subtrees may swap
+};
+
+bool lut_inputs_of(const Context *ctx, const CellInfo *ci, LutInputs &li)
+{
+    if (ci == nullptr || ci->bel == BelId())
+        return false;
+    IdString bel_type = ctx->getBelType(ci->bel);
+    if (ci->type == id_CPE_L2T4 && bel_type.in(id_CPE_LT_U, id_CPE_LT_L)) {
+        bool lower = bel_type == id_CPE_LT_L;
+        li.pins = {id_IN1, id_IN2, id_IN3, id_IN4};
+        li.inits = {id_INIT_L00, id_INIT_L01};
+        li.carry = {IdString(), lower ? id_C_I3 : id_C_I1, IdString(), lower ? id_C_I4 : id_C_I2};
+        li.first_lut = lower ? 2 : 0;
+        // (inputs only to the first level and COMBIN, nothing out but OUT)
+        li.tree = true;
+        for (auto &port : ci->ports) {
+            if (!port.second.net)
+                continue;
+            if (port.second.type == PORT_IN ? !port.first.in(id_IN1, id_IN2, id_IN3, id_IN4, id_COMBIN)
+                                            : port.first != id_OUT)
+                li.tree = false;
+        }
+        return true;
+    }
+    if (ci->type.in(id_CPE_MX4, id_CPE_ADDF, id_CPE_ADDF2)) {
+        li.pins = {id_IN1, id_IN2, id_IN3, id_IN4, id_IN5, id_IN6, id_IN7, id_IN8};
+        li.inits = {id_INIT_L00, id_INIT_L01, id_INIT_L02, id_INIT_L03};
+        li.carry = {IdString(), id_C_I1, IdString(), id_C_I2, IdString(), id_C_I3, IdString(), id_C_I4};
+        return true;
+    }
+    return false;
+}
+
+int swap_lut2(int lut) { return (lut & 0b1001) | ((lut & 0b0010) << 1) | ((lut & 0b0100) >> 1); }
+
+// How position p gets to position k: the subtree swap (positions q -> q ^ 2), then the input swap of LUT2 `ab`
+// (its two positions trade); false if no such move
+bool retarget_move(const LutInputs &li, int p, int k, bool &tree, int &ab)
+{
+    tree = false;
+    ab = -1;
+    if (p == k)
+        return false;
+    if ((p ^ k) == 1) {
+        ab = k / 2;
+        return true;
+    }
+    if (li.pins.size() != 4 || (p ^ k) > 3)
+        return false;
+    tree = true;
+    if ((p ^ k) == 3)
+        ab = k / 2;
+    return true;
+}
+
+int moved_to(int q, bool tree, int ab)
+{
+    if (tree)
+        q ^= 2;
+    if (ab >= 0 && q / 2 == ab)
+        q ^= 1;
+    return q;
+}
+
+// The virtual pips from physical position k to the logical input that position p stands for (with the selects 0):
+// the pin into the 2:1 mux of a second input, the LUT2 input swap select, the subtree swap select
+std::vector<PipId> retarget_path(const Context *ctx, const CellInfo *ci, const LutInputs &li, int k, int p)
+{
+    IdString tile = ctx->getBelName(ci->bel)[0];
+    auto wire = [&](const std::string &name) { return ctx->getWireByName(IdStringList::concat(tile, ctx->id(name))); };
+    auto pip = [&](WireId src, WireId dst) {
+        if (src != WireId() && dst != WireId())
+            for (PipId pip : ctx->getPipsDownhill(src))
+                if (ctx->getPipDstWire(pip) == dst)
+                    return pip;
+        return PipId();
+    };
+    int j = li.first_lut + k / 2, t = li.first_lut + p / 2, a = k % 2, b = p % 2;
+    std::vector<PipId> path;
+    WireId src;
+    if (a == 0) {
+        src = wire(stringf("CPE.IN%d_int", 2 * j + 1));
+    } else {
+        WireId pin = wire(stringf("CPE.IN%d_int", 2 * j + 2));
+        src = wire(stringf("CPE.TI%d_int", 2 * j + 2));
+        path.push_back(pip(pin, src));
+    }
+    WireId phys = wire(stringf("CPE.P%d_0%d_int", b, j)), logical = wire(stringf("CPE.D%d_0%d_int", b, t));
+    path.push_back(pip(src, phys));
+    path.push_back(pip(phys, logical));
+    for (PipId p : path)
+        if (p == PipId())
+            return {}; // (a chip database without the virtual selects)
+    return path;
+}
+} // namespace
+
+std::vector<RouteRetarget> GateMateImpl::getRouteRetargets(const NetInfo *net, WireId wire) const
+{
+    std::vector<RouteRetarget> result;
+    if (net == nullptr || wire == WireId() || ctx->route_finish_pending)
+        return result;
+    for (BelPin bp : ctx->getWireBelPins(wire)) {
+        CellInfo *ci = ctx->getBoundBelCell(bp.bel);
+        LutInputs li;
+        if (!lut_inputs_of(ctx, ci, li))
+            continue;
+        int k = int(std::find(li.pins.begin(), li.pins.end(), bp.pin) - li.pins.begin());
+        if (k >= int(li.pins.size()))
+            continue;
+        for (int p = 0; p < int(li.pins.size()); p++) {
+            bool tree;
+            int ab;
+            if (ci->getPort(li.pins[p]) != net || !retarget_move(li, p, k, tree, ab))
+                continue;
+            if (net->wires.count(ctx->getBelPinWire(ci->bel, li.pins[p])))
+                continue; // (routed)
+            RouteRetarget r;
+            r.path = retarget_path(ctx, ci, li, k, p);
+            if (r.path.empty())
+                continue;
+            r.pip = r.path.back();
+            r.dst = ctx->getPipDstWire(r.pip);
+            r.graphics = draw_pip_path(r.path);
+            r.cell = ci->name;
+            r.port = li.pins[p];
+            r.why = retarget_check(ci, r.port, wire);
+            std::string what;
+            if (tree)
+                what = "the subtrees of the half swapped";
+            if (ab >= 0)
+                what += stringf("%sthe inputs of L0%d swapped", tree ? ", " : "", li.first_lut + ab);
+            r.text = stringf("%s.%s moves to %s (%s, the function kept)", ci->name.c_str(ctx), r.port.c_str(ctx),
+                             ctx->nameOfWire(wire), what.c_str());
+            result.push_back(std::move(r));
+        }
+    }
+    // The virtual selects downhill of the head that no move above stands for: binding them by hand on finished
+    // routing would contradict the tables
+    for (PipId pip : ctx->getPipsDownhill(wire)) {
+        const auto &extra = *pip_extra_data(pip);
+        if (extra.type != PipExtra::PIP_EXTRA_MUX || extra.name == 0 ||
+            IdString(extra.name).str(ctx).rfind("LUT2_", 0) != 0)
+            continue;
+        bool covered = false;
+        for (auto &r : result)
+            covered |= std::find(r.path.begin(), r.path.end(), pip) != r.path.end();
+        if (covered)
+            continue;
+        RouteRetarget r;
+        r.pip = pip;
+        r.path = {pip};
+        r.dst = ctx->getPipDstWire(pip);
+        r.why = "a virtual select in front of the LUT2 inputs: on finished routing only a way to move an unrouted "
+                "input of " +
+                net->name.str(ctx) + " of this half here";
+        result.push_back(std::move(r));
+    }
+    return result;
+}
+
+// Whether the sink `port` of `ci` can move to the input with sink wire `wire` (see applyRouteRetarget)
+std::string GateMateImpl::retarget_check(const CellInfo *ci, IdString port, WireId wire) const
+{
+    if (ctx->route_finish_pending)
+        return "the routing is not finished (Finish first)";
+    LutInputs li;
+    if (!lut_inputs_of(ctx, ci, li))
+        return "not a LUT cell whose inputs can be swapped";
+    int n = int(li.pins.size());
+    int p = int(std::find(li.pins.begin(), li.pins.end(), port) - li.pins.begin());
+    int k = n;
+    for (int q = 0; q < n; q++)
+        if (ctx->getBelPinWire(ci->bel, li.pins[q]) == wire)
+            k = q;
+    if (p >= n || k >= n)
+        return "not two first-level LUT2 inputs of " + ci->name.str(ctx);
+    const NetInfo *net = ci->getPort(port);
+    if (net == nullptr)
+        return ci->name.str(ctx) + "." + port.str(ctx) + " has no net";
+    bool tree;
+    int ab;
+    if (!retarget_move(li, p, k, tree, ab))
+        return "only within a LUT2 of this cell";
+    if (tree && !li.tree)
+        return "only a plain LUT tree (CPE_L2T4 with inputs only to its LUT2s) may swap its subtrees";
+    if (net->wires.count(ctx->getBelPinWire(ci->bel, port)))
+        return ci->name.str(ctx) + "." + port.str(ctx) + " is routed already";
+    for (int q = 0; q < n; q++) {
+        if (moved_to(q, tree, ab) == q)
+            continue;
+        if (li.carry[q] != IdString() && int_or_default(ci->params, li.carry[q], 0) == 1)
+            return stringf("%s takes a carry line there (%s)",
+                           ctx->nameOfWire(ctx->getBelPinWire(ci->bel, li.pins[q])), li.carry[q].c_str(ctx));
+        const NetInfo *other = ci->getPort(li.pins[q]);
+        if (q == p || other == nullptr)
+            continue;
+        if (other->wires.count(ctx->getBelPinWire(ci->bel, li.pins[q])))
+            return stringf("%s.%s, which would move too, is routed (net %s)", ci->name.c_str(ctx),
+                           li.pins[q].c_str(ctx), other->name.c_str(ctx));
+    }
+    return {};
+}
+
+std::string GateMateImpl::applyRouteRetarget(CellInfo *ci, IdString port, WireId wire, bool check_only)
+{
+    std::string err = retarget_check(ci, port, wire);
+    if (!err.empty() || check_only)
+        return err;
+    LutInputs li;
+    lut_inputs_of(ctx, ci, li);
+    int n = int(li.pins.size());
+    int p = int(std::find(li.pins.begin(), li.pins.end(), port) - li.pins.begin()), k = 0;
+    for (int q = 0; q < n; q++)
+        if (ctx->getBelPinWire(ci->bel, li.pins[q]) == wire)
+            k = q;
+    bool tree;
+    int ab;
+    retarget_move(li, p, k, tree, ab);
+    // The ports: each moved position's net to where it goes
+    std::vector<NetInfo *> nets(n, nullptr);
+    for (int q = 0; q < n; q++)
+        if (moved_to(q, tree, ab) != q) {
+            nets[q] = ci->getPort(li.pins[q]);
+            if (nets[q])
+                ci->disconnectPort(li.pins[q]);
+        }
+    for (int q = 0; q < n; q++) {
+        int to = moved_to(q, tree, ab);
+        if (to == q || nets[q] == nullptr)
+            continue;
+        if (!ci->ports.count(li.pins[to]))
+            ci->addInput(li.pins[to]);
+        ci->cell_bel_pins[li.pins[to]] = {li.pins[to]};
+        ci->connectPort(li.pins[to], nets[q]);
+    }
+    // (an input left without a net goes, as finishRoute leaves none)
+    for (int q = 0; q < n; q++)
+        if (moved_to(q, tree, ab) != q && ci->ports.count(li.pins[q]) && !ci->getPort(li.pins[q])) {
+            ci->ports.erase(li.pins[q]);
+            ci->cell_bel_pins.erase(li.pins[q]);
+        }
+    // The tables
+    auto table = [&](IdString init) { return int_or_default(ci->params, init, 0); };
+    if (tree) {
+        int l00 = table(li.inits[0]), l01 = table(li.inits[1]);
+        ci->params[li.inits[0]] = Property(l01, 4);
+        ci->params[li.inits[1]] = Property(l00, 4);
+        // (L10's address is {L01, L00})
+        if (ci->params.count(id_INIT_L10))
+            ci->params[id_INIT_L10] = Property(swap_lut2(table(id_INIT_L10)), 4);
+    }
+    if (ab >= 0)
+        ci->params[li.inits[ab]] = Property(swap_lut2(table(li.inits[ab])), 4);
+    return {};
+}
+
 NEXTPNR_NAMESPACE_END
