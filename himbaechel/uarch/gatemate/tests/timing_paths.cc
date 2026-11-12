@@ -348,3 +348,47 @@ TEST_F(GateMateTimingTest, estimate_of_the_carry_to_the_cpe_above)
     EXPECT_GT(impl->predictDelay(lower, id_COUTY1, two_above, id_CINY1), 0);
     EXPECT_GT(impl->predictDelay(lower, id_OUT, above, id_CINY1), 0);
 }
+
+// A path from the rising to the falling edge of one clock has half a period, and its two registers get the clock
+// at different times as on any other path. The Fmax of a clock left that skew out for these paths only: the two
+// edges are two domains, and the code took two domains for two clocks without a common reference. The slack, the
+// criticality and the report of the path count the skew (dmg_soc: 38.1 MHz reported with a worst path of 12.24 ns
+// from a block RAM to the output registers at the HyperBus pads, which is 40.8 MHz; 5 to 8 of 16 seeds).
+TEST_F(GateMateTimingTest, fmax_of_the_two_edges_of_a_clock_counts_the_skew)
+{
+    NetInfo *clk = global_clock("clk");
+    CellInfo *ff1 = dff("ff1", input("d"), clk);
+    CellInfo *ff2 = dff("ff2", lut1("inv", 0b01, ff1->getPort(id_Q)), clk);
+    ff2->params[id_CLK_INV] = Property(1, 1);
+    output("q", ff2->getPort(id_Q));
+    pack();
+    ctx->place();
+    CellInfo *rising = nullptr, *falling = nullptr;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->type != id_CPE_FF || ci->getPort(id_CLK_INT) == nullptr)
+            continue;
+        (impl->getPortClockingInfo(ci, id_DIN, 0).edge == RISING_EDGE ? rising : falling) = ci;
+    }
+    ASSERT_NE(rising, nullptr);
+    ASSERT_NE(falling, nullptr);
+    IdString clock = rising->getPort(id_CLK_INT)->name;
+    ASSERT_EQ(falling->getPort(id_CLK_INT)->name, clock);
+    // Half the period at Fmax in ns, with the clock at the two registers after the given delays
+    auto half_period = [&](delay_t launch, delay_t capture) {
+        TimingAnalyser tmg(ctx);
+        tmg.setup_only = true;
+        tmg.with_clock_skew = true;
+        tmg.setup();
+        tmg.set_route_delay(CellPortKey(rising->name, id_CLK_INT), DelayPair(launch));
+        tmg.set_route_delay(CellPortKey(falling->name, id_CLK_INT), DelayPair(capture));
+        tmg.run(false, false, false, true);
+        return 500.0 / tmg.get_timing_result().clock_fmax.at(clock).achieved;
+    };
+    double level = half_period(1000, 1000);
+    EXPECT_GT(level, 1.0);
+    EXPECT_LT(level, 10.0);
+    // (the clock later at the launching register: that much less time; later at the capturing one: more)
+    EXPECT_NEAR(half_period(3000, 1000), level + 2.0, 0.01);
+    EXPECT_NEAR(half_period(1000, 1500), level - 0.5, 0.01);
+}
