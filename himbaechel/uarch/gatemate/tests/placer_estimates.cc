@@ -309,13 +309,16 @@ class GateMateStaticPlacerTest : public GateMateRefinementTest
 TEST_F(GateMateStaticPlacerTest, delays_are_those_of_the_estimates)
 {
     use_static();
-    std::string log = place();
-    std::smatch m;
-    ASSERT_TRUE(std::regex_search(
-            log, m,
-            std::regex("Static placer delays: next door ([0-9]+) ps, 2 / 4 / 10 / 40 tiles ([0-9]+) / ([0-9]+) / "
-                       "([0-9]+) / ([0-9]+) ps")));
-    int next = std::stoi(m[1]), d4 = std::stoi(m[3]), d10 = std::stoi(m[4]), d40 = std::stoi(m[5]);
+    build();
+    ctx->pack();
+    // (as Arch::place sets the placer up)
+    PlacerStaticCfg cfg(ctx);
+    impl->configurePlacerStatic(cfg);
+    ASSERT_TRUE(bool(cfg.predict_delay));
+    auto across = [&](int tiles) {
+        return int(cfg.predict_delay(ctx, cfg, Loc(20, 60, 0), IdString(), Loc(20 + tiles, 60, 0), IdString()));
+    };
+    int next = across(1), d4 = across(4), d10 = across(10), d40 = across(40);
     EXPECT_GT(next, 400);
     EXPECT_LT(next, 1500);
     EXPECT_GT(d10, d4);
