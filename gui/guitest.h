@@ -91,13 +91,14 @@
  *   assert_action <text> on|off  the window action whose text starts with text is enabled / disabled
  *   button <text>              click the visible push button whose text starts with text (fails if
  *                              it is disabled)
- *   settext <objectName> <text> set the text of a line edit (e.g. routeTarget in the route dock)
+ *   settext <objectName> [text] set the text of a line edit (e.g. routeTarget in the route dock); no text: clear it
  *   dock cands|steps|sinks|<objectName> [text]
  *                              route dock lists: without text, log the rows; with text, activate
  *                              the row with a column starting with text (cands / sinks: like a
  *                              double-click) or click the session pip row containing text (steps);
- *                              any other tree by object name (checkList, timingClocks, timingPath;
- *                              nested rows included)
+ *                              any other tree by object name (checkList, timingClocks, timingPath,
+ *                              hierarchyTree, hierarchyUsage; nested rows included, rows a filter
+ *                              hides left out)
  *   tab <text>                 show the tab with this title (e.g. Pins, Paths, Partitions)
  *   label <objectName>         log the text of a label (e.g. checkHeader, timingHeader);
  *                              assert_label / assert_nolabel <objectName> <substring>: it contains /

@@ -50,6 +50,7 @@ class FPGAViewWidget;
 class RouteDock;
 class CheckDock;
 class TimingDock;
+class HierarchyDock;
 
 class BaseMainWindow : public QMainWindow
 {
@@ -191,6 +192,7 @@ class BaseMainWindow : public QMainWindow
     RouteDock *routeDock;
     CheckDock *checkDock;
     TimingDock *timingDock;
+    HierarchyDock *hierarchyDock;
 
     // Menus, bars and actions
     QMenuBar *menuBar;

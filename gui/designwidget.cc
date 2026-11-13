@@ -92,6 +92,14 @@ DesignWidget::DesignWidget(QWidget *parent) : QWidget(parent), ctx(nullptr)
             refreshAfterEdit();
     });
     cellsLayout->addWidget(unplacedOnly);
+    scopeOnly = new QCheckBox();
+    scopeOnly->setToolTip("Show only the cells of the instance selected in the Hierarchy dock");
+    scopeOnly->hide();
+    connect(scopeOnly, &QCheckBox::toggled, this, [this] {
+        if (ctx != nullptr)
+            refreshAfterEdit();
+    });
+    cellsLayout->addWidget(scopeOnly);
     cellsLayout->addWidget(treeView[3]);
     tabWidget->addTab(cellsPage, "Cells");
     tabWidget->addTab(treeView[4], "Nets");
@@ -459,12 +467,13 @@ void DesignWidget::updateTree()
         std::lock_guard<std::mutex> lock(ctx->mutex);
 
         bool only_unplaced = unplacedOnly != nullptr && unplacedOnly->isChecked();
+        bool only_scope = scopeOnly != nullptr && scopeOnly->isChecked() && !scopeName.isEmpty();
         int num_unplaced = 0;
         std::vector<IdStringList> cells;
         for (auto &pair : ctx->cells) {
             bool unplaced = pair.second->bel == BelId();
             num_unplaced += unplaced;
-            if (unplaced || !only_unplaced)
+            if ((unplaced || !only_unplaced) && (!only_scope || scopeCells.count(pair.first)))
                 cells.push_back(IdStringList(pair.first));
         }
         std::vector<IdStringList> nets;
@@ -715,6 +724,50 @@ template <typename T> bool DesignWidget::clickedNet(T element, bool keep)
     return true;
 }
 
+void DesignWidget::selectCells(const std::vector<IdString> &cells)
+{
+    if (ctx == nullptr)
+        return;
+    int num = getIndexByElementType(ElementType::CELL);
+    QItemSelection selection;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        for (IdString cell : cells) {
+            auto item = treeModel[num]->nodeForId(IdStringList(cell));
+            if (!item)
+                continue;
+            QModelIndex index = treeModel[num]->indexFromNode(*item);
+            selection.select(index, index);
+        }
+    }
+    arm_ignore = true;
+    clearAllSelectionModels();
+    if (!selection.isEmpty())
+        selectionModel[num]->select(selection, QItemSelectionModel::ClearAndSelect);
+    arm_ignore = false;
+    if (selection.isEmpty())
+        Q_EMIT selected(std::vector<DecalXY>(), false);
+}
+
+void DesignWidget::setCellScope(const QString &name, const std::vector<IdString> &cells)
+{
+    pool<IdString> set(cells.begin(), cells.end());
+    if (name == scopeName && set == scopeCells)
+        return;
+    bool was_on = scopeOnly->isChecked() && !scopeName.isEmpty();
+    scopeName = name;
+    scopeCells = std::move(set);
+    {
+        QSignalBlocker blocker(scopeOnly);
+        scopeOnly->setVisible(!name.isEmpty());
+        scopeOnly->setText(QString("Only instance %1 (%2 cells)").arg(name).arg(scopeCells.size()));
+        scopeOnly->setChecked(!name.isEmpty());
+    }
+    if (ctx != nullptr && (was_on || !name.isEmpty()))
+        refreshAfterEdit();
+}
+
 void DesignWidget::showCell(IdString cell)
 {
     if (ctx == nullptr)
@@ -725,9 +778,10 @@ void DesignWidget::showCell(IdString cell)
         std::lock_guard<std::mutex> lock(ctx->mutex);
         item = getTreeByElementType(ElementType::CELL)->nodeForId(IdStringList(cell));
     }
-    if (!item && unplacedOnly->isChecked() && ctx->cells.count(cell)) {
-        // A placed cell, hidden by the filter: show all cells
+    if (!item && (unplacedOnly->isChecked() || scopeOnly->isChecked()) && ctx->cells.count(cell)) {
+        // A cell hidden by a filter: show all cells
         unplacedOnly->setChecked(false);
+        scopeOnly->setChecked(false);
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
         item = getTreeByElementType(ElementType::CELL)->nodeForId(IdStringList(cell));

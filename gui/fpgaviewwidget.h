@@ -161,6 +161,12 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
         bool fill = false;
     };
     void setOverlays(std::vector<Overlay> overlays);
+    // Coloured bels (hierarchy dock): a box filled in the colour over the graphics of each bel, at
+    // least a few pixels large (not over a selected bel: the selection would not show), and outlined
+    // boxes with labels (drawn under the overlays above)
+    void setBelFills(const std::vector<std::pair<BelId, QColor>> &fills, std::vector<Overlay> outlines);
+    // The area of a bel's graphics in world coordinates; false if it has none
+    bool belArea(BelId bel, float &x0, float &y0, float &x1, float &y1);
     // While picking, the left mouse button picks positions (the picked signal, with a PickEvent)
     // instead of selecting; Escape cancels (pickCanceled)
     enum PickEvent
@@ -246,6 +252,17 @@ class FPGAViewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
   private:
     std::vector<Overlay> overlays_;
+    struct Fill
+    {
+        float x0, y0, x1, y1;
+        QRgb color;
+        DecalId decal;
+    };
+    std::vector<Fill> fills_;
+    // The decals selected (fills leave them out)
+    pool<DecalId> selectedDecalIds_;
+    std::vector<Overlay> fillOutlines_;
+    dict<BelId, std::array<float, 4>> belAreas_;
     bool picking_ = false;
     void drawOverlays();
 

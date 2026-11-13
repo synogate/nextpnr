@@ -22,6 +22,8 @@ set(GUI_SOURCES
     fpgaviewwidget.h
     guitest.cc
     guitest.h
+    hierarchydock.cc
+    hierarchydock.h
     line_editor.cc
     line_editor.h
     lineshader.cc

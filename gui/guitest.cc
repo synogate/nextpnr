@@ -1198,7 +1198,7 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         return false;
     }
     if (cmd == "settext") {
-        if (!need(2))
+        if (!need(1))
             return false;
         QLineEdit *e = win_->findChild<QLineEdit *>(w.at(1));
         if (e == nullptr) {
@@ -1217,8 +1217,11 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
         QString want = QStringList(w.mid(2)).join(' ');
         if (QTreeWidget *t = win_->findChild<QTreeWidget *>(obj)) {
             // All rows, children indented under their parents
+            // (not the rows a filter hides)
             QList<QPair<QTreeWidgetItem *, int>> rows;
             std::function<void(QTreeWidgetItem *, int)> collect = [&](QTreeWidgetItem *item, int depth) {
+                if (item->isHidden())
+                    return;
                 rows.append(qMakePair(item, depth));
                 for (int i = 0; i < item->childCount(); i++)
                     collect(item->child(i), depth + 1);

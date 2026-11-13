@@ -244,7 +244,19 @@ void write_module(std::ostream &f, Context *ctx)
         f << stringf("          \"hide_name\": %s,\n", w->name.c_str(ctx)[0] == '$' ? "1" : "0");
         f << stringf("          \"bits\": [ %d ] ,\n", pair.first.index);
         f << stringf("          \"attributes\": {");
-        write_parameters(f, ctx, w->attrs);
+        // The other names of the net (the instances it passes through in a flattened design; the
+        // Hierarchy dock goes by them), restored by the frontend (frontend_base.h)
+        std::string aliases;
+        for (IdString alias : w->aliases)
+            if (alias != w->name)
+                aliases += (aliases.empty() ? "" : " ") + alias.str(ctx);
+        if (aliases.empty()) {
+            write_parameters(f, ctx, w->attrs);
+        } else {
+            dict<IdString, Property> attrs = w->attrs;
+            attrs[ctx->id("nextpnr_aliases")] = Property(aliases);
+            write_parameters(f, ctx, attrs);
+        }
         f << stringf("\n          }\n");
         f << stringf("        }");
         first = false;

@@ -46,6 +46,7 @@
 #include "pythontab.h"
 #include "routedock.h"
 #include "timingdock.h"
+#include "hierarchydock.h"
 #include "version.h"
 
 static void initBasenameResource() { Q_INIT_RESOURCE(base); }
@@ -173,6 +174,14 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     timingDock->hide();
     tabifyDockWidget(checkDock, timingDock);
     connect(editStack, &EditStack::designChanged, checkDock, &CheckDock::scheduleRefresh);
+    // The instance tree, open on the left (the cells of the design coloured by instance from the start)
+    hierarchyDock = new HierarchyDock(fpgaView, editStack, this);
+    addDockWidget(Qt::LeftDockWidgetArea, hierarchyDock);
+    connect(hierarchyDock, &HierarchyDock::cellScopeChanged, designview, &DesignWidget::setCellScope);
+    connect(hierarchyDock, &HierarchyDock::selectCellsRequested, designview, &DesignWidget::selectCells);
+    connect(editStack, &EditStack::designChanged, hierarchyDock, &HierarchyDock::scheduleRefresh);
+    connect(this, &BaseMainWindow::contextChanged, hierarchyDock, &HierarchyDock::setContext);
+    connect(this, &BaseMainWindow::updateTreeView, hierarchyDock, &HierarchyDock::scheduleRefresh);
     connect(editStack, &EditStack::designChanged, timingDock, &TimingDock::designEdited);
     connect(this, &BaseMainWindow::contextChanged, checkDock, &CheckDock::setContext);
     connect(this, &BaseMainWindow::contextChanged, timingDock, &TimingDock::setContext);
@@ -658,6 +667,15 @@ void BaseMainWindow::createMenusAndBars()
     connect(actionTimingDock, &QAction::triggered, timingDock, [this](bool on) {
         if (on)
             timingDock->raise();
+    });
+    QAction *actionHierarchyDock = hierarchyDock->toggleViewAction();
+    actionHierarchyDock->setText("Hierarchy");
+    actionHierarchyDock->setStatusTip("The instance tree of the design: colour instances in the device view, "
+                                      "utilisation per instance");
+    menuView->addAction(actionHierarchyDock);
+    connect(actionHierarchyDock, &QAction::triggered, hierarchyDock, [this](bool on) {
+        if (on)
+            hierarchyDock->raise();
     });
     menuView->addAction(actionRunTiming);
 

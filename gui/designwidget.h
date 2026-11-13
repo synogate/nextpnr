@@ -149,6 +149,12 @@ class DesignWidget : public QWidget
     void onClickedPip(PipId pip, bool keep);
     // Select a cell in the Cells tree (without arming it for placement)
     void showCell(IdString cell);
+    // Cells tab: offer to show only these cells (the instance selected in the Hierarchy dock) and turn
+    // that on; an empty name: all cells again
+    void setCellScope(const QString &name, const std::vector<IdString> &cells);
+    // Select these cells in the Cells tree, as a selection by hand (without arming one for placement);
+    // none: clear the selection
+    void selectCells(const std::vector<IdString> &cells);
     // Select a net in the Nets tree
     void showNet(IdString net);
     // Arm the selected cell, or the cell on the selected bel, for placement by click
@@ -215,6 +221,10 @@ class DesignWidget : public QWidget
     bool lastEditMode = false;
     // Cells tab: show only unplaced cells
     QCheckBox *unplacedOnly = nullptr;
+    // Cells tab: show only the cells of an instance (setCellScope)
+    QCheckBox *scopeOnly = nullptr;
+    QString scopeName;
+    pool<IdString> scopeCells;
     // The cell last chosen by selectNextUnplaced
     IdString lastUnplaced;
     static constexpr int MAX_NUDGE = 8;

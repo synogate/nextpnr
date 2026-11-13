@@ -144,6 +144,8 @@ template <typename FrontendType> struct GenericFrontend
 
         if (bool_or_default(ctx->settings, ctx->id("frontend/renameAutoCells"), true))
             rename_auto_cells(ctx);
+        // (after the renaming: a netlist nextpnr wrote keeps the names it has)
+        restore_saved_aliases();
 
         ctx->design_loaded = true;
     }
@@ -160,6 +162,34 @@ template <typename FrontendType> struct GenericFrontend
     dict<IdString, ModuleInfo> mods;
     std::unordered_map<std::string, const mod_dat_t> mod_refs;
     IdString top;
+
+    // A netlist nextpnr wrote keeps the other names of a net in an attribute (json/jsonwrite.cc)
+    void restore_saved_aliases()
+    {
+        const IdString id_saved = ctx->id("nextpnr_aliases");
+        for (auto &n : ctx->nets) {
+            NetInfo *ni = n.second.get();
+            auto found = ni->attrs.find(id_saved);
+            if (found == ni->attrs.end())
+                continue;
+            std::string names = found->second.is_string ? found->second.as_string() : "";
+            ni->attrs.erase(found);
+            size_t pos = 0;
+            while (pos < names.size()) {
+                size_t end = names.find(' ', pos);
+                if (end == std::string::npos)
+                    end = names.size();
+                if (end > pos) {
+                    IdString alias = ctx->id(names.substr(pos, end - pos));
+                    if (!ctx->net_aliases.count(alias)) {
+                        ctx->net_aliases[alias] = ni->name;
+                        ni->aliases.push_back(alias);
+                    }
+                }
+                pos = end + 1;
+            }
+        }
+    }
 
     // Process the list of modules and determine
     // the top module

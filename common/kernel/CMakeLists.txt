@@ -18,6 +18,8 @@ target_sources(nextpnr_kernel PUBLIC
     context.h
     design_utils.cc
     design_utils.h
+    design_scopes.cc
+    design_scopes.h
     deterministic_rng.h
     embed.cc
     embed.h

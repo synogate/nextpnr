@@ -365,6 +365,19 @@ void GateMateImpl::import_partition(const std::string &spec)
                         moved.index = pip.index;
                         routing[net->name].emplace_back(moved, strs[i + 1]);
                     }
+                } else if (attr.first == "nextpnr_aliases") {
+                    // The other names of the net inside the partition (json/jsonwrite.cc), here under
+                    // the instance
+                    std::vector<std::string> names;
+                    std::string list = attr.second.string_value();
+                    boost::split(names, list, boost::is_any_of(" "));
+                    for (auto &name : names) {
+                        IdString alias = ctx->id(prefix + name);
+                        if (name.empty() || ctx->net_aliases.count(alias))
+                            continue;
+                        ctx->net_aliases[alias] = net->name;
+                        net->aliases.push_back(alias);
+                    }
                 } else {
                     net->attrs[ctx->id(attr.first)] = parse_property(attr.second);
                 }

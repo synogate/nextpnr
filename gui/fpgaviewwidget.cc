@@ -152,6 +152,10 @@ void FPGAViewWidget::newContext(Context *ctx)
     disarmPlacement();
     stopRouting();
     netView_ = IdString();
+    fills_.clear();
+    selectedDecalIds_.clear();
+    fillOutlines_.clear();
+    belAreas_.clear();
     ctx_ = ctx;
     updateNetOverlay();
     {
@@ -1155,7 +1159,12 @@ void FPGAViewWidget::onSelectedArchItem(std::vector<DecalXY> decals, bool keep)
         }
         rendererArgs_->changed = true;
     }
+    if (!keep)
+        selectedDecalIds_.clear();
+    for (auto &d : decals)
+        selectedDecalIds_.insert(d.decal);
     pokeRenderer();
+    update();
 }
 
 void FPGAViewWidget::onHighlightGroupChanged(std::vector<DecalXY> decals, int group)
@@ -1669,9 +1678,65 @@ void FPGAViewWidget::setOverlays(std::vector<Overlay> overlays)
     update();
 }
 
+bool FPGAViewWidget::belArea(BelId bel, float &x0, float &y0, float &x1, float &y1)
+{
+    if (ctx_ == nullptr || bel == BelId())
+        return false;
+    auto found = belAreas_.find(bel);
+    if (found == belAreas_.end()) {
+        DecalXY decal = ctx_->getBelDecal(bel);
+        std::array<float, 4> area{1, 1, 0, 0}; // empty
+        if (decal.decal != DecalId()) {
+            auto graphics = ctx_->getDecalGraphics(decal.decal);
+            // The boxes if there are any (a bel's outline), else all lines
+            bool boxes = std::any_of(graphics.begin(), graphics.end(),
+                                     [](const GraphicElement &el) { return el.type == GraphicElement::TYPE_BOX; });
+            bool first = true;
+            for (auto &el : graphics) {
+                if (boxes ? el.type != GraphicElement::TYPE_BOX
+                          : (el.type != GraphicElement::TYPE_LINE && el.type != GraphicElement::TYPE_ARROW))
+                    continue;
+                float ex0 = decal.x + std::min(el.x1, el.x2), ex1 = decal.x + std::max(el.x1, el.x2);
+                float ey0 = decal.y + std::min(el.y1, el.y2), ey1 = decal.y + std::max(el.y1, el.y2);
+                if (first) {
+                    area = {ex0, ey0, ex1, ey1};
+                    first = false;
+                } else {
+                    area = {std::min(area[0], ex0), std::min(area[1], ey0), std::max(area[2], ex1),
+                            std::max(area[3], ey1)};
+                }
+            }
+        }
+        found = belAreas_.emplace(bel, area).first;
+    }
+    auto &a = found->second;
+    if (a[0] > a[2])
+        return false;
+    x0 = a[0];
+    y0 = a[1];
+    x1 = a[2];
+    y1 = a[3];
+    return true;
+}
+
+void FPGAViewWidget::setBelFills(const std::vector<std::pair<BelId, QColor>> &fills, std::vector<Overlay> outlines)
+{
+    fills_.clear();
+    for (auto &f : fills) {
+        Fill fill;
+        if (!belArea(f.first, fill.x0, fill.y0, fill.x1, fill.y1))
+            continue;
+        fill.color = f.second.rgba();
+        fill.decal = ctx_->getBelDecal(f.first).decal;
+        fills_.push_back(fill);
+    }
+    fillOutlines_ = std::move(outlines);
+    update();
+}
+
 void FPGAViewWidget::drawOverlays()
 {
-    if (overlays_.empty())
+    if (overlays_.empty() && fills_.empty() && fillOutlines_.empty())
         return;
     // World to screen: the view maps the plane linearly
     QVector4D a = mouseToWorldCoordinates(0, 0), b = mouseToWorldCoordinates(width(), height());
@@ -1680,8 +1745,46 @@ void FPGAViewWidget::drawOverlays()
     auto screen = [&](float x, float y) {
         return ImVec2((x - a.x()) / (b.x() - a.x()) * width(), (y - a.y()) / (b.y() - a.y()) * height());
     };
-    ImDrawList *list = ImGui::GetOverlayDrawList();
-    for (auto &o : overlays_) {
+    // Drawn into a window of their own that covers the view, takes no input and is created first: the
+    // tooltip windows come over it (the overlay draw list would cover them too, ImGui 1.66 has no
+    // background list)
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImVec2(width(), height()));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::Begin("##overlays", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoMove);
+    ImDrawList *list = ImGui::GetWindowDrawList();
+    // Coloured bels: at least 2 pixels, so that they still show with the whole chip in view
+    auto fill = [&](const Fill &f) {
+        ImVec2 p0 = screen(f.x0, f.y0), p1 = screen(f.x1, f.y1);
+        ImVec2 min(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), max(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+        if (max.x < 0 || max.y < 0 || min.x > width() || min.y > height())
+            return;
+        if (max.x - min.x < 2.0f) {
+            float c = (min.x + max.x) / 2;
+            min.x = c - 1.0f;
+            max.x = c + 1.0f;
+        }
+        if (max.y - min.y < 2.0f) {
+            float c = (min.y + max.y) / 2;
+            min.y = c - 1.0f;
+            max.y = c + 1.0f;
+        }
+        list->AddRectFilled(min, max, IM_COL32(qRed(f.color), qGreen(f.color), qBlue(f.color), qAlpha(f.color)));
+    };
+    for (auto &f : fills_)
+        if (!selectedDecalIds_.count(f.decal))
+            fill(f);
+    std::vector<const Overlay *> all;
+    for (auto &o : fillOutlines_)
+        all.push_back(&o);
+    for (auto &o : overlays_)
+        all.push_back(&o);
+    for (const Overlay *op : all) {
+        const Overlay &o = *op;
         ImVec2 p0 = screen(o.x0, o.y0), p1 = screen(o.x1, o.y1);
         ImVec2 min(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), max(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
         if (max.x < 0 || max.y < 0 || min.x > width() || min.y > height())
@@ -1697,6 +1800,8 @@ void FPGAViewWidget::drawOverlays()
                           text.constData());
         }
     }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 bool FPGAViewWidget::event(QEvent *event)

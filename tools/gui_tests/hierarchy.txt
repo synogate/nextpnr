@@ -1,0 +1,53 @@
+# Hierarchy dock (open on the left by default; View > Hierarchy) on a flattened design with hierarchy
+# (designs/hier_top.v): the instance tree (cells put into instances by the names of their nets), utilisation per
+# instance, colouring the cells of instances in the device view, the filter, the Cells tab showing the cells of
+# the selected instance; the same instances after saving and loading the placed design (the JSON keeps the other
+# names of the nets).
+# design: hier
+resize 1400 1000
+delay 600
+assert_label hierarchyHeader 3 instances
+dock hierarchyTree
+dock hierarchyUsage
+action Pack
+waitidle
+action Place
+waitidle
+delay 800
+assert_label hierarchyHeader 3 instances
+assert_label hierarchyStats placed
+# nothing coloured yet
+zoomfit
+shot 01_placed.png
+dock hierarchyTree u_slow
+assert_label hierarchyStats u_slow
+assert_label hierarchyStats Area X
+dock hierarchyUsage
+assert_label hierarchyStats sites with CPE
+button Colour children
+check Outlines on
+delay 300
+shot 02_u_slow_children.png
+dock hierarchyTree u_cnt
+assert_label hierarchyStats u_slow.u_cnt
+# the Cells tab shows only the cells of the selected instance (the box is on); the top level: all of them
+tab Cells
+check Only instance u_slow.u_cnt on
+shot 03_cells_of_u_cnt.png
+dock hierarchyTree (top)
+# the filter leaves the matching instances and those above them
+settext hierarchyFilter fast
+dock hierarchyTree
+dock hierarchyTree u_fast
+settext hierarchyFilter
+button Clear colours
+check Outlines off
+# saved and loaded: the same instances with the same cells
+dock hierarchyTree
+savejson hier_placed.json
+openjson hier_placed.json
+delay 1200
+assert_label hierarchyHeader 3 instances
+dock hierarchyTree
+dock hierarchyTree u_fast
+assert_label hierarchyStats u_fast

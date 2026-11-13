@@ -81,6 +81,26 @@ is only reachable from its own CPE.
   click zooms there. A cell not placed yet is placed by the next click instead (for an IO cell: its pad).
 - **Timing** dock (`T` runs the analysis): Fmax per clock and the critical path on the design as it is
   (unplaced cells left out, open arcs with estimated delays); "Highlight critical path" draws it.
+- **Hierarchy** dock (open on the left; View menu): the instance tree of the design with, per instance, its cells
+  (with the instances below it), its share of the design and its "area use" (of the sites, GateMate: CPEs, inside
+  the bounding box of its placed cells, the share it uses: low for an instance spread out over the chip). A ticked
+  instance is coloured in the device view (instances ticked below it keep their own colour); nothing is coloured at
+  first. **Colour children** colours each instance below the selected one and nothing else, **Outlines** draws each
+  coloured instance's bounding box with its name, the context menu changes a colour. Selecting an instance selects
+  its cells as a selection by hand in the Cells tab would (a selected cell is drawn without its colour, so that the
+  selection shows), and the Cells tab shows only them ("Only instance ...", off for all cells); the top level shows
+  everything again. A double click also zooms to the cells. Below the tree: the cells, sites used, area and region
+  constraints of the selected instance and the bel types it uses against the device (the top level row: the
+  utilisation of the whole design). The colours belong to the dock: closed, they go.
+
+  A flattened netlist keeps little of its hierarchy, so the dock works out where each cell belongs
+  (`common/kernel/design_scopes.h`): the hierarchy nextpnr flattened itself, the `hdlname` / `scopename` attribute
+  yosys left, else the instance in which all named nets of the cell are visible (a public net name of a flattened
+  design is the dotted path of its instance, and a net has one name per instance it passes through), else its
+  neighbours. The header says how many cells went which way. This needs the net names: synthesize with
+  `synth_gatemate ... -run :vlog` (the `opt_clean -purge` of the full script drops most of them).
+  Save JSON keeps the other names of each net (attribute `nextpnr_aliases`), so a reloaded design or an imported
+  partition (its names under the instance) shows the same instances.
 - **File > Save JSON** writes the design at any stage (packed, partly placed, partly routed, with the locks)
   and **File > Open JSON** (or `--json <file> --gui`) continues it where it was: the placement, routing and
   strengths are attributes of the cells and nets, and what the GateMate packer worked out (clusters, regions,

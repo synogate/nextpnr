@@ -47,6 +47,7 @@ set(TEST_SOURCES
     tests/ccf.cc
     tests/clocking.cc
     tests/config_output.cc
+    tests/design_scopes.cc
     tests/errors.cc
     tests/gui.cc
     tests/harness.cc
