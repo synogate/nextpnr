@@ -16,6 +16,7 @@
     counter_part  008-counter as module core synthesized without IO pads, with --vopt as-partition
     mux_part      designs/mux_core.v synthesized without IO pads, with --vopt as-partition
     hier          designs/hier_top.v (counters in instances) synthesized flattened, pins unconstrained
+    two_clocks    designs/two_clocks.v (two clocks, a falling edge, a path between the clocks), pins unconstrained
     counter_wrap  a top level instantiating the 008-counter (module core) as the blackbox u_core, with its CCF and
                   the counter implemented as a partition (placed and routed without the GUI) loaded into u_core
                   (--vopt partition=u_core:core_pnr.json; not packed)
@@ -107,6 +108,17 @@ function Get-Design([string]$name) {
                 if (-not (Test-Path $hier)) { throw "could not synthesize $hier (see $designs\hier_synth.log)" }
             }
             return @{ Json = $hier; Extra = "--vopt allow-unconstrained" }
+        }
+        "two_clocks" {
+            # designs/two_clocks.v: counters on two clocks (one on the falling edge) and a path between them
+            $two = Join-Path $designs "two_clocks.json"
+            if (-not (Test-Path $two)) {
+                Push-Location $designs
+                & $Yosys -ql two_clocks_synth.log -p "read_verilog -sv $here\designs\two_clocks.v; synth_gatemate -luttree -top top; write_json two_clocks.json"
+                Pop-Location
+                if (-not (Test-Path $two)) { throw "could not synthesize $two (see $designs\two_clocks_synth.log)" }
+            }
+            return @{ Json = $two; Extra = "--vopt allow-unconstrained" }
         }
         "counter_wrap" {
             $core = Join-Path $designs "core.json"

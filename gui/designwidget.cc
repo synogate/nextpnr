@@ -1593,7 +1593,20 @@ void DesignWidget::onSelectionChanged(int num, const QItemSelection &, const QIt
         QString source = st.source != WireId() ? ctx->nameOfWire(st.source) : "";
         addProperty(routingItem, QtType::QString, "Source Wire", source, ElementType::WIRE);
         QtProperty *arcsItem = addSubGroup(routingItem, "Arcs");
-        for (auto &arc : st.arcs) {
+        // (only the first ones, as for the users: those not routed first, so that what is missing shows)
+        std::vector<const NetStatus::Arc *> arcs;
+        for (auto &arc : st.arcs)
+            arcs.push_back(&arc);
+        std::stable_partition(arcs.begin(), arcs.end(), [](const NetStatus::Arc *arc) {
+            return arc->state != NetStatus::ArcState::ROUTED || arc->blocked;
+        });
+        if (int(arcs.size()) > MAX_LISTED) {
+            addProperty(arcsItem, QtType::QString, "Warning",
+                        QString("%1 more arcs not listed").arg(int(arcs.size()) - MAX_LISTED), ElementType::NONE);
+            arcs.resize(MAX_LISTED);
+        }
+        for (const NetStatus::Arc *arc_ptr : arcs) {
+            const NetStatus::Arc &arc = *arc_ptr;
             QString name = QString("%1.%2").arg(arc.cell.c_str(ctx)).arg(arc.port.c_str(ctx));
             if (arc.phys_idx > 0)
                 name += QString(" [%1]").arg(arc.phys_idx);

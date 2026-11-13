@@ -81,6 +81,14 @@ is only reachable from its own CPE.
   click zooms there. A cell not placed yet is placed by the next click instead (for an IO cell: its pad).
 - **Timing** dock (`T` runs the analysis): Fmax per clock and the critical path on the design as it is
   (unplaced cells left out, open arcs with estimated delays); "Highlight critical path" draws it.
+- **Clocks** tab (beside Paths): every clock of the packed design (the clock nets of the timing analysis and the
+  constrained nets), the busiest first, with its target (the net's constraint, else the default target in
+  italics), the achieved Fmax of the paths within it, the setup WNS / TNS and hold WNS of the endpoints it captures
+  (failing endpoints in brackets), the cells it clocks, the edges used, the skew (the spread of the routing delays
+  to its clock inputs, "est." while not all of them are routed) and the driver. Below: the details of the selected
+  clock (constraint with high / low time, driver and its bel, routed clock inputs, related clocks with their
+  clock-to-clock delay) and the paths between clocks (launch -> capture, whether the clocks are related, worst
+  setup / hold slack, endpoints) of that clock, else all of them. A double click shows the clock net.
 - **Hierarchy** dock (open on the left; View menu): the instance tree of the design with, per instance, its cells
   (with the instances below it), its share of the design and its "area use" (of the sites, GateMate: CPEs, inside
   the bounding box of its placed cells, the share it uses: low for an instance spread out over the chip). A ticked

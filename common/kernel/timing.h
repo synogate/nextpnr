@@ -96,6 +96,16 @@ struct TimingAnalyser
 
     dict<std::pair<IdString, IdString>, delay_t> get_clock_delays() const { return clock_delays; }
 
+    // The clock edges that clock cells of the design (not async)
+    std::vector<ClockEvent> get_clock_events() const
+    {
+        std::vector<ClockEvent> events;
+        for (auto &dom : domains)
+            if (!dom.key.is_async())
+                events.push_back(ClockEvent{dom.key.clock, dom.key.edge});
+        return events;
+    }
+
     TimingResult &get_timing_result() { return result; }
 
     // The timing of one endpoint for one launch/capture domain pair

@@ -45,6 +45,7 @@ class PythonTab;
 class EditStack;
 class DesignWidget;
 class TimingWidget;
+class ClocksWidget;
 class PinsWidget;
 class FPGAViewWidget;
 class RouteDock;
@@ -186,6 +187,7 @@ class BaseMainWindow : public QMainWindow
     PythonTab *console;
     DesignWidget *designview;
     TimingWidget *timingview;
+    ClocksWidget *clocksview;
     PinsWidget *pinsview;
     QTabWidget *rightTabWidget;
     FPGAViewWidget *fpgaView;

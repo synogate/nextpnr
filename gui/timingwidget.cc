@@ -26,6 +26,8 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
+#include "log.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -79,6 +81,7 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
     vbox1->addWidget(pathList);
 
     summary = new QLabel();
+    summary->setObjectName("pathSummary");
     summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
     summary->setWordWrap(true);
 
@@ -161,9 +164,17 @@ void TimingWidget::analyse()
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QString error;
     note.clear();
-    {
+    analyser.reset();
+    endpoints.clear();
+    // (the cells of an unpacked design have no timing: the analysis would end in an error)
+    if (!ctx->settings.count(ctx->id("pack"))) {
+        error = "The design is not packed: the paths are listed once it is.";
+    } else {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
+        // Catch the error message (log_error) for the summary
+        std::ostringstream errors;
+        log_streams.push_back(std::make_pair(&errors, LogLevel::ERROR_MSG));
         try {
             analyser = std::make_unique<TimingAnalyser>(ctx);
             analyser->setup_only = false;
@@ -174,11 +185,21 @@ void TimingWidget::analyse()
             endpoints = analyser->get_endpoint_timings();
             if (analyser->have_loops)
                 note = "Combinational loops ignored.";
+        } catch (const log_execution_error_exception &) {
+            analyser.reset();
+            endpoints.clear();
+            QString msg = QString::fromStdString(errors.str()).trimmed();
+            error = QString("Timing analysis failed: %1").arg(msg.isEmpty() ? "see the log" : msg);
         } catch (std::exception &e) {
             analyser.reset();
             endpoints.clear();
             error = QString("Timing analysis failed: %1").arg(e.what());
         }
+        for (auto it = log_streams.begin(); it != log_streams.end(); ++it)
+            if (it->first == &errors) {
+                log_streams.erase(it);
+                break;
+            }
     }
 
     // The clock edges to filter for, on both sides all of them and async (so that every combination can be

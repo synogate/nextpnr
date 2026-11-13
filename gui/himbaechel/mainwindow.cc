@@ -22,6 +22,7 @@
 #include <QMessageBox>
 #include "../fpgaviewwidget.h"
 #include "../pinswidget.h"
+#include "../clockswidget.h"
 #include "../timingwidget.h"
 #include "partitionwidget.h"
 
@@ -130,6 +131,7 @@ void MainWindow::repair_progress()
     } else if (ctx->repair_waiting) {
         ctx->repair_progress = false;
         timingview->designChanged();
+        clocksview->designChanged();
         ctx->repair_ui_wants = false;
     }
 }

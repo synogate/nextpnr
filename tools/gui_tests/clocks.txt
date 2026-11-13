@@ -1,0 +1,41 @@
+# Clocks tab (beside Paths): the clocks of the design with constraint, Fmax, slacks, endpoints, clocked cells,
+# edges, skew and driver; the details of a selected clock and the paths between clocks (designs/two_clocks.v: a
+# counter on clk_a, one on the falling edge of clk_b, a register stage from clk_a into clk_b).
+# design: two_clocks
+resize 1600 1000
+delay 600
+# before packing neither tab analyses (no error from the unpacked cells)
+tab Paths
+assert_label pathSummary not packed
+tab Clocks
+assert_label clockHeader not packed
+action Pack
+waitidle
+delay 400
+tab Paths
+assert_label pathSummary paths
+tab Clocks
+dock clockList
+assert_label clockHeader 2 clocks
+action Place
+waitidle
+delay 400
+dock clockList
+dock clockList $iopadmap$clk_a
+assert_label clockSummary Constraint: none, default target
+assert_label clockSummary Fmax:
+assert_label clockSummary of them 16 clocked cells
+dock clockList $iopadmap$clk_b
+assert_label clockSummary of them 8 clocked cells
+assert_label clockSummary Related clocks: none
+dock clockCrossings
+shot 01_placed.png
+action Route
+waitidle
+delay 400
+dock clockList $iopadmap$clk_b
+assert_label clockSummary clock inputs routed
+assert_nolabel clockSummary (estimated)
+dock clockList
+dock clockCrossings
+shot 02_routed.png

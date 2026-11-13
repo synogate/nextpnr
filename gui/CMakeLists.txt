@@ -46,6 +46,8 @@ set(GUI_SOURCES
     pinswidget.h
     timingwidget.cc
     timingwidget.h
+    clockswidget.cc
+    clockswidget.h
     timingdock.cc
     timingdock.h
     treemodel.cc
