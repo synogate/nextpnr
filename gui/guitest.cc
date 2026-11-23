@@ -19,6 +19,7 @@
 
 #include <QAbstractButton>
 #include <QAction>
+#include <QComboBox>
 #include <QApplication>
 #include <QDialog>
 #include <QDir>
@@ -1206,6 +1207,27 @@ bool GuiTest::exec(const QStringList &w, const QString &line)
             return false;
         }
         e->setText(QStringList(w.mid(2)).join(' '));
+        return true;
+    }
+    if (cmd == "combo") {
+        // combo <object name> <text>: picks the entry of a combo box
+        if (!need(2))
+            return false;
+        QComboBox *box = win_->findChild<QComboBox *>(w.at(1));
+        if (box == nullptr) {
+            error_ = "no combo box " + w.at(1);
+            return false;
+        }
+        QString text = QStringList(w.mid(2)).join(' ');
+        if (!box->isEnabled()) {
+            error_ = "combo box " + w.at(1) + " is disabled";
+            return false;
+        }
+        if (box->findText(text) < 0) {
+            error_ = "combo box " + w.at(1) + " has no entry '" + text + "'";
+            return false;
+        }
+        box->setCurrentText(text);
         return true;
     }
     if (cmd == "dock") {

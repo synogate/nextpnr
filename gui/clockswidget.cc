@@ -80,6 +80,12 @@ ClocksWidget::ClocksWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
     topWidget->setLayout(vbox1);
     vbox1->setSpacing(5);
     vbox1->setContentsMargins(0, 0, 0, 0);
+    cornerRow = new QWidget();
+    cornerRow->setObjectName("clockCorner");
+    cornerLayout = new QHBoxLayout(cornerRow);
+    cornerLayout->setContentsMargins(0, 0, 0, 0);
+    cornerRow->hide();
+    vbox1->addWidget(cornerRow);
     vbox1->addWidget(header);
     vbox1->addWidget(clockList);
 
@@ -131,6 +137,37 @@ ClocksWidget::ClocksWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
             Q_EMIT focusNet(clocks.at(index).net);
     });
 }
+
+void ClocksWidget::setCornerOptions(std::vector<PnrOption> options)
+{
+    while (QLayoutItem *item = cornerLayout->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+    cornerBoxes.clear();
+    cornerOptions = std::move(options);
+    for (size_t i = 0; i < cornerOptions.size(); i++) {
+        const PnrOption &option = cornerOptions[i];
+        QLabel *label = new QLabel(option.label + ":");
+        label->setToolTip(option.help);
+        QComboBox *box = new QComboBox();
+        box->setObjectName("clockCorner_" + option.key);
+        box->setToolTip(option.help);
+        box->addItems(option.choices);
+        box->setCurrentText(option.get().toString());
+        connect(box, &QComboBox::currentTextChanged, this, [this, i](const QString &text) {
+            cornerOptions.at(i).set(text);
+            Q_EMIT cornerChanged();
+        });
+        cornerLayout->addWidget(label);
+        cornerLayout->addWidget(box);
+        cornerBoxes.push_back(box);
+    }
+    cornerLayout->addStretch(1);
+    cornerRow->setVisible(!cornerOptions.empty());
+}
+
+void ClocksWidget::setCornerEnabled(bool enabled) { cornerRow->setEnabled(enabled); }
 
 void ClocksWidget::newContext(Context *ctx)
 {

@@ -198,6 +198,11 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(timingDock, &TimingDock::focusCell, this, &BaseMainWindow::focusCell);
     connect(timingDock, &TimingDock::focusNet, this, &BaseMainWindow::focusNet);
     connect(clocksview, &ClocksWidget::focusNet, this, &BaseMainWindow::focusNet);
+    connect(clocksview, &ClocksWidget::cornerChanged, this, &BaseMainWindow::timingCornerChanged);
+    // (queued: when loading a design, ctx is replaced right after the signal, and the options refer to it)
+    connect(
+            this, &BaseMainWindow::contextChanged, clocksview,
+            [this] { clocksview->setCornerOptions(timingCornerOptions()); }, Qt::QueuedConnection);
     connect(timingDock, &TimingDock::criticalPathChanged, fpgaView, &FPGAViewWidget::setCriticalPath);
 
     // Catch close tab events
@@ -1323,21 +1328,52 @@ std::vector<PnrOption> BaseMainWindow::pnrOptions()
     return options;
 }
 
+QStringList BaseMainWindow::timingCorner()
+{
+    QStringList values;
+    for (auto &option : timingCornerOptions())
+        values << option.label + " " + option.get().toString();
+    return values;
+}
+
+void BaseMainWindow::optionsApplied(const QStringList &cornerBefore)
+{
+    if (timingCorner() != cornerBefore) {
+        // (the Clocks tab shows it too)
+        clocksview->setCornerOptions(timingCornerOptions());
+        timingCornerChanged();
+    } else
+        optionsChanged();
+}
+
 void BaseMainWindow::options()
 {
     PnrOptionsDialog dialog(pnrOptions(), nextStep(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
+    QStringList corner = timingCorner();
     auto changed = dialog.apply();
     if (changed.empty())
         return;
-    optionsChanged();
     for (auto &line : changed)
         log("Option %s\n", line.c_str());
+    optionsApplied(corner);
+}
+
+void BaseMainWindow::timingCornerChanged()
+{
+    if (taskRunning)
+        return;
+    optionsChanged();
+    log("Timing corner: %s\n", timingCorner().join(", ").toStdString().c_str());
+    timingview->designChanged();
+    clocksview->designChanged();
+    timingDock->designEdited();
 }
 
 void BaseMainWindow::disableActions()
 {
+    clocksview->setCornerEnabled(false);
     actionLoadJSON->setEnabled(true);
     actionPack->setEnabled(false);
     actionPlace->setEnabled(false);
@@ -1358,6 +1394,7 @@ void BaseMainWindow::updateActions()
     // (all stay disabled while a pass runs, see taskStarted)
     if (taskRunning)
         return;
+    clocksview->setCornerEnabled(true);
     // Hand work is iterative: Place again whenever cells are unplaced (the placer keeps the placed ones where
     // they are), Route again whenever everything is placed (the router keeps the routing that is there and
     // routes what is missing, e.g. after unrouting nets or moving cells)

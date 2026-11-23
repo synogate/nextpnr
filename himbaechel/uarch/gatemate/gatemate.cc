@@ -249,19 +249,14 @@ void GateMateImpl::init_database(Arch *arch)
     arch->load_chipdb(stringf("gatemate/chipdb-%s.bin", args.device.c_str()));
     arch->set_package("FBGA324");
     dies = std::stoi(args.device.substr(6));
-    fpga_mode = 3;
-    timing_mode = 3;
+    // (sets timing_mode and fpga_mode)
+    read_options(args);
+    log_speed_grade();
+    arch->set_speed_grade(speed_grade_name(timing_mode, fpga_mode));
+}
 
-    static const std::map<std::string, int> fpga_map = {{"lowpower", 1}, {"economy", 2}, {"speed", 3}};
-    static const std::map<std::string, int> timing_map = {{"best", 1}, {"typical", 2}, {"worst", 3}};
-
-    if (args.options.count("fpga_mode"))
-        fpga_mode = parse_mode(args.options["fpga_mode"].as<std::string>(), fpga_map,
-                               "performance valid values are {1:lowpower, 2:economy, 3:speed}.\n");
-    if (args.options.count("time_mode"))
-        timing_mode = parse_mode(args.options["time_mode"].as<std::string>(), timing_map,
-                                 "timing valid values are {1:best, 2:typical, 3:worst}.\n");
-
+void GateMateImpl::log_speed_grade() const
+{
     log_info("Using timing mode '%s'.\n", timing_mode == 1   ? "BEST"
                                           : timing_mode == 2 ? "TYPICAL"
                                           : timing_mode == 3 ? "WORST"
@@ -270,8 +265,6 @@ void GateMateImpl::init_database(Arch *arch)
                                                : fpga_mode == 2 ? "ECONOMY"
                                                : fpga_mode == 3 ? "SPEED"
                                                                 : "");
-    arch->set_speed_grade(speed_grade_name(timing_mode, fpga_mode));
-    read_options(args);
 }
 
 void GateMateImpl::select_speed_grade(int new_timing_mode, int new_fpga_mode)
@@ -323,6 +316,17 @@ void GateMateImpl::read_options(const ArchArgs &args)
     lut_swap_rounds = 0;
     swap_pairs = swap_halves = true;
     sb_y_cost = sb_ydiag_cost = 0;
+    // The speed grade; optionsChanged selects it when it changed (the GUI's Clocks tab and options)
+    static const std::map<std::string, int> fpga_map = {{"lowpower", 1}, {"economy", 2}, {"speed", 3}};
+    static const std::map<std::string, int> timing_map = {{"best", 1}, {"typical", 2}, {"worst", 3}};
+    fpga_mode = 3;
+    timing_mode = 3;
+    if (args.options.count("fpga_mode"))
+        fpga_mode = parse_mode(args.options["fpga_mode"].as<std::string>(), fpga_map,
+                               "performance valid values are {1:lowpower, 2:economy, 3:speed}.\n");
+    if (args.options.count("time_mode"))
+        timing_mode = parse_mode(args.options["time_mode"].as<std::string>(), timing_map,
+                                 "timing valid values are {1:best, 2:typical, 3:worst}.\n");
     check_corners.clear();
     if (args.options.count("timing-corners")) {
         static const std::map<std::string, int> corner_map = {
@@ -615,7 +619,14 @@ void GateMateImpl::prepare_options()
 
 void GateMateImpl::optionsChanged()
 {
+    std::string grade = speed_grade_name(timing_mode, fpga_mode);
     read_options(ctx->args);
+    if (speed_grade_name(timing_mode, fpga_mode) != grade) {
+        // For all that follows: the timing analysis, the placer and router (their delay tables are built again in
+        // prepare_options, keyed by the speed grade) and the bitstream
+        select_speed_grade(timing_mode, fpga_mode);
+        log_speed_grade();
+    }
     prepare_options();
 }
 

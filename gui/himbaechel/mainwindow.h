@@ -43,6 +43,7 @@ class MainWindow : public BaseMainWindow
     void onUpdateActions() override;
     bool beforePack() override;
     std::vector<PnrOption> pnrOptions() override;
+    std::vector<PnrOption> timingCornerOptions() override;
     PnrStep nextStep() override;
     void optionsChanged() override;
     bool setArchOption(const std::string &key, const QJsonValue &value, QString &error) override;

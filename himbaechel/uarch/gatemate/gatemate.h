@@ -417,6 +417,7 @@ struct GateMateImpl : HimbaechelAPI
     std::string corner_sdf_prefix;
     // Selects the speed grade of a timing mode and performance mode (1..3 each) and the delays it has
     void select_speed_grade(int timing_mode, int fpga_mode);
+    void log_speed_grade() const;
     void check_timing_corners();
     std::map<const NetInfo *, int> global_signals;
     dict<std::pair<IdString, int>, NetInfo *> global_mapping;

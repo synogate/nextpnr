@@ -92,6 +92,7 @@
  *   button <text>              click the visible push button whose text starts with text (fails if
  *                              it is disabled)
  *   settext <objectName> [text] set the text of a line edit (e.g. routeTarget in the route dock); no text: clear it
+ *   combo <objectName> <text>  pick the entry of a combo box (e.g. clockCorner_time_mode best in the Clocks tab)
  *   dock cands|steps|sinks|<objectName> [text]
  *                              route dock lists: without text, log the rows; with text, activate
  *                              the row with a column starting with text (cands / sinks: like a

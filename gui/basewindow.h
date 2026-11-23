@@ -94,6 +94,16 @@ class BaseMainWindow : public QMainWindow
     virtual PnrStep nextStep();
     // After options changed
     virtual void optionsChanged() {}
+    // The choices of the timing corner the Clocks tab offers (Choice options, set like those of the options
+    // dialog); they hold for the whole program: the timing views, and the placer and router that run after
+    virtual std::vector<PnrOption> timingCornerOptions() { return {}; }
+    // After the timing corner changed: the options taken over, the timing views analysed again
+    void timingCornerChanged();
+    // The values of timingCornerOptions, to compare
+    QStringList timingCorner();
+    // After options were set (dialog, MCP): optionsChanged, or timingCornerChanged if the corner is another
+    // than cornerBefore
+    void optionsApplied(const QStringList &cornerBefore);
     // Sets an option of the architecture as --vopt does (null: unset it); false, with the reason in
     // error, if it cannot
     virtual bool setArchOption(const std::string &key, const QJsonValue &value, QString &error);

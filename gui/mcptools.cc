@@ -559,6 +559,7 @@ void BaseMainWindow::mcpTool(const QString &name, const QJsonObject &args, McpSe
         auto editable = [open](const PnrOption &o) { return o.step == PnrStep::General || o.step >= open; };
         QString errors;
         QStringList changed;
+        QStringList corner = timingCorner();
         QJsonObject set = args["set"].toObject();
         for (auto it = set.begin(); it != set.end(); ++it) {
             QString key = it.key();
@@ -589,9 +590,9 @@ void BaseMainWindow::mcpTool(const QString &name, const QJsonObject &args, McpSe
             changed << QString("%1: %2").arg(o->label, option_text(*o, o->get ? o->get() : v));
         }
         if (!changed.isEmpty()) {
-            optionsChanged();
             for (auto &line : changed)
                 log("Option %s\n", line.toUtf8().constData());
+            optionsApplied(corner);
         }
         QString text;
         if (!changed.isEmpty())

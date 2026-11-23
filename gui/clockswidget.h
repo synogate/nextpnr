@@ -18,10 +18,13 @@
 #ifndef CLOCKSWIDGET_H
 #define CLOCKSWIDGET_H
 
+#include <QComboBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QTreeWidget>
 #include <vector>
 #include "nextpnr.h"
+#include "pnroptions.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -35,11 +38,18 @@ class ClocksWidget : public QWidget
   public:
     explicit ClocksWidget(QWidget *parent = 0);
 
+    // The choices of the timing corner (Choice options, e.g. the speed grade and the core voltage), shown above the
+    // clocks; empty for none. A change sets the option and emits cornerChanged.
+    void setCornerOptions(std::vector<PnrOption> options);
+    // Off while a step of the flow runs
+    void setCornerEnabled(bool enabled);
+
   protected:
     void showEvent(QShowEvent *event) override;
 
   Q_SIGNALS:
     void focusNet(IdString net);
+    void cornerChanged();
 
   public Q_SLOTS:
     void newContext(Context *ctx);
@@ -87,6 +97,10 @@ class ClocksWidget : public QWidget
     std::vector<Clock> clocks;
     std::vector<Crossing> crossings;
 
+    std::vector<PnrOption> cornerOptions;
+    std::vector<QComboBox *> cornerBoxes;
+    QWidget *cornerRow;
+    QHBoxLayout *cornerLayout;
     QLabel *header;
     QTreeWidget *clockList;
     QLabel *summary;

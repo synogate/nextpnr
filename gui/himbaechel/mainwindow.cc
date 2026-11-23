@@ -397,6 +397,52 @@ std::vector<PnrOption> MainWindow::pnrOptions()
 
     add(file(finish, "Bitstream", "Bitstream file", "Textual configuration, written when finishing", "out",
              PnrOption::SaveFile));
+    for (auto &o : timingCornerOptions())
+        add(o);
+    return options;
+}
+
+std::vector<PnrOption> MainWindow::timingCornerOptions()
+{
+    std::vector<PnrOption> options;
+    if (ctx->args.device.rfind("CCGM", 0) != 0)
+        return options;
+    // time_mode and fpga_mode as --vopt has them (1..3, or the names), 3 when not given
+    auto &vopts = ctx->args.options;
+    auto mode = [&vopts](const char *key, const char *label, const char *help, QStringList names,
+                         QStringList choices) {
+        PnrOption o{PnrStep::General, "Timing corner", label, help, PnrOption::Choice, choices.back()};
+        o.key = key;
+        o.choices = choices;
+        o.get = [&vopts, key, names, choices]() -> QVariant {
+            int index = 2;
+            if (vopts.count(key)) {
+                QString value = QString::fromStdString(vopts[key].as<std::string>());
+                bool number = false;
+                int n = value.toInt(&number);
+                if (number && n >= 1 && n <= 3)
+                    index = n - 1;
+                else if (names.contains(value))
+                    index = names.indexOf(value);
+            }
+            return choices.at(index);
+        };
+        o.set = [&vopts, key, choices](const QVariant &v) {
+            int index = choices.indexOf(v.toString());
+            vopts.erase(key);
+            if (index >= 0 && index != 2)
+                vopts.insert(std::make_pair(key, po::variable_value(boost::any(std::to_string(index + 1)), false)));
+        };
+        return o;
+    };
+    options.push_back(mode("time_mode", "Speed grade",
+                           "The process corner of the delays: the timing views, and the placer and router that run "
+                           "after",
+                           {"best", "typical", "worst"}, {"best", "typical", "worst"}));
+    options.push_back(mode("fpga_mode", "VCORE",
+                           "The core voltage (the performance mode): the delays, as with the speed grade",
+                           {"lowpower", "economy", "speed"},
+                           {"0.9 V (low power)", "1.0 V (economy)", "1.1 V (speed)"}));
     return options;
 }
 

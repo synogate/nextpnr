@@ -1,0 +1,36 @@
+# Timing corner in the Clocks tab: speed grade (best / typical / worst) and VCORE, for the whole program. Chosen
+# before packing it holds for the placer and router; changed afterwards the Clocks and Paths tabs analyse again
+# (designs/two_clocks.v).
+# design: two_clocks
+resize 1600 1000
+delay 600
+tab Clocks
+combo clockCorner_time_mode typical
+action Pack
+waitidle
+delay 400
+action Place
+waitidle
+action Route
+waitidle
+delay 400
+tab Clocks
+dock clockList $iopadmap$clk_a
+label clockSummary
+shot 01_typical.png
+combo clockCorner_time_mode best
+delay 600
+dock clockList $iopadmap$clk_a
+label clockSummary
+tab Paths
+label pathSummary
+tab Clocks
+combo clockCorner_time_mode worst
+combo clockCorner_fpga_mode 0.9 V (low power)
+delay 600
+dock clockList $iopadmap$clk_a
+label clockSummary
+tab Paths
+label pathSummary
+tab Clocks
+shot 02_worst_lowpower.png
