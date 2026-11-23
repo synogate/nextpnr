@@ -101,6 +101,9 @@ struct Context : Arch, DeterministicRNG
     // provided by timing_log.cc
     void log_timing_results(TimingResult &result, bool print_histogram, bool print_fmax, bool print_path,
                             bool warn_on_failure);
+    // Only the hold/min time violations of the result (errors unless timing/allowFail), as log_timing_results with
+    // print_path shows them
+    void log_hold_violations(TimingResult &result);
 
     // provided by sdc.cc
     void read_sdc(std::istream &in);

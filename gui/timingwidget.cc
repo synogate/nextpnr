@@ -48,6 +48,7 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
     latchCombo->addItem("All", QString());
 
     sortCombo = new QComboBox();
+    sortCombo->setObjectName("pathSort");
     sortCombo->addItem("Setup slack", SETUP_SLACK);
     sortCombo->addItem("Hold slack", HOLD_SLACK);
     sortCombo->addItem("Delay", DELAY);
@@ -86,6 +87,7 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
     summary->setWordWrap(true);
 
     segmentList = new QTreeWidget();
+    segmentList->setObjectName("pathSegments");
     segmentList->setColumnCount(6);
     segmentList->setHeaderLabels({"Type", "Delay [ns]", "Total [ns]", "From", "To", "Net"});
     segmentList->setRootIsDecorated(false);

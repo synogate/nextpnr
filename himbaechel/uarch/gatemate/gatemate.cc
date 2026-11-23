@@ -2016,6 +2016,21 @@ void GateMateImpl::finishRoute()
     unbind_virtual_tails();
     ctx->assignArchInfo();
 
+    // The bridges, CP lines and pass-through LUTs are cells now, with delays other than the pips they were
+    // analysed as: the timing (hold included) of what goes into the bitstream
+    {
+        log_break();
+        log_info("Timing of the finished routing:\n");
+        TimingAnalyser tmg(ctx);
+        tmg.setup_only = false;
+        tmg.with_clock_skew = true;
+        tmg.setup(ctx->detailed_timing_report, true, true);
+        auto &result = tmg.get_timing_result();
+        ctx->log_timing_results(result, false, true, false, false);
+        ctx->log_hold_violations(result);
+        ctx->timing_result = result;
+    }
+
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {
         write_bitstream(args.device, args.options["out"].as<std::string>());

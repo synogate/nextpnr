@@ -38,7 +38,8 @@ static std::string clock_event_name(const Context *ctx, const ClockEvent &e, int
     return value;
 };
 
-static void log_crit_paths(const Context *ctx, TimingResult &result)
+// hold_only: only the hold/min time violations, not the critical paths
+static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_only = false)
 {
     auto print_net_source = [ctx](const NetInfo *net) {
         // Check if this net is annotated with a source list
@@ -150,6 +151,8 @@ static void log_crit_paths(const Context *ctx, TimingResult &result)
 
     // Single domain paths
     for (auto &clock : result.clock_paths) {
+        if (hold_only)
+            break;
         log_break();
         std::string start =
                 clock.second.clock_pair.start.edge == FALLING_EDGE ? std::string("negedge") : std::string("posedge");
@@ -163,6 +166,8 @@ static void log_crit_paths(const Context *ctx, TimingResult &result)
 
     // Cross-domain paths
     for (auto &report : result.xclock_paths) {
+        if (hold_only)
+            break;
         log_break();
         std::string start = clock_event_name(ctx, report.clock_pair.start);
         std::string end = clock_event_name(ctx, report.clock_pair.end);
@@ -427,6 +432,8 @@ static void log_tns(const TimingResult &result)
         }
     log_info("Total negative slack: %.3f ns over %d failing endpoint(s)\n", tns_ps / 1000.0, failing);
 }
+
+void Context::log_hold_violations(TimingResult &result) { log_crit_paths(this, result, true); }
 
 void Context::log_timing_results(TimingResult &result, bool print_histogram, bool print_fmax, bool print_path,
                                  bool warn_on_failure)
