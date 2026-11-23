@@ -411,6 +411,13 @@ struct GateMateImpl : HimbaechelAPI
     void ensure_pip_masks() const;
     int fpga_mode;
     int timing_mode;
+    // timing-corners: the corners (timing mode, performance mode) analysed again after the repairs, and the
+    // prefix of the SDF files written for each (timing-corners-sdf)
+    std::vector<std::pair<int, int>> check_corners;
+    std::string corner_sdf_prefix;
+    // Selects the speed grade of a timing mode and performance mode (1..3 each) and the delays it has
+    void select_speed_grade(int timing_mode, int fpga_mode);
+    void check_timing_corners();
     std::map<const NetInfo *, int> global_signals;
     dict<std::pair<IdString, int>, NetInfo *> global_mapping;
     dict<std::pair<IdString, int>, IdString> global_clk_mapping;

@@ -22,6 +22,7 @@
 #include <fstream>
 #include <queue>
 #include <regex>
+#include <sstream>
 #include <utility>
 
 #include "gatemate.h"
@@ -51,6 +52,13 @@ po::options_description GateMateImpl::getUArchOptions()
     specific.add_options()("fpga_mode", po::value<std::string>(),
                            "performance mode (1:lowpower, 2:economy, 3:speed (default))");
     specific.add_options()("time_mode", po::value<std::string>(), "timing mode (1:best, 2:typical, 3:worst (default))");
+    specific.add_options()("timing-corners", po::value<std::string>(),
+                           "after routing, analyse the timing of the routed design again for these corners, also those "
+                           "it was not placed and routed for (failing them is no error): 'all' (best, typ and worst in "
+                           "the performance mode) or a comma separated list of best, typ, worst, or with the "
+                           "performance mode like best_eco");
+    specific.add_options()("timing-corners-sdf", po::value<std::string>(),
+                           "with timing-corners, also write an SDF file <prefix>_<corner>.sdf for each corner");
     specific.add_options()("strategy", po::value<std::string>(),
                            "multi-die clock placement strategy (mirror (default), full or clk1)");
     specific.add_options()("force_die", po::value<std::string>(), "force specific die (example 1A,1B...)");
@@ -227,6 +235,13 @@ static int parse_mode(const std::string &val, const std::map<std::string, int> &
     log_error("Invalid mode='%s', %s", val.c_str(), error_msg);
 }
 
+// The chip database's speed grade of a timing mode and a performance mode (1..3 each), like worst_spd
+static std::string speed_grade_name(int timing_mode, int fpga_mode)
+{
+    std::string name = timing_mode == 1 ? "best_" : timing_mode == 2 ? "typ_" : "worst_";
+    return name + (fpga_mode == 1 ? "lpr" : fpga_mode == 2 ? "eco" : "spd");
+}
+
 void GateMateImpl::init_database(Arch *arch)
 {
     const ArchArgs &args = arch->args;
@@ -247,39 +262,51 @@ void GateMateImpl::init_database(Arch *arch)
         timing_mode = parse_mode(args.options["time_mode"].as<std::string>(), timing_map,
                                  "timing valid values are {1:best, 2:typical, 3:worst}.\n");
 
-    std::string speed_grade = "";
-    switch (timing_mode) {
-    case 1:
-        speed_grade = "best_";
-        break;
-    case 2:
-        speed_grade = "typ_";
-        break;
-    default:
-        speed_grade = "worst_";
-        break;
-    }
     log_info("Using timing mode '%s'.\n", timing_mode == 1   ? "BEST"
                                           : timing_mode == 2 ? "TYPICAL"
                                           : timing_mode == 3 ? "WORST"
                                                              : "");
-
-    switch (fpga_mode) {
-    case 1:
-        speed_grade += "lpr";
-        break;
-    case 2:
-        speed_grade += "eco";
-        break;
-    default:
-        speed_grade += "spd";
-    }
     log_info("Using performance mode '%s'.\n", fpga_mode == 1   ? "LOWPOWER"
                                                : fpga_mode == 2 ? "ECONOMY"
                                                : fpga_mode == 3 ? "SPEED"
                                                                 : "");
-    arch->set_speed_grade(speed_grade);
+    arch->set_speed_grade(speed_grade_name(timing_mode, fpga_mode));
     read_options(args);
+}
+
+void GateMateImpl::select_speed_grade(int new_timing_mode, int new_fpga_mode)
+{
+    timing_mode = new_timing_mode;
+    fpga_mode = new_fpga_mode;
+    ctx->set_speed_grade(speed_grade_name(timing_mode, fpga_mode));
+    timing.clear();
+    const auto &sp = reinterpret_cast<const GateMateSpeedGradeExtraDataPOD *>(ctx->speed_grade->extra_data.get());
+    for (int i = 0; i < sp->timings.ssize(); i++)
+        timing.emplace(IdString(sp->timings[i].name), &sp->timings[i]);
+    // The clock tree delays found for another speed grade (the cache is keyed by the modes)
+    clock_tree_used.store(0, std::memory_order_release);
+}
+
+void GateMateImpl::check_timing_corners()
+{
+    if (check_corners.empty())
+        return;
+    int routed_timing_mode = timing_mode, routed_fpga_mode = fpga_mode;
+    for (auto [corner_timing, corner_fpga] : check_corners) {
+        std::string grade = speed_grade_name(corner_timing, corner_fpga);
+        bool routed_for = corner_timing == routed_timing_mode && corner_fpga == routed_fpga_mode;
+        log_info("Analysing timing corner '%s'%s...\n", grade.c_str(), routed_for ? " (placed and routed for)" : "");
+        select_speed_grade(corner_timing, corner_fpga);
+        // With the paths, which show the hold violations too; failing a corner is no error
+        timing_analysis(ctx, false, true, true, false, false);
+        if (!corner_sdf_prefix.empty()) {
+            std::string filename = corner_sdf_prefix + "_" + grade + ".sdf";
+            auto f = open_ofstream_and_log_error(filename, "SDF file");
+            ctx->writeSDF(f, false);
+            log_info("Wrote the SDF of corner '%s' to '%s'.\n", grade.c_str(), filename.c_str());
+        }
+    }
+    select_speed_grade(routed_timing_mode, routed_fpga_mode);
 }
 
 void GateMateImpl::read_options(const ArchArgs &args)
@@ -296,6 +323,38 @@ void GateMateImpl::read_options(const ArchArgs &args)
     lut_swap_rounds = 0;
     swap_pairs = swap_halves = true;
     sb_y_cost = sb_ydiag_cost = 0;
+    check_corners.clear();
+    if (args.options.count("timing-corners")) {
+        static const std::map<std::string, int> corner_map = {
+                {"best", 1}, {"typ", 2}, {"typical", 2}, {"worst", 3}};
+        static const std::map<std::string, int> mode_map = {{"lpr", 1}, {"eco", 2}, {"spd", 3}};
+        std::stringstream items(args.options["timing-corners"].as<std::string>());
+        std::string item;
+        std::vector<std::string> list;
+        while (std::getline(items, item, ',')) {
+            item.erase(0, item.find_first_not_of(" \t"));
+            item.erase(item.find_last_not_of(" \t") + 1);
+            if (item == "all")
+                list.insert(list.end(), {"best", "typ", "worst"});
+            else if (!item.empty())
+                list.push_back(item);
+        }
+        for (auto &item : list) {
+            size_t underscore = item.find('_');
+            auto corner = corner_map.find(item.substr(0, underscore));
+            auto mode = underscore == std::string::npos ? mode_map.end() : mode_map.find(item.substr(underscore + 1));
+            if (corner == corner_map.end() || (underscore != std::string::npos && mode == mode_map.end()))
+                log_error("Invalid timing corner '%s', valid are best, typ and worst, optionally followed by _lpr, "
+                          "_eco or _spd.\n",
+                          item.c_str());
+            std::pair<int, int> entry(corner->second, mode == mode_map.end() ? fpga_mode : mode->second);
+            if (std::find(check_corners.begin(), check_corners.end(), entry) == check_corners.end())
+                check_corners.push_back(entry);
+        }
+    }
+    corner_sdf_prefix.clear();
+    if (args.options.count("timing-corners-sdf"))
+        corner_sdf_prefix = args.options["timing-corners-sdf"].as<std::string>();
     use_cp_for_clk = args.options.count("clk-cp") == 1;
     use_cp_for_cpe = args.options.count("no-cpe-cp") == 0;
     use_bridges = args.options.count("no-bridges") == 0;
@@ -659,10 +718,7 @@ void GateMateImpl::init(Context *ctx)
                               ctx->getBelLocation(bel));
         }
     }
-    const auto &sp = reinterpret_cast<const GateMateSpeedGradeExtraDataPOD *>(ctx->speed_grade->extra_data.get());
-    for (int i = 0; i < sp->timings.ssize(); i++) {
-        timing.emplace(IdString(sp->timings[i].name), &sp->timings[i]);
-    }
+    select_speed_grade(timing_mode, fpga_mode);
     for (int num = 0; num < 2; num++) {
         int index = (num == 0) ? 0 : 2;
         ram_signal_clk.emplace(ctx->idf("ENA[%d]", index), RamPinInfo{RamPinKind::CTRL, false, num});
@@ -1457,6 +1513,8 @@ void GateMateImpl::restore_pass_backtrace()
 void GateMateImpl::postRoute()
 {
     repairRoute();
+    // On the routing as it stays, before finishRoute turns bridges and CP lines into cells
+    check_timing_corners();
     finishRoute();
 }
 
