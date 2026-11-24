@@ -394,17 +394,30 @@ struct TimingPathPoint
     IdString pin;
 };
 
-// set_multicycle_path: the paths from any object of from to any of to (an empty list matches everything) have
-// multiplier periods for setup (the capture edge moves by multiplier - 1 periods), or with hold, the hold check
-// moves back by multiplier periods from its default edge (one period before the setup edge).
-struct MulticyclePath
+// A timing exception of the SDC file, for the paths from any object of from to any of to (an empty list matches
+// everything).
+// - MULTICYCLE (set_multicycle_path): for setup, the paths have multiplier periods (the capture edge moves by
+//   multiplier - 1 periods); for hold, the hold check moves back by multiplier periods from its default edge (one
+//   period before the setup edge).
+// - FALSE_PATH (set_false_path): the paths are not timed. Recorded (and shown in the GUI with the paths it covers),
+//   but not applied by the timing analysis yet.
+struct TimingException
 {
+    enum Type
+    {
+        MULTICYCLE,
+        FALSE_PATH,
+    } type = MULTICYCLE;
     int multiplier = 1;
-    bool hold = false;
+    // The checks it is for: a multicycle path one of them, a false path both unless -setup or -hold
+    bool setup = true, hold = false;
     // The periods counted are those of the launch clock (-start), not the capture clock (-end); by default -end
     // for setup and -start for hold
     bool start = false;
     std::vector<TimingPathPoint> from, to;
+    // The command as written in the SDC file, and its line there
+    std::string source;
+    int line = 0;
 };
 
 struct ClockFmax

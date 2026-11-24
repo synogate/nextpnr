@@ -1,0 +1,79 @@
+# Exceptions tab (beside Clocks): the timing exceptions of the SDC file with the paths they match and apply to,
+# and in the Paths tab how the slacks of a path come about (required time from the clock and the multicycle path,
+# arrival time, the constraints on it). designs/multicycle.v with designs/multicycle.sdc: line 2 a multicycle
+# path overridden by the more specific one of line 3 (setup 2) and line 4 (hold 1), line 5 a false path (listed,
+# not applied).
+# design: multicycle
+resize 1600 1000
+delay 600
+# before packing: the exceptions are there, their paths not yet
+tab Exceptions
+assert_label exceptionSummary not packed
+action Pack
+waitidle
+action Place
+waitidle
+delay 400
+tab Exceptions
+assert_label exceptionSummary 4 timing exception(s)
+assert_label exceptionSummary False paths are listed, but not applied
+dock exceptionList
+shot 01_exceptions.png
+# the multicycle path of line 3 applies to the paths from the operands
+dock exceptionList set_multicycle_path 2 -setup
+dock exceptionPaths
+dock exceptionPaths posedge
+assert_label exceptionPathSummary applies to setup: 2 clock cycles
+assert_label exceptionPathSummary line 2: set_multicycle_path 4
+assert_label exceptionPathSummary overridden by line 3
+shot 02_multicycle_paths.png
+# the false path: matched, not applied
+dock exceptionList set_false_path
+dock exceptionPaths posedge
+assert_label exceptionPathSummary false path: not applied
+shot 03_false_path.png
+# Paths tab: the longest path between registers is a multicycle path from the operands (8 ns for the adder tree
+# at 250 MHz)
+tab Paths
+combo pathLaunch posedge $iopadmap$clk
+combo pathLatch posedge $iopadmap$clk
+combo pathSort Delay
+dock pathList posedge
+dock pathSlack
+dock pathSlack Setup check
+dock pathSlack Capture edge
+dock pathSlack Multicycle path: 2 cycles
+dock pathSlack Required time
+dock pathSlack Arrival time
+dock pathSlack Hold edge
+dock pathSlack Launch clock
+dock pathSlack applies to setup: 2 clock cycles: set_multicycle_path 2
+dock pathSlack overridden by line 3: set_multicycle_path 4
+dock pathSlack applies to hold
+shot 04_path_slack.png
+action Route
+waitidle
+delay 400
+tab Paths
+dock pathList posedge
+dock pathSlack Multicycle path: 2 cycles
+dock pathSlack Hold check
+dock pathSlack Hold edge
+dock pathSlack Capture clock delay
+dock pathSlack Launch clock delay
+dock pathSlack
+shot 05_routed_path_slack.png
+tab Exceptions
+assert_label exceptionSummary 4 timing exception(s)
+dock exceptionList set_multicycle_path 1 -hold
+dock exceptionPaths posedge
+assert_label exceptionPathSummary applies to hold
+# a path to an output pad: the launch clock delay in its arrival time adds up to the slack too
+tab Paths
+combo pathLatch async
+combo pathSort Setup slack
+dock pathList posedge
+dock pathSlack
+dock pathSlack Launch clock delay
+dock pathSlack Hold check
+shot 06_path_to_pad.png

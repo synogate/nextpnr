@@ -38,6 +38,7 @@
 #include "fpgaviewwidget.h"
 #include "timingwidget.h"
 #include "clockswidget.h"
+#include "exceptionswidget.h"
 #include "pinswidget.h"
 #include "guitest.h"
 #include "json_frontend.h"
@@ -87,12 +88,14 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     designview = new DesignWidget();
     timingview = new TimingWidget();
     clocksview = new ClocksWidget();
+    exceptionsview = new ExceptionsWidget();
     pinsview = new PinsWidget();
     rightTabWidget = new QTabWidget();
     rightTabWidget->setMinimumWidth(300);
     rightTabWidget->addTab(designview, "Design");
     rightTabWidget->addTab(timingview, "Paths");
     rightTabWidget->addTab(clocksview, "Clocks");
+    rightTabWidget->addTab(exceptionsview, "Exceptions");
     // The pins beside the cells and nets
     designview->addPage(pinsview, "Pins", 4);
     splitter_h->addWidget(rightTabWidget);
@@ -151,6 +154,7 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(this, &BaseMainWindow::contextChanged, designview, &DesignWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, timingview, &TimingWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, clocksview, &ClocksWidget::newContext);
+    connect(this, &BaseMainWindow::contextChanged, exceptionsview, &ExceptionsWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, pinsview, &PinsWidget::newContext);
     connect(this, &BaseMainWindow::contextChanged, editStack, &EditStack::setContext);
 
@@ -215,6 +219,8 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(designview, &DesignWidget::hover, fpgaView, &FPGAViewWidget::onHoverItemChanged);
     connect(timingview, &TimingWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
     connect(timingview, &TimingWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
+    connect(exceptionsview, &ExceptionsWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
+    connect(exceptionsview, &ExceptionsWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
     connect(pinsview, &PinsWidget::selected, fpgaView, &FPGAViewWidget::onSelectedArchItem);
     connect(pinsview, &PinsWidget::focusCell, this, &BaseMainWindow::focusCell);
     connect(pinsview, &PinsWidget::zoomSelected, fpgaView, &FPGAViewWidget::zoomSelected);
@@ -237,10 +243,12 @@ BaseMainWindow::BaseMainWindow(std::unique_ptr<Context> context, CommandHandler 
     connect(this, &BaseMainWindow::updateTreeView, designview, &DesignWidget::updateTree);
     connect(this, &BaseMainWindow::updateTreeView, timingview, &TimingWidget::designChanged);
     connect(this, &BaseMainWindow::updateTreeView, clocksview, &ClocksWidget::designChanged);
+    connect(this, &BaseMainWindow::updateTreeView, exceptionsview, &ExceptionsWidget::designChanged);
     // (the Paths tab lists the worst paths of the whole design; the Timing dock shows Fmax and the critical path
     // also of a partly placed or routed design)
     connect(editStack, &EditStack::designChanged, timingview, &TimingWidget::designChanged);
     connect(editStack, &EditStack::designChanged, clocksview, &ClocksWidget::designChanged);
+    connect(editStack, &EditStack::designChanged, exceptionsview, &ExceptionsWidget::designChanged);
     connect(this, &BaseMainWindow::updateTreeView, fpgaView, &FPGAViewWidget::refreshNetView);
 
     createMenusAndBars();
@@ -1368,6 +1376,7 @@ void BaseMainWindow::timingCornerChanged()
     log("Timing corner: %s\n", timingCorner().join(", ").toStdString().c_str());
     timingview->designChanged();
     clocksview->designChanged();
+    exceptionsview->designChanged();
     timingDock->designEdited();
 }
 

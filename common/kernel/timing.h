@@ -138,6 +138,34 @@ struct TimingAnalyser
         return build_critical_path_report(ep.domain_pair, ep.endpoint, longest_path);
     }
 
+    // How the required times of the paths of a launch/capture domain pair come about: from the clock constraints,
+    // and from the timing exceptions (ctx->timing_exceptions) whose -from and -to lists match the pair
+    struct PairConstraints
+    {
+        ClockPair clock_pair;
+        // The time from the launch to the capture edge that the clocks give (one period, or the time between the
+        // two edges of a clock), without multicycle paths
+        delay_t clock_required;
+        // The multicycle path: its clock cycles for setup, the time it adds to the required time, and how much
+        // later than the launch edge the hold check is
+        int setup_cycles;
+        delay_t setup_shift, hold_shift;
+        // The exceptions that apply to the setup and the hold check (-1: none)
+        int setup_exception, hold_exception;
+        // All exceptions matching the pair: also those a more specific or later one overrides, and false paths
+        std::vector<int> exceptions;
+    };
+    PairConstraints get_pair_constraints(domain_id_t domain_pair);
+
+    // The clock delays (the routing of the clock nets to the clock pins) that the analysis counts in the arrival
+    // time at the start point and in the required time at the end point of a path of an end point (with
+    // with_clock_skew; 0 for unclocked points)
+    struct PathClockDelays
+    {
+        delay_t launch = 0, capture = 0;
+    };
+    PathClockDelays get_clock_delays(const EndpointTiming &ep, const CriticalPath &path);
+
     // Enable analysis of clock skew between FFs.
     bool with_clock_skew = false;
 
@@ -155,12 +183,13 @@ struct TimingAnalyser
     void setup_port_domains();
     void identify_related_domains();
 
-    // The multicycle paths of the design, resolved for this analysis
-    void resolve_multicycle_paths();
+    // The timing exceptions of the design, resolved for this analysis
+    void resolve_timing_exceptions();
     // The domain tag of a start point (launch) or an end point (capture) clocked by clock_port
     int point_tag(CellPortKey port, IdString clock_port, bool launch);
-    // The cycles and the shifts of the setup and hold checks of a domain pair from its multicycle paths
-    void apply_multicycle_paths(domain_id_t pair);
+    // The cycles and the shifts of the setup and hold checks of a domain pair from its multicycle paths, and the
+    // exceptions matching it
+    void apply_timing_exceptions(domain_id_t pair);
     // Whether two domains are the same clock edge (they may differ in their tags)
     bool same_event(domain_id_t a, domain_id_t b) const
     {
@@ -282,15 +311,19 @@ struct TimingAnalyser
         // than the launch edge the hold check is
         int setup_cycles = 1;
         delay_t setup_shift = 0, hold_shift = 0;
+        // The exceptions applying to the setup and the hold check, and all matching the pair (indices into
+        // ctx->timing_exceptions)
+        int setup_exception = -1, hold_exception = -1;
+        std::vector<int> exceptions;
         // The pairs of the same launch and capture clock edges (which differ in their domain tags only) form a
         // group, whose criticalities are scaled together
         int group = -1;
     };
 
-    // A multicycle path resolved for this analysis: the objects of its -from and -to lists
-    struct ResolvedMulticycle
+    // A timing exception resolved for this analysis: the objects of its -from and -to lists
+    struct ResolvedException
     {
-        const MulticyclePath *constraint;
+        const TimingException *constraint;
         struct Points
         {
             bool any = true; // an empty list: every point
@@ -298,7 +331,7 @@ struct TimingAnalyser
             dict<IdString, std::vector<IdString>> pins;
         } from, to;
     };
-    std::vector<ResolvedMulticycle> multicycles;
+    std::vector<ResolvedException> exceptions;
     // The sets of tags: the constraints whose -from (2 * index) or -to (2 * index + 1) lists name a point
     std::vector<std::vector<int>> tag_sets{{}};
     std::map<std::vector<int>, int> tag_ids{{{}, 0}};
@@ -308,6 +341,8 @@ struct TimingAnalyser
 
     domain_id_t domain_id(IdString cell, IdString clock_port, ClockEdge edge, int tag = 0);
     domain_id_t domain_id(const NetInfo *net, ClockEdge edge, int tag = 0);
+    // The domain of async start or end points with a domain tag
+    domain_id_t async_domain_id(int tag);
     domain_id_t domain_pair_id(domain_id_t launch, domain_id_t capture);
 
     void copy_domains(const CellPortKey &from, const CellPortKey &to, bool backwards);

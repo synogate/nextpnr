@@ -87,8 +87,9 @@ struct BaseCtx
     // Fmax data post timing analysis
     TimingResult timing_result;
 
-    // Multicycle paths of the timing constraints, in the order given (a later one of the same specificity wins)
-    std::vector<MulticyclePath> multicycle_paths;
+    // The timing exceptions of the timing constraints (multicycle and false paths), in the order given (a later one
+    // of the same specificity wins)
+    std::vector<TimingException> timing_exceptions;
 
     Context *as_ctx = nullptr;
 

@@ -22,6 +22,7 @@
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <optional>
@@ -43,8 +44,10 @@ QString portName(const Context *ctx, const std::pair<IdString, IdString> &port)
 TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dirty(true)
 {
     launchCombo = new QComboBox();
+    launchCombo->setObjectName("pathLaunch");
     launchCombo->addItem("All", QString());
     latchCombo = new QComboBox();
+    latchCombo->setObjectName("pathLatch");
     latchCombo->addItem("All", QString());
 
     sortCombo = new QComboBox();
@@ -95,13 +98,29 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
     segmentList->setAlternatingRowColors(true);
     segmentList->setSelectionMode(QAbstractItemView::SingleSelection);
 
+    // How the slacks come about: the required time from the clocks and the exceptions, the arrival time of the
+    // data, and the constraints on the path
+    slackList = new QTreeWidget();
+    slackList->setObjectName("pathSlack");
+    slackList->setColumnCount(3);
+    slackList->setHeaderLabels({"Slack", "[ns]", "From"});
+    slackList->setUniformRowHeights(true);
+    slackList->setSelectionMode(QAbstractItemView::SingleSelection);
+
+    QSplitter *details = new QSplitter(Qt::Vertical);
+    details->setObjectName("splitter_path_details");
+    details->addWidget(slackList);
+    details->addWidget(segmentList);
+    details->setStretchFactor(0, 3);
+    details->setStretchFactor(1, 2);
+
     QWidget *btmWidget = new QWidget();
     QVBoxLayout *vbox2 = new QVBoxLayout();
     btmWidget->setLayout(vbox2);
     vbox2->setSpacing(5);
     vbox2->setContentsMargins(0, 0, 0, 0);
     vbox2->addWidget(summary);
-    vbox2->addWidget(segmentList);
+    vbox2->addWidget(details, 1);
 
     QSplitter *splitter = new QSplitter(Qt::Vertical);
     splitter->setObjectName("splitter_paths");
@@ -129,7 +148,7 @@ TimingWidget::TimingWidget(QWidget *parent) : QWidget(parent), ctx(nullptr), dir
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
         auto &segment = paths.at(index).path.segments.at(segmentList->indexOfTopLevelItem(item));
-        Q_EMIT selected(getSegmentDecals(segment), false);
+        Q_EMIT selected(TimingText::segmentDecals(ctx, segment), false);
     });
     connect(segmentList, &QTreeWidget::itemDoubleClicked, this, [this] { Q_EMIT zoomSelected(); });
 }
@@ -244,6 +263,7 @@ void TimingWidget::updatePaths()
     paths.clear();
     pathList->clear();
     segmentList->clear();
+    slackList->clear();
     summary->clear();
     if (!analyser)
         return;
@@ -330,6 +350,7 @@ void TimingWidget::updatePaths()
 void TimingWidget::showPath(int index)
 {
     segmentList->clear();
+    slackList->clear();
     if (index < 0 || index >= int(paths.size())) {
         summary->clear();
         return;
@@ -369,22 +390,224 @@ void TimingWidget::showPath(int index)
                                   SortBy(sortCombo->currentData().toInt()) == HOLD_SLACK ? "Shortest" : "Longest",
                                   formatDelay(logic), formatDelay(routing)));
 
+    showSlack(index);
+
     std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
     std::lock_guard<std::mutex> lock(ctx->mutex);
-    Q_EMIT selected(getPathDecals(path.path), false);
+    Q_EMIT selected(TimingText::pathDecals(ctx, path.path), false);
 }
 
-std::vector<DecalXY> TimingWidget::getPathDecals(const CriticalPath &path)
+void TimingWidget::showSlack(int index)
+{
+    const auto &path = paths.at(index);
+    const auto &ep = path.timing;
+    bool hold_sorted = SortBy(sortCombo->currentData().toInt()) == HOLD_SLACK;
+
+    // The parts of a path: the data path (clock-to-q or source, logic, routing), the clock-to-clock delay and the
+    // setup or hold time. (Its clock skew segment is left out: the clock delays at the two ends come from the
+    // analysis, which counts them also where the report has no skew, as at an unclocked end.)
+    struct Parts
+    {
+        delay_t data = 0, clock_to_clock = 0, check = 0;
+        int logic = 0, routing = 0;
+    };
+    auto parts_of = [](const CriticalPath &p) {
+        Parts parts;
+        for (auto &segment : p.segments) {
+            switch (segment.type) {
+            case CriticalPath::Segment::Type::CLK_SKEW:
+                break;
+            case CriticalPath::Segment::Type::CLK_TO_CLK:
+                parts.clock_to_clock += segment.delay;
+                break;
+            case CriticalPath::Segment::Type::SETUP:
+                parts.check += segment.delay;
+                break;
+            case CriticalPath::Segment::Type::HOLD:
+                // (the segment is the negated hold time)
+                parts.check -= segment.delay;
+                break;
+            case CriticalPath::Segment::Type::LOGIC:
+                parts.logic++;
+                parts.data += segment.delay;
+                break;
+            case CriticalPath::Segment::Type::ROUTING:
+                parts.routing++;
+                parts.data += segment.delay;
+                break;
+            default:
+                parts.data += segment.delay;
+            }
+        }
+        return parts;
+    };
+
+    TimingAnalyser::PairConstraints pc;
+    CriticalPath setup_path;
+    std::optional<CriticalPath> hold_path;
+    TimingAnalyser::PathClockDelays setup_clocks, hold_clocks;
+    {
+        std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        pc = analyser->get_pair_constraints(ep.domain_pair);
+        setup_path = hold_sorted ? analyser->get_endpoint_path(ep, true) : path.path;
+        setup_clocks = analyser->get_clock_delays(ep, setup_path);
+        if (ep.hold_slack != NO_SLACK) {
+            hold_path = hold_sorted ? path.path : analyser->get_endpoint_path(ep, false);
+            hold_clocks = analyser->get_clock_delays(ep, *hold_path);
+        }
+    }
+
+    auto signedDelay = [&](delay_t delay) {
+        QString text = formatDelay(delay);
+        return delay >= 0 ? "+" + text : text;
+    };
+    auto row = [&](QTreeWidgetItem *parent, const QString &name, const QString &value, const QString &from) {
+        auto item = new QTreeWidgetItem(parent, {name, value, from});
+        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(2, from);
+        return item;
+    };
+    auto bold = [](QTreeWidgetItem *item) {
+        QFont font = item->font(0);
+        font.setBold(true);
+        for (int column = 0; column < 2; column++)
+            item->setFont(column, font);
+        return item;
+    };
+    auto slackRow = [&](QTreeWidgetItem *parent, const QString &name, delay_t slack, const QString &from) {
+        auto item = bold(row(parent, name, formatDelay(slack), from));
+        if (slack < 0)
+            item->setForeground(1, Qt::red);
+        return item;
+    };
+    // The arrival time: the clock delay to the launching register and the data path
+    auto arrivalRows = [&](QTreeWidgetItem *top, const Parts &p, const TimingAnalyser::PathClockDelays &clocks,
+                           const char *which) {
+        if (clocks.launch != 0)
+            row(top, "Launch clock delay", signedDelay(clocks.launch), "clock network to the launching register");
+        row(top, "Data path", signedDelay(p.data),
+            QString("%1 path: clock-to-q, %2 logic and %3 routing segment(s) (listed below)")
+                    .arg(which)
+                    .arg(p.logic)
+                    .arg(p.routing));
+        delay_t arrival = clocks.launch + p.data;
+        bold(row(top, "Arrival time", formatDelay(arrival), QString()));
+        return arrival;
+    };
+    // What the itemised times leave of the analysed slack (none, unless the report differs from the analysis)
+    auto restRow = [&](QTreeWidgetItem *top, delay_t rest) {
+        if (std::abs(ctx->getDelayNS(rest)) >= 0.0005)
+            row(top, "Not itemised", signedDelay(rest), "the analysis differs from the path report by this much");
+    };
+    QString endpoint = portName(ctx, {ep.endpoint.cell, ep.endpoint.port});
+    const ClockEvent &launch = pc.clock_pair.start, &capture = pc.clock_pair.end;
+    bool unclocked = launch.clock == IdString() || capture.clock == IdString();
+
+    // Setup: required = the time the clocks give + the multicycle path + capture clock delay - clock to clock -
+    // setup time, arrival = launch clock delay + data path, slack = required - arrival
+    {
+        Parts p = parts_of(setup_path);
+        auto top = slackRow(nullptr, "Setup check", ep.setup_slack, "slack = required time - arrival time");
+        QString edges;
+        if (unclocked)
+            edges = "unclocked start or end point: one period of the launch clock, or of the default target";
+        else if (launch.clock != capture.clock)
+            edges = "different clocks: one period of the launch clock";
+        else if (launch.edge == capture.edge)
+            edges = "one period of the clock";
+        else
+            edges = QString("from the %1 to the %2 of the clock")
+                            .arg(launch.edge == RISING_EDGE ? "rising" : "falling",
+                                 capture.edge == RISING_EDGE ? "rising edge" : "falling edge");
+        row(top, "Capture edge", signedDelay(pc.clock_required), edges);
+        if (pc.setup_exception >= 0)
+            row(top, QString("Multicycle path: %1 cycles").arg(pc.setup_cycles), signedDelay(pc.setup_shift),
+                TimingText::exceptionName(ctx, pc.setup_exception));
+        if (setup_clocks.capture != 0)
+            row(top, "Capture clock delay", signedDelay(setup_clocks.capture),
+                "clock network to the capturing register");
+        if (p.clock_to_clock != 0)
+            row(top, "Clock to clock", signedDelay(-p.clock_to_clock), "delay between the related clocks");
+        if (p.check != 0)
+            row(top, "Setup time", signedDelay(-p.check), endpoint);
+        delay_t required = pc.clock_required + pc.setup_shift + setup_clocks.capture - p.clock_to_clock - p.check;
+        bold(row(top, "Required time", formatDelay(required), QString()));
+        delay_t arrival = arrivalRows(top, p, setup_clocks, "longest");
+        restRow(top, ep.setup_slack - (required - arrival));
+        slackRow(top, "Slack", ep.setup_slack, "required time - arrival time");
+        slackList->addTopLevelItem(top);
+    }
+
+    // Hold: required = the hold edge + capture clock delay + hold time - clock to clock, arrival as for setup
+    // (shortest path), slack = arrival - required
+    if (hold_path) {
+        Parts p = parts_of(*hold_path);
+        auto top = slackRow(nullptr, "Hold check", ep.hold_slack, "slack = arrival time - required time");
+        QString edge;
+        if (pc.hold_exception >= 0)
+            edge = TimingText::exceptionName(ctx, pc.hold_exception);
+        else if (pc.setup_exception >= 0)
+            edge = "one period before the setup edge of the multicycle path (set_multicycle_path -hold moves it "
+                   "back)";
+        else
+            edge = "the launch edge";
+        row(top, "Hold edge", signedDelay(pc.hold_shift), edge);
+        if (hold_clocks.capture != 0)
+            row(top, "Capture clock delay", signedDelay(hold_clocks.capture),
+                "clock network to the capturing register");
+        if (p.clock_to_clock != 0)
+            row(top, "Clock to clock", signedDelay(-p.clock_to_clock), "delay between the related clocks");
+        if (p.check != 0)
+            row(top, "Hold time", signedDelay(p.check), endpoint);
+        delay_t required = pc.hold_shift + hold_clocks.capture + p.check - p.clock_to_clock;
+        bold(row(top, "Required time", formatDelay(required), "the earliest time the data may arrive"));
+        delay_t arrival = arrivalRows(top, p, hold_clocks, "shortest");
+        restRow(top, ep.hold_slack - (arrival - required));
+        slackRow(top, "Slack", ep.hold_slack, "arrival time - required time");
+        slackList->addTopLevelItem(top);
+    } else {
+        slackList->addTopLevelItem(row(nullptr, "Hold check", "-",
+                                       "not checked: an unclocked start or end point, or unrelated clocks"));
+    }
+
+    // The constraints on the path: the clocks and the timing exceptions
+    {
+        auto top = row(nullptr, "Constraints", QString(), QString());
+        // (short names in the first column, which sets the width of the table)
+        row(top, "Launch clock", QString(),
+            TimingText::clockName(ctx, launch) + ": " + TimingText::clockConstraint(ctx, launch.clock));
+        if (capture.clock != launch.clock)
+            row(top, "Capture clock", QString(),
+                TimingText::clockName(ctx, capture) + ": " + TimingText::clockConstraint(ctx, capture.clock));
+        for (int index : pc.exceptions) {
+            const TimingException &exc = ctx->timing_exceptions.at(index);
+            QString name = TimingText::exceptionName(ctx, index);
+            if (name.startsWith("line "))
+                name = name.mid(name.indexOf(':') + 2);
+            row(top, QString("Line %1").arg(exc.line), QString(),
+                TimingText::exceptionStatus(ctx, pc, index) + ": " + name);
+        }
+        if (pc.exceptions.empty())
+            row(top, "Exceptions", QString(), "none (set_multicycle_path, set_false_path)");
+        slackList->addTopLevelItem(top);
+    }
+    slackList->expandAll();
+    for (int column = 0; column < 2; column++)
+        slackList->resizeColumnToContents(column);
+}
+
+std::vector<DecalXY> TimingText::pathDecals(Context *ctx, const CriticalPath &path)
 {
     std::vector<DecalXY> decals;
     for (auto &segment : path.segments) {
-        auto segment_decals = getSegmentDecals(segment);
+        auto segment_decals = segmentDecals(ctx, segment);
         decals.insert(decals.end(), segment_decals.begin(), segment_decals.end());
     }
     return decals;
 }
 
-std::vector<DecalXY> TimingWidget::getSegmentDecals(const CriticalPath::Segment &segment)
+std::vector<DecalXY> TimingText::segmentDecals(Context *ctx, const CriticalPath::Segment &segment)
 {
     std::vector<DecalXY> decals;
     // The cells
@@ -432,11 +655,57 @@ QString TimingWidget::clockNet(const ClockEvent &clock)
     return clock.clock.c_str(ctx);
 }
 
-QString TimingWidget::clockName(const ClockEvent &clock)
+QString TimingWidget::clockName(const ClockEvent &clock) { return TimingText::clockName(ctx, clock); }
+
+QString TimingText::clockName(Context *ctx, const ClockEvent &clock)
 {
     if (clock.clock == IdString())
         return "async";
     return QString("%1 %2").arg(clock.edge == FALLING_EDGE ? "negedge" : "posedge", clock.clock.c_str(ctx));
+}
+
+QString TimingText::clockConstraint(Context *ctx, IdString clock)
+{
+    if (clock == IdString())
+        return "unclocked (async)";
+    auto ns = [&](delay_t delay) { return QString::number(ctx->getDelayNS(delay), 'f', 3); };
+    auto net = ctx->nets.find(clock);
+    if (net == ctx->nets.end() || !net->second->clkconstr)
+        return QString("no clock constraint, the default target of %1 MHz")
+                .arg(ctx->setting<float>("target_freq") / 1e6, 0, 'f', 2);
+    const ClockConstraint &cc = *net->second->clkconstr;
+    QString name = cc.name != IdString() && cc.name != clock ? QString("'%1': ").arg(cc.name.c_str(ctx)) : QString();
+    return QString("%1period %2 ns (%3 MHz), high %4 ns, low %5 ns")
+            .arg(name, ns(cc.period.minDelay()))
+            .arg(1000 / ctx->getDelayNS(cc.period.minDelay()), 0, 'f', 2)
+            .arg(ns(cc.high.minDelay()), ns(cc.low.minDelay()));
+}
+
+QString TimingText::exceptionName(Context *ctx, int index)
+{
+    const TimingException &exc = ctx->timing_exceptions.at(index);
+    QString source = QString::fromStdString(exc.source);
+    if (source.isEmpty())
+        source = exc.type == TimingException::FALSE_PATH ? "set_false_path"
+                                                         : QString("set_multicycle_path %1").arg(exc.multiplier);
+    return exc.line > 0 ? QString("line %1: %2").arg(exc.line).arg(source) : source;
+}
+
+QString TimingText::exceptionStatus(Context *ctx, const TimingAnalyser::PairConstraints &pc, int index)
+{
+    const TimingException &exc = ctx->timing_exceptions.at(index);
+    if (exc.type == TimingException::FALSE_PATH)
+        return "false path: not applied, the timing analysis does not support false paths yet";
+    if (index == pc.setup_exception)
+        return QString("applies to setup: %1 clock cycles").arg(pc.setup_cycles);
+    if (index == pc.hold_exception)
+        return QString("applies to hold: the hold check %1 cycle(s) back").arg(exc.multiplier);
+    if (pc.clock_pair.start.clock == IdString() || pc.clock_pair.end.clock == IdString())
+        return "no effect: the path starts or ends at an unclocked point";
+    int winner = exc.hold ? pc.hold_exception : pc.setup_exception;
+    if (winner >= 0)
+        return QString("overridden by line %1").arg(ctx->timing_exceptions.at(winner).line);
+    return "not applied";
 }
 
 NEXTPNR_NAMESPACE_END

@@ -120,6 +120,8 @@ struct SDCParser
     std::string buf;
     int pos = 0;
     int lineno = 1;
+    // The text of the command being evaluated (for the timing exceptions that keep it)
+    std::string command;
     Context *ctx;
 
     SDCParser(const std::string &buf, Context *ctx) : buf(buf), ctx(ctx) {};
@@ -259,9 +261,9 @@ struct SDCParser
         else if (cmd == "get_clocks")
             return cmd_get_clocks(arguments);
         else if (cmd == "set_false_path")
-            return cmd_set_false_path(arguments);
+            return cmd_timing_exception(arguments, TimingException::FALSE_PATH);
         else if (cmd == "set_multicycle_path")
-            return cmd_set_multicycle_path(arguments);
+            return cmd_timing_exception(arguments, TimingException::MULTICYCLE);
         else
             log_error("Unsupported SDC command '%s'\n", cmd.c_str());
     }
@@ -485,76 +487,22 @@ struct SDCParser
         return std::string{};
     }
 
-    SdcValue cmd_set_false_path(const std::vector<SdcValue> &arguments)
-    {
-        NetInfo *from = nullptr;
-        NetInfo *to = nullptr;
-
-        for (int i = 1; i < int(arguments.size()); i++) {
-            auto &arg = arguments.at(i);
-            if (arg.is_string) {
-                std::string s = arg.str;
-
-                bool is_from = true;
-                if (s == "-to") {
-                    is_from = false;
-                } else if (s != "-from") {
-                    log_error("expecting either -to or -from to set_false_path(line %d)\n", lineno);
-                }
-
-                i++;
-                auto &val = arguments.at(i);
-                if (val.is_string) {
-                    log_error("expecting SdcValue argument to -from (line %d)\n", lineno);
-                }
-
-                if (val.list.size() != 1) {
-                    log_error("Expected a single SdcEntity as argument to -to/-from (line %d)\n", lineno);
-                }
-
-                auto &ety = val.list.at(0);
-
-                NetInfo *net = nullptr;
-                if (ety.type == SdcEntity::ENTITY_PIN)
-                    net = ety.get_net(ctx);
-                else if (ety.type == SdcEntity::ENTITY_NET)
-                    net = ctx->nets.at(ety.name).get();
-                else if (ety.type == SdcEntity::ENTITY_PORT)
-                    net = ctx->ports.at(ety.name).net;
-                else
-                    log_error("set_false_path applies only to nets, cell pins, or IO ports (line %d)\n", lineno);
-
-                if (is_from) {
-                    from = net;
-                } else {
-                    to = net;
-                }
-            }
-        }
-
-        if (from == nullptr) {
-            log_error("-from is required for set_false_path (line %d)\n", lineno);
-        } else if (to == nullptr) {
-            log_error("-to is required for set_false_path (line %d)\n", lineno);
-        }
-
-        log_warning("set_false_path from: %s, to: %s does not do anything(yet).\n", from->name.c_str(ctx),
-                    to->name.c_str(ctx));
-
-        return std::string{};
-    }
-
     // set_multicycle_path <multiplier> [-setup | -hold] [-start | -end] [-from <objects>] [-to <objects>]
-    SdcValue cmd_set_multicycle_path(const std::vector<SdcValue> &arguments)
+    // set_false_path [-setup | -hold] [-from <objects>] [-to <objects>]
+    SdcValue cmd_timing_exception(const std::vector<SdcValue> &arguments, TimingException::Type type)
     {
-        MulticyclePath mcp;
-        bool have_multiplier = false, have_setup = false, have_start = false, have_end = false;
+        const char *cmd = type == TimingException::MULTICYCLE ? "set_multicycle_path" : "set_false_path";
+        TimingException exc;
+        exc.type = type;
+        exc.source = command;
+        exc.line = lineno;
+        bool have_multiplier = false, have_setup = false, have_hold = false, have_start = false, have_end = false;
         bool have_from = false, have_to = false;
         auto points = [&](const SdcValue &val, const char *option) {
             if (val.is_string)
-                log_error("set_multicycle_path %s expects objects of get_cells, get_pins, get_nets, get_ports or "
-                          "get_clocks, not '%s' (line %d)\n",
-                          option, val.str.c_str(), lineno);
+                log_error("%s %s expects objects of get_cells, get_pins, get_nets, get_ports or get_clocks, not '%s' "
+                          "(line %d)\n",
+                          cmd, option, val.str.c_str(), lineno);
             std::vector<TimingPathPoint> result;
             for (auto &ety : val.list) {
                 TimingPathPoint p;
@@ -590,74 +538,111 @@ struct SDCParser
         for (int i = 1; i < int(arguments.size()); i++) {
             auto &arg = arguments.at(i);
             if (!arg.is_string)
-                log_error("unexpected objects in set_multicycle_path, expecting -from or -to before them (line %d)\n",
-                          lineno);
+                log_error("unexpected objects in %s, expecting -from or -to before them (line %d)\n", cmd, lineno);
             const std::string &s = arg.str;
             if (s == "-setup") {
                 have_setup = true;
             } else if (s == "-hold") {
-                mcp.hold = true;
-            } else if (s == "-start") {
+                have_hold = true;
+            } else if (s == "-start" && type == TimingException::MULTICYCLE) {
                 have_start = true;
-            } else if (s == "-end") {
+            } else if (s == "-end" && type == TimingException::MULTICYCLE) {
                 have_end = true;
             } else if (s == "-from" || s == "-to") {
                 if (++i >= int(arguments.size()))
-                    log_error("missing objects after %s in set_multicycle_path (line %d)\n", s.c_str(), lineno);
-                auto &list = s == "-from" ? mcp.from : mcp.to;
+                    log_error("missing objects after %s in %s (line %d)\n", s.c_str(), cmd, lineno);
+                auto &list = s == "-from" ? exc.from : exc.to;
                 auto more = points(arguments.at(i), s.c_str());
                 list.insert(list.end(), more.begin(), more.end());
                 (s == "-from" ? have_from : have_to) = true;
-            } else if (s.at(0) == '-') {
-                log_error("unsupported argument '%s' to set_multicycle_path (line %d)\n", s.c_str(), lineno);
+            } else if (s.at(0) == '-' || type != TimingException::MULTICYCLE) {
+                log_error("unsupported argument '%s' to %s (line %d)\n", s.c_str(), cmd, lineno);
             } else {
                 if (have_multiplier)
-                    log_error("set_multicycle_path expects one multiplier, got '%s' too (line %d)\n", s.c_str(),
-                              lineno);
+                    log_error("%s expects one multiplier, got '%s' too (line %d)\n", cmd, s.c_str(), lineno);
                 try {
                     size_t used = 0;
-                    mcp.multiplier = std::stoi(s, &used);
+                    exc.multiplier = std::stoi(s, &used);
                     if (used != s.size())
                         throw std::invalid_argument(s);
                 } catch (std::exception &e) {
-                    log_error("invalid multiplier '%s' to set_multicycle_path (line %d)\n", s.c_str(), lineno);
+                    log_error("invalid multiplier '%s' to %s (line %d)\n", s.c_str(), cmd, lineno);
                 }
                 have_multiplier = true;
             }
         }
-        if (!have_multiplier)
+        if (type == TimingException::MULTICYCLE && !have_multiplier)
             log_error("set_multicycle_path needs a multiplier (line %d)\n", lineno);
-        if (have_setup && mcp.hold)
-            log_error("set_multicycle_path takes -setup or -hold, not both (line %d)\n", lineno);
+        if (have_setup && have_hold)
+            log_error("%s takes -setup or -hold, not both (line %d)\n", cmd, lineno);
         if (have_start && have_end)
             log_error("set_multicycle_path takes -start or -end, not both (line %d)\n", lineno);
-        if (mcp.multiplier < (mcp.hold ? 0 : 1))
-            log_error("set_multicycle_path multiplier %d is too small for %s (line %d)\n", mcp.multiplier,
-                      mcp.hold ? "hold" : "setup", lineno);
-        mcp.start = have_start || (mcp.hold && !have_end);
+        if (type == TimingException::MULTICYCLE) {
+            exc.hold = have_hold;
+            exc.setup = !have_hold;
+            if (exc.multiplier < (exc.hold ? 0 : 1))
+                log_error("set_multicycle_path multiplier %d is too small for %s (line %d)\n", exc.multiplier,
+                          exc.hold ? "hold" : "setup", lineno);
+            exc.start = have_start || (exc.hold && !have_end);
+        } else {
+            exc.setup = !have_hold;
+            exc.hold = !have_setup;
+        }
         // A list given that matched nothing must not stand for every path
-        if ((have_from && mcp.from.empty()) || (have_to && mcp.to.empty())) {
-            log_warning("set_multicycle_path: the objects of -%s matched nothing, constraint ignored (line %d)\n",
-                        (have_from && mcp.from.empty()) ? "from" : "to", lineno);
+        if ((have_from && exc.from.empty()) || (have_to && exc.to.empty())) {
+            log_warning("%s: the objects of -%s matched nothing, constraint ignored (line %d)\n", cmd,
+                        (have_from && exc.from.empty()) ? "from" : "to", lineno);
             return std::string{};
         }
         if (!have_from && !have_to)
-            log_warning("set_multicycle_path without -from or -to applies to every path (line %d)\n", lineno);
-        log_info("Multicycle path (line %d): %s %d (-%s), from %d object(s), to %d object(s)\n", lineno,
-                 mcp.hold ? "hold" : "setup", mcp.multiplier, mcp.start ? "start" : "end", int(mcp.from.size()),
-                 int(mcp.to.size()));
-        ctx->multicycle_paths.push_back(mcp);
+            log_warning("%s without -from or -to applies to every path (line %d)\n", cmd, lineno);
+        if (type == TimingException::MULTICYCLE)
+            log_info("Multicycle path (line %d): %s %d (-%s), from %d object(s), to %d object(s)\n", lineno,
+                     exc.hold ? "hold" : "setup", exc.multiplier, exc.start ? "start" : "end", int(exc.from.size()),
+                     int(exc.to.size()));
+        else
+            log_warning("False path (line %d), from %d object(s), to %d object(s): not applied by the timing "
+                        "analysis yet (the GUI lists the paths it covers)\n",
+                        lineno, int(exc.from.size()), int(exc.to.size()));
+        ctx->timing_exceptions.push_back(exc);
         return std::string{};
+    }
+
+    // The text of a command from the start of its line to its end, without a comment after it
+    std::string command_text(int start, int end)
+    {
+        std::string text = buf.substr(start, end - start);
+        int depth = 0;
+        bool quoted = false;
+        for (size_t i = 0; i < text.size(); i++) {
+            char c = text.at(i);
+            if (c == '\\') {
+                i++;
+            } else if (c == '"') {
+                quoted = !quoted;
+            } else if (!quoted && (c == '{' || c == '[')) {
+                depth++;
+            } else if (!quoted && (c == '}' || c == ']')) {
+                depth--;
+            } else if (!quoted && depth <= 0 && (c == '#' || c == ';')) {
+                text.resize(i);
+                break;
+            }
+        }
+        size_t last = text.find_last_not_of(" \t\r\n");
+        text.resize(last == std::string::npos ? 0 : last + 1);
+        return text;
     }
 
     void operator()()
     {
         while (!eof()) {
             skip_blank(true);
-            int line = lineno;
+            int line = lineno, start = pos;
             auto args = get_arguments();
             if (args.empty())
                 continue;
+            command = command_text(start, pos);
             // (messages of the command name its line, not the next one get_arguments went on to)
             int next_line = lineno;
             lineno = line;

@@ -9,7 +9,7 @@ are those of the synthesised netlist (as in the JSON file).
 |---|---|
 | `create_clock -period <ns> [-name <name>] <objects>` | on nets, cell pins or ports. The name (else the net's name) stays with the constraint when the packer copies it behind a clock buffer, and `get_clocks` finds the clock by it. |
 | `set_multicycle_path <n> [-setup\|-hold] [-start\|-end] [-from <objects>] [-to <objects>]` | see below |
-| `set_false_path -from … -to …` | accepted, no effect yet |
+| `set_false_path [-setup\|-hold] [-from <objects>] [-to <objects>]` | recorded and shown in the GUI with the paths it covers, but not applied by the timing analysis yet |
 | `get_cells`, `get_pins`, `get_nets`, `get_ports`, `get_clocks` | names or patterns with `*` and `?` (brackets are bus indices, `{a[3]}`) |
 
 ## Multicycle paths
@@ -54,5 +54,19 @@ domain pair has one multicycle setting, and it is used for:
 - Fmax (a path with `n` cycles counts at `n` times the clock's frequency), the slack histogram and TNS;
 - the hold checks after routing and of the finished routing, and the Paths tab of the GUI. Path reports say
   `multicycle path: …`.
+
+## In the GUI
+
+- **Paths** tab: below a selected path, the **Slack** table shows how its slacks come about. For setup: the
+  required time (the capture edge from the clock constraint, the cycles a multicycle path adds, the clock delay
+  to the capturing register, clock to clock, the setup time) against the arrival time (the clock delay to the
+  launching register and the data path); for hold the same with the hold edge, the hold time and the shortest
+  path. Each row says where it comes from (the SDC line of an exception, the register). Below that, the
+  constraints on the path: the clocks with their constraints and every exception whose lists match it, with
+  what it does (applies to setup or hold, overridden by line N, a false path that is not applied).
+- **Exceptions** tab: every timing exception of the SDC file with its line, the number of paths (end points per
+  launch clock) its lists match, the number it applies to and the worst setup slack among them. Below, the
+  paths of the selected exception (or of all), with what the exceptions do to each; a selected path is selected
+  in the device view.
 
 Without multicycle constraints the analysis is the same as before.

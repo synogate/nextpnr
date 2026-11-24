@@ -1,0 +1,5 @@
+create_clock -name sys -period 4 [get_ports clk]
+set_multicycle_path 4 -from [get_nets {op*}]
+set_multicycle_path 2 -setup -from [get_nets {op*}] -to [get_clocks sys]
+set_multicycle_path 1 -hold -from [get_nets {op*}] -to [get_clocks sys]
+set_false_path -from [get_nets {cnt*}] # not applied yet

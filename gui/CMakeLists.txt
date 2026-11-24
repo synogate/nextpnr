@@ -48,6 +48,8 @@ set(GUI_SOURCES
     timingwidget.h
     clockswidget.cc
     clockswidget.h
+    exceptionswidget.cc
+    exceptionswidget.h
     timingdock.cc
     timingdock.h
     treemodel.cc

@@ -102,8 +102,8 @@ TEST_F(GateMateMulticycleTest, sdc_command)
     design();
     sdc("set_multicycle_path 3 -setup -from [get_cells slow_from] -to [get_pins {slow_to/D}]\n"
         "set_multicycle_path 2 -hold -end -from [get_clocks sys] # a comment\n");
-    ASSERT_EQ(ctx->multicycle_paths.size(), 2u);
-    auto &setup = ctx->multicycle_paths.at(0);
+    ASSERT_EQ(ctx->timing_exceptions.size(), 2u);
+    auto &setup = ctx->timing_exceptions.at(0);
     EXPECT_EQ(setup.multiplier, 3);
     EXPECT_FALSE(setup.hold);
     EXPECT_FALSE(setup.start);
@@ -113,7 +113,7 @@ TEST_F(GateMateMulticycleTest, sdc_command)
     ASSERT_EQ(setup.to.size(), 1u);
     EXPECT_EQ(setup.to.at(0).type, TimingPathPoint::PIN);
     EXPECT_EQ(setup.to.at(0).pin, id_D);
-    auto &hold = ctx->multicycle_paths.at(1);
+    auto &hold = ctx->timing_exceptions.at(1);
     EXPECT_EQ(hold.multiplier, 2);
     EXPECT_TRUE(hold.hold);
     EXPECT_FALSE(hold.start);
@@ -129,7 +129,7 @@ TEST_F(GateMateMulticycleTest, objects_matching_nothing_ignore_the_constraint)
     design();
     sdc("set_multicycle_path 2 -from [get_cells no_such_cell] -to [get_cells slow_to]\n"
         "set_multicycle_path 2 -from [get_cells {nothing*}]\n");
-    EXPECT_TRUE(ctx->multicycle_paths.empty());
+    EXPECT_TRUE(ctx->timing_exceptions.empty());
 }
 
 // The packer renames the register pins (D to DIN): a pin named in the SDC file stands for the whole register
@@ -138,16 +138,16 @@ TEST_F(GateMateMulticycleTest, setup_multicycle_doubles_fmax)
     design();
     // (read before packing, as in the flow)
     sdc("set_multicycle_path 2 -from [get_pins slow_from/Q] -to [get_pins slow_to/D]\n");
-    ASSERT_EQ(ctx->multicycle_paths.size(), 1u);
+    ASSERT_EQ(ctx->timing_exceptions.size(), 1u);
     implement();
     auto after = analyse();
     auto slow_after = endpoint(*after, slow_to);
-    auto constraints = ctx->multicycle_paths;
-    ctx->multicycle_paths.clear();
+    auto constraints = ctx->timing_exceptions;
+    ctx->timing_exceptions.clear();
     auto before = analyse();
     float fmax_before = fmax(*before);
     auto slow_before = endpoint(*before, slow_to);
-    ctx->multicycle_paths = constraints;
+    ctx->timing_exceptions = constraints;
     EXPECT_NEAR(fmax_before, 1000 / ctx->getDelayNS(slow_before.delay), fmax_before * 0.01f)
             << "fast path " << ctx->getDelayNS(endpoint(*before, fast_to).delay) << " ns";
     // The path has two periods, the same delay
@@ -172,7 +172,7 @@ TEST_F(GateMateMulticycleTest, hold_check_follows_setup_unless_given)
     design();
     implement();
     auto hold_slack = [&](const std::string &constraints) {
-        ctx->multicycle_paths.clear();
+        ctx->timing_exceptions.clear();
         sdc(constraints);
         auto tmg = analyse();
         return endpoint(*tmg, slow_to).hold_slack;
@@ -252,4 +252,78 @@ TEST_F(GateMateMulticycleTest, routed_design)
     EXPECT_EQ(path.max_delay, 2 * period());
     for (auto &violation : tmg->get_timing_result().min_delay_violations)
         EXPECT_NE(violation.segments.back().to.first, slow_to->name) << "hold violation at the multicycle path";
+}
+
+// The exceptions keep their command (without a comment after it) and its line, for the GUI
+TEST_F(GateMateMulticycleTest, exceptions_keep_their_source)
+{
+    design();
+    sdc("\n# a comment line\n"
+        "set_multicycle_path 2 -from [get_cells slow_from] -to [get_cells {slow_to}] ;# why\n"
+        "set_false_path -hold -from [get_cells fast_from]\n");
+    ASSERT_EQ(ctx->timing_exceptions.size(), 2u);
+    auto &mcp = ctx->timing_exceptions.at(0);
+    EXPECT_EQ(mcp.source, "set_multicycle_path 2 -from [get_cells slow_from] -to [get_cells {slow_to}]");
+    EXPECT_EQ(mcp.line, 3);
+    EXPECT_TRUE(mcp.setup);
+    EXPECT_FALSE(mcp.hold);
+    auto &fp = ctx->timing_exceptions.at(1);
+    EXPECT_EQ(fp.type, TimingException::FALSE_PATH);
+    EXPECT_EQ(fp.source, "set_false_path -hold -from [get_cells fast_from]");
+    EXPECT_EQ(fp.line, 4);
+    EXPECT_FALSE(fp.setup);
+    EXPECT_TRUE(fp.hold);
+    ASSERT_EQ(fp.from.size(), 1u);
+    EXPECT_TRUE(fp.to.empty());
+}
+
+// What the analyser tells about the exceptions of a path: the one that applies, the ones it overrides, false
+// paths (matched, but without effect)
+TEST_F(GateMateMulticycleTest, pair_constraints)
+{
+    design();
+    sdc("set_multicycle_path 3 -from [get_cells slow_from]\n"
+        "set_multicycle_path 2 -from [get_cells slow_from] -to [get_cells slow_to]\n"
+        "set_false_path -from [get_cells slow_from fast_from]\n"
+        "set_false_path -from [get_cells b]\n");
+    ASSERT_EQ(ctx->timing_exceptions.size(), 4u);
+    implement();
+    auto plain = [&] {
+        auto constraints = ctx->timing_exceptions;
+        ctx->timing_exceptions.clear();
+        auto tmg = analyse();
+        ctx->timing_exceptions = constraints;
+        return tmg;
+    }();
+    auto tmg = analyse();
+
+    auto slow = endpoint(*tmg, slow_to);
+    auto pc = tmg->get_pair_constraints(slow.domain_pair);
+    EXPECT_EQ(pc.setup_exception, 1);
+    EXPECT_EQ(pc.hold_exception, -1);
+    EXPECT_EQ(pc.setup_cycles, 2);
+    EXPECT_EQ(pc.setup_shift, period());
+    EXPECT_EQ(pc.hold_shift, period());
+    EXPECT_EQ(pc.clock_required, period());
+    EXPECT_EQ(pc.exceptions, (std::vector<int>{0, 1, 2}));
+
+    // The false path is matched, but the path is timed as without it
+    auto fast = endpoint(*tmg, fast_to);
+    auto fast_pc = tmg->get_pair_constraints(fast.domain_pair);
+    EXPECT_EQ(fast_pc.exceptions, (std::vector<int>{2}));
+    EXPECT_EQ(fast_pc.setup_exception, -1);
+    EXPECT_EQ(fast.setup_slack, endpoint(*plain, fast_to).setup_slack);
+    EXPECT_EQ(fast.hold_slack, endpoint(*plain, fast_to).hold_slack);
+
+    // A false path from an input pad (an unclocked start point) matches the paths from it
+    bool from_pad = false;
+    for (auto &ep : tmg->get_endpoint_timings()) {
+        auto epc = tmg->get_pair_constraints(ep.domain_pair);
+        if (std::find(epc.exceptions.begin(), epc.exceptions.end(), 3) == epc.exceptions.end())
+            continue;
+        from_pad = true;
+        EXPECT_EQ(ep.clock_pair.start.clock, IdString());
+        EXPECT_EQ(ep.endpoint.cell, fast_from->name);
+    }
+    EXPECT_TRUE(from_pad);
 }

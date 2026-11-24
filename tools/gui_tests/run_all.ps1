@@ -17,6 +17,8 @@
     mux_part      designs/mux_core.v synthesized without IO pads, with --vopt as-partition
     hier          designs/hier_top.v (counters in instances) synthesized flattened, pins unconstrained
     two_clocks    designs/two_clocks.v (two clocks, a falling edge, a path between the clocks), pins unconstrained
+    multicycle    designs/multicycle.v with designs/multicycle.sdc (multicycle paths, one overridden, a false
+                  path), pins unconstrained
     counter_wrap  a top level instantiating the 008-counter (module core) as the blackbox u_core, with its CCF and
                   the counter implemented as a partition (placed and routed without the GUI) loaded into u_core
                   (--vopt partition=u_core:core_pnr.json; not packed)
@@ -119,6 +121,17 @@ function Get-Design([string]$name) {
                 if (-not (Test-Path $two)) { throw "could not synthesize $two (see $designs\two_clocks_synth.log)" }
             }
             return @{ Json = $two; Extra = "--vopt allow-unconstrained" }
+        }
+        "multicycle" {
+            # designs/multicycle.v with designs/multicycle.sdc: multicycle paths (one overridden) and a false path
+            $mc = Join-Path $designs "multicycle.json"
+            if (-not (Test-Path $mc)) {
+                Push-Location $designs
+                & $Yosys -ql multicycle_synth.log -p "read_verilog -sv $here\designs\multicycle.v; synth_gatemate -luttree -top top -run :vlog; write_json multicycle.json"
+                Pop-Location
+                if (-not (Test-Path $mc)) { throw "could not synthesize $mc (see $designs\multicycle_synth.log)" }
+            }
+            return @{ Json = $mc; Extra = "--vopt allow-unconstrained --sdc $here\designs\multicycle.sdc" }
         }
         "counter_wrap" {
             $core = Join-Path $designs "core.json"
