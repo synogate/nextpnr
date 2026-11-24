@@ -190,6 +190,7 @@ void GateMatePacker::copy_constraint(const NetInfo *in_net, NetInfo *out_net)
         out_net->clkconstr->low = in_net->clkconstr->low;
         out_net->clkconstr->high = in_net->clkconstr->high;
         out_net->clkconstr->period = in_net->clkconstr->period;
+        out_net->clkconstr->name = in_net->clkconstr->name;
     }
 }
 

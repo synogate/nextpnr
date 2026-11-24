@@ -87,6 +87,9 @@ struct BaseCtx
     // Fmax data post timing analysis
     TimingResult timing_result;
 
+    // Multicycle paths of the timing constraints, in the order given (a later one of the same specificity wins)
+    std::vector<MulticyclePath> multicycle_paths;
+
     Context *as_ctx = nullptr;
 
     // Has the frontend loaded a design?

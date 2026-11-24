@@ -21,6 +21,7 @@
 #ifndef TIMING_H
 #define TIMING_H
 
+#include <map>
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -49,13 +50,19 @@ struct ClockDomainKey
 {
     IdString clock;
     ClockEdge edge;
-    ClockDomainKey(IdString clock_net, ClockEdge edge) : clock(clock_net), edge(edge) {};
-    // probably also need something here to deal with constraints
+    // The timing exceptions (multicycle paths) whose -from (launch) or -to (capture) lists name the start or end
+    // points of the domain: start and end points of one clock edge named by different constraints are different
+    // domains, so that each pair of domains has one exception. 0: named by none
+    int tag = 0;
+    ClockDomainKey(IdString clock_net, ClockEdge edge, int tag = 0) : clock(clock_net), edge(edge), tag(tag) {};
     inline bool is_async() const { return clock == IdString(); }
 
-    unsigned int hash() const { return mkhash(clock.hash(), int(edge)); }
+    unsigned int hash() const { return mkhash(mkhash(clock.hash(), int(edge)), tag); }
 
-    inline bool operator==(const ClockDomainKey &other) const { return (clock == other.clock) && (edge == other.edge); }
+    inline bool operator==(const ClockDomainKey &other) const
+    {
+        return (clock == other.clock) && (edge == other.edge) && (tag == other.tag);
+    }
 };
 
 typedef int domain_id_t;
@@ -89,8 +96,11 @@ struct TimingAnalyser
     float get_domain_setup_slack(CellPortKey port) const
     {
         delay_t slack = std::numeric_limits<delay_t>::max();
-        for (const auto &dp : ports.at(port).domain_pairs)
-            slack = std::min(slack, domain_pairs.at(dp.first).worst_setup_slack);
+        for (const auto &dp : ports.at(port).domain_pairs) {
+            auto &pair = domain_pairs.at(dp.first);
+            if (pair.worst_setup_slack != std::numeric_limits<delay_t>::max())
+                slack = std::min(slack, pair.worst_setup_slack + pair.setup_shift);
+        }
         return slack;
     }
 
@@ -100,8 +110,9 @@ struct TimingAnalyser
     std::vector<ClockEvent> get_clock_events() const
     {
         std::vector<ClockEvent> events;
+        pool<ClockEvent> seen;
         for (auto &dom : domains)
-            if (!dom.key.is_async())
+            if (!dom.key.is_async() && seen.insert(ClockEvent{dom.key.clock, dom.key.edge}).second)
                 events.push_back(ClockEvent{dom.key.clock, dom.key.edge});
         return events;
     }
@@ -143,6 +154,18 @@ struct TimingAnalyser
     void topo_sort();
     void setup_port_domains();
     void identify_related_domains();
+
+    // The multicycle paths of the design, resolved for this analysis
+    void resolve_multicycle_paths();
+    // The domain tag of a start point (launch) or an end point (capture) clocked by clock_port
+    int point_tag(CellPortKey port, IdString clock_port, bool launch);
+    // The cycles and the shifts of the setup and hold checks of a domain pair from its multicycle paths
+    void apply_multicycle_paths(domain_id_t pair);
+    // Whether two domains are the same clock edge (they may differ in their tags)
+    bool same_event(domain_id_t a, domain_id_t b) const
+    {
+        return domains.at(a).key.clock == domains.at(b).key.clock && domains.at(a).key.edge == domains.at(b).key.edge;
+    }
 
     void reset_times();
 
@@ -255,13 +278,36 @@ struct TimingAnalyser
         ClockDomainPairKey key;
         DelayPair period{0};
         delay_t worst_setup_slack, worst_hold_slack;
+        // Multicycle path: the clock cycles for setup, the time it adds to the required time, and how much later
+        // than the launch edge the hold check is
+        int setup_cycles = 1;
+        delay_t setup_shift = 0, hold_shift = 0;
+        // The pairs of the same launch and capture clock edges (which differ in their domain tags only) form a
+        // group, whose criticalities are scaled together
+        int group = -1;
     };
+
+    // A multicycle path resolved for this analysis: the objects of its -from and -to lists
+    struct ResolvedMulticycle
+    {
+        const MulticyclePath *constraint;
+        struct Points
+        {
+            bool any = true; // an empty list: every point
+            pool<IdString> cells, nets, clocks;
+            dict<IdString, std::vector<IdString>> pins;
+        } from, to;
+    };
+    std::vector<ResolvedMulticycle> multicycles;
+    // The sets of tags: the constraints whose -from (2 * index) or -to (2 * index + 1) lists name a point
+    std::vector<std::vector<int>> tag_sets{{}};
+    std::map<std::vector<int>, int> tag_ids{{{}, 0}};
 
     CellInfo *cell_info(const CellPortKey &key);
     PortInfo &port_info(const CellPortKey &key);
 
-    domain_id_t domain_id(IdString cell, IdString clock_port, ClockEdge edge);
-    domain_id_t domain_id(const NetInfo *net, ClockEdge edge);
+    domain_id_t domain_id(IdString cell, IdString clock_port, ClockEdge edge, int tag = 0);
+    domain_id_t domain_id(const NetInfo *net, ClockEdge edge, int tag = 0);
     domain_id_t domain_pair_id(domain_id_t launch, domain_id_t capture);
 
     void copy_domains(const CellPortKey &from, const CellPortKey &to, bool backwards);

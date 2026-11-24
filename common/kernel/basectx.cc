@@ -100,6 +100,7 @@ void BaseCtx::addClock(IdString net, float freq)
     cc->period = DelayPair(getCtx()->getDelayFromNS(1000 / freq));
     cc->high = DelayPair(getCtx()->getDelayFromNS(500 / freq));
     cc->low = DelayPair(getCtx()->getDelayFromNS(500 / freq));
+    cc->name = net;
     if (net_aliases.count(net)) {
         getNetByAlias(net)->clkconstr = std::move(cc);
     } else if (ports.count(net)) {
@@ -226,6 +227,9 @@ void BaseCtx::archInfoToAttributes()
             for (const DelayPair *d : {&cc.period, &cc.high, &cc.low})
                 value += stringf("%s%.17g %.17g", value.empty() ? "" : " ", double(d->min_delay),
                                  double(d->max_delay));
+            // (the name last, if it can be told apart from the delays)
+            if (cc.name != IdString() && cc.name.str(this).find_first_of(" \t\n") == std::string::npos)
+                value += " " + cc.name.str(this);
             ni->attrs[id("NEXTPNR_CLOCK")] = value;
         }
     }
@@ -255,12 +259,14 @@ void BaseCtx::attributesToArchInfo()
             std::vector<std::string> strs;
             std::string value = clock->second.as_string();
             boost::split(strs, value, boost::is_any_of(" "));
-            if (strs.size() == 6) {
+            if (strs.size() == 6 || strs.size() == 7) {
                 auto delay = [&](int i) { return delay_t(std::stod(strs.at(i))); };
                 auto cc = std::make_unique<ClockConstraint>();
                 cc->period = DelayPair(delay(0), delay(1));
                 cc->high = DelayPair(delay(2), delay(3));
                 cc->low = DelayPair(delay(4), delay(5));
+                if (strs.size() == 7)
+                    cc->name = id(strs.at(6));
                 ni->clkconstr = std::move(cc);
             }
         }

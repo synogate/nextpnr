@@ -492,6 +492,7 @@ class Ecp5GlobalRouter
                 glbptr->clkconstr->low = net->clkconstr->low;
                 glbptr->clkconstr->high = net->clkconstr->high;
                 glbptr->clkconstr->period = net->clkconstr->period;
+                glbptr->clkconstr->name = net->clkconstr->name;
             }
             dccptr = dcc.get();
             ctx->cells[dcc->name] = std::move(dcc);

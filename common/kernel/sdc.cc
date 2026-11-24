@@ -35,6 +35,7 @@ struct SdcEntity
         ENTITY_PORT,
         ENTITY_NET,
         ENTITY_PIN,
+        ENTITY_CLOCK, // by its name (ClockConstraint::name or the clock net's name)
     } type;
     IdString name;
     IdString pin; // for cell pins only
@@ -87,6 +88,32 @@ struct SdcValue
     std::string str;             // simple string value
     std::vector<SdcEntity> list; // list of entities
 };
+
+// Whether a name matches a pattern with the wildcards * (any characters) and ? (one character) of get_cells and
+// the like; brackets are bus indices, not character classes
+static bool sdc_match(const char *pattern, const char *name)
+{
+    const char *star = nullptr, *resume = nullptr;
+    while (*name) {
+        if (*pattern == '*') {
+            star = pattern++;
+            resume = name;
+        } else if (*pattern == '?' || *pattern == *name) {
+            pattern++;
+            name++;
+        } else if (star) {
+            pattern = star + 1;
+            name = ++resume;
+        } else {
+            return false;
+        }
+    }
+    while (*pattern == '*')
+        pattern++;
+    return !*pattern;
+}
+
+static bool sdc_is_pattern(const std::string &s) { return s.find_first_of("*?") != std::string::npos; }
 
 struct SDCParser
 {
@@ -229,8 +256,12 @@ struct SDCParser
             return cmd_get_pins(arguments);
         else if (cmd == "create_clock")
             return cmd_create_clock(arguments);
+        else if (cmd == "get_clocks")
+            return cmd_get_clocks(arguments);
         else if (cmd == "set_false_path")
             return cmd_set_false_path(arguments);
+        else if (cmd == "set_multicycle_path")
+            return cmd_set_multicycle_path(arguments);
         else
             log_error("Unsupported SDC command '%s'\n", cmd.c_str());
     }
@@ -264,6 +295,19 @@ struct SDCParser
             std::string s = arg.str;
             if (s.at(0) == '-')
                 log_error("unsupported argument '%s' to get_nets (line %d)\n", s.c_str(), lineno);
+            if (sdc_is_pattern(s)) {
+                // (nets by their aliases too, each once)
+                pool<IdString> found;
+                for (auto &alias : ctx->net_aliases)
+                    if (sdc_match(s.c_str(), alias.first.c_str(ctx)) && found.insert(alias.second).second)
+                        nets.emplace_back(SdcEntity::ENTITY_NET, alias.second);
+                for (auto &net : ctx->nets)
+                    if (sdc_match(s.c_str(), net.first.c_str(ctx)) && found.insert(net.first).second)
+                        nets.emplace_back(SdcEntity::ENTITY_NET, net.first);
+                if (found.empty())
+                    log_warning("get_nets argument '%s' matched no objects.\n", s.c_str());
+                continue;
+            }
             IdString id = ctx->id(s);
             if (ctx->nets.count(id) || ctx->net_aliases.count(id))
                 nets.emplace_back(SdcEntity::ENTITY_NET, ctx->net_aliases.count(id) ? ctx->net_aliases.at(id) : id);
@@ -271,6 +315,36 @@ struct SDCParser
                 log_warning("get_nets argument '%s' matched no objects.\n", s.c_str());
         }
         return nets;
+    }
+
+    SdcValue cmd_get_clocks(const std::vector<SdcValue> &arguments)
+    {
+        // The clocks given so far: the names of the clock constraints and of the nets they are on
+        pool<IdString> names;
+        for (auto &net : ctx->nets)
+            if (net.second->clkconstr) {
+                names.insert(net.first);
+                if (net.second->clkconstr->name != IdString())
+                    names.insert(net.second->clkconstr->name);
+            }
+        std::vector<SdcEntity> clocks;
+        for (int i = 1; i < int(arguments.size()); i++) {
+            auto &arg = arguments.at(i);
+            if (!arg.is_string)
+                log_error("get_clocks expected string arguments (line %d)\n", lineno);
+            std::string s = arg.str;
+            if (s.at(0) == '-')
+                log_error("unsupported argument '%s' to get_clocks (line %d)\n", s.c_str(), lineno);
+            bool found = false;
+            for (IdString name : names)
+                if (sdc_is_pattern(s) ? sdc_match(s.c_str(), name.c_str(ctx)) : name == ctx->id(s)) {
+                    clocks.emplace_back(SdcEntity::ENTITY_CLOCK, name);
+                    found = true;
+                }
+            if (!found)
+                log_warning("get_clocks argument '%s' matched no clock (line %d).\n", s.c_str(), lineno);
+        }
+        return clocks;
     }
 
     SdcValue cmd_get_ports(const std::vector<SdcValue> &arguments)
@@ -283,6 +357,12 @@ struct SDCParser
             std::string s = arg.str;
             if (s.at(0) == '-')
                 log_error("unsupported argument '%s' to get_ports (line %d)\n", s.c_str(), lineno);
+            if (sdc_is_pattern(s)) {
+                for (auto &port : ctx->ports)
+                    if (sdc_match(s.c_str(), port.first.c_str(ctx)))
+                        ports.emplace_back(SdcEntity::ENTITY_PORT, port.first);
+                continue;
+            }
             IdString id = ctx->id(s);
             if (ctx->ports.count(id))
                 ports.emplace_back(SdcEntity::ENTITY_PORT, id);
@@ -300,9 +380,20 @@ struct SDCParser
             std::string s = arg.str;
             if (s.at(0) == '-')
                 log_error("unsupported argument '%s' to get_cells (line %d)\n", s.c_str(), lineno);
+            if (sdc_is_pattern(s)) {
+                size_t before = cells.size();
+                for (auto &cell : ctx->cells)
+                    if (sdc_match(s.c_str(), cell.first.c_str(ctx)))
+                        cells.emplace_back(SdcEntity::ENTITY_CELL, cell.first);
+                if (cells.size() == before)
+                    log_warning("get_cells argument '%s' matched no objects.\n", s.c_str());
+                continue;
+            }
             IdString id = ctx->id(s);
             if (ctx->cells.count(id))
                 cells.emplace_back(SdcEntity::ENTITY_CELL, id);
+            else
+                log_warning("get_cells argument '%s' matched no objects.\n", s.c_str());
         }
         return cells;
     }
@@ -320,6 +411,20 @@ struct SDCParser
             auto pos = s.rfind('/');
             if (pos == std::string::npos)
                 log_error("expected / in cell pin name '%s' (line %d)\n", s.c_str(), lineno);
+            if (sdc_is_pattern(s)) {
+                std::string cell_pattern = s.substr(0, pos), pin_pattern = s.substr(pos + 1);
+                size_t before = pins.size();
+                for (auto &cell : ctx->cells) {
+                    if (!sdc_match(cell_pattern.c_str(), cell.first.c_str(ctx)))
+                        continue;
+                    for (auto &port : cell.second->ports)
+                        if (port.second.net != nullptr && sdc_match(pin_pattern.c_str(), port.first.c_str(ctx)))
+                            pins.emplace_back(SdcEntity::ENTITY_PIN, cell.first, port.first);
+                }
+                if (pins.size() == before)
+                    log_warning("get_pins argument '%s' matched no objects.\n", s.c_str());
+                continue;
+            }
             pins.emplace_back(SdcEntity::ENTITY_PIN, ctx->id(s.substr(0, pos)), ctx->id(s.substr(pos + 1)));
             if (pins.back().get_net(ctx) == nullptr) {
                 log_warning("cell pin '%s' not found\n", s.c_str());
@@ -332,6 +437,8 @@ struct SDCParser
     SdcValue cmd_create_clock(const std::vector<SdcValue> &arguments)
     {
         float period = 10;
+        std::string name;
+        std::vector<NetInfo *> nets;
         for (int i = 1; i < int(arguments.size()); i++) {
             auto &arg = arguments.at(i);
             if (arg.is_string) {
@@ -348,6 +455,9 @@ struct SDCParser
                     }
                 } else if (s == "-name") {
                     i++;
+                    if (i >= int(arguments.size()) || !arguments.at(i).is_string)
+                        log_error("expecting string argument to -name (line %d)\n", lineno);
+                    name = arguments.at(i).str;
                 } else {
                     log_error("unsupported argument '%s' to create_clock\n", s.c_str());
                 }
@@ -362,10 +472,15 @@ struct SDCParser
                         net = ctx->ports.at(ety.name).net;
                     else
                         log_error("create_clock applies only to cells, cell pins, or IO ports (line %d)\n", lineno);
-
-                    ctx->addClock(net->name, 1000.0f / period);
+                    if (net != nullptr)
+                        nets.push_back(net);
                 }
             }
+        }
+        for (NetInfo *net : nets) {
+            ctx->addClock(net->name, 1000.0f / period);
+            if (!name.empty() && net->clkconstr)
+                net->clkconstr->name = ctx->id(name);
         }
         return std::string{};
     }
@@ -429,14 +544,125 @@ struct SDCParser
         return std::string{};
     }
 
+    // set_multicycle_path <multiplier> [-setup | -hold] [-start | -end] [-from <objects>] [-to <objects>]
+    SdcValue cmd_set_multicycle_path(const std::vector<SdcValue> &arguments)
+    {
+        MulticyclePath mcp;
+        bool have_multiplier = false, have_setup = false, have_start = false, have_end = false;
+        bool have_from = false, have_to = false;
+        auto points = [&](const SdcValue &val, const char *option) {
+            if (val.is_string)
+                log_error("set_multicycle_path %s expects objects of get_cells, get_pins, get_nets, get_ports or "
+                          "get_clocks, not '%s' (line %d)\n",
+                          option, val.str.c_str(), lineno);
+            std::vector<TimingPathPoint> result;
+            for (auto &ety : val.list) {
+                TimingPathPoint p;
+                p.name = ety.name;
+                switch (ety.type) {
+                case SdcEntity::ENTITY_CELL:
+                    p.type = TimingPathPoint::CELL;
+                    break;
+                case SdcEntity::ENTITY_PIN:
+                    p.type = TimingPathPoint::PIN;
+                    p.pin = ety.pin;
+                    break;
+                case SdcEntity::ENTITY_NET:
+                    p.type = TimingPathPoint::NET;
+                    break;
+                case SdcEntity::ENTITY_PORT: {
+                    // (the net of the port)
+                    NetInfo *net = ctx->ports.at(ety.name).net;
+                    if (net == nullptr)
+                        continue;
+                    p.type = TimingPathPoint::NET;
+                    p.name = net->name;
+                    break;
+                }
+                case SdcEntity::ENTITY_CLOCK:
+                    p.type = TimingPathPoint::CLOCK;
+                    break;
+                }
+                result.push_back(p);
+            }
+            return result;
+        };
+        for (int i = 1; i < int(arguments.size()); i++) {
+            auto &arg = arguments.at(i);
+            if (!arg.is_string)
+                log_error("unexpected objects in set_multicycle_path, expecting -from or -to before them (line %d)\n",
+                          lineno);
+            const std::string &s = arg.str;
+            if (s == "-setup") {
+                have_setup = true;
+            } else if (s == "-hold") {
+                mcp.hold = true;
+            } else if (s == "-start") {
+                have_start = true;
+            } else if (s == "-end") {
+                have_end = true;
+            } else if (s == "-from" || s == "-to") {
+                if (++i >= int(arguments.size()))
+                    log_error("missing objects after %s in set_multicycle_path (line %d)\n", s.c_str(), lineno);
+                auto &list = s == "-from" ? mcp.from : mcp.to;
+                auto more = points(arguments.at(i), s.c_str());
+                list.insert(list.end(), more.begin(), more.end());
+                (s == "-from" ? have_from : have_to) = true;
+            } else if (s.at(0) == '-') {
+                log_error("unsupported argument '%s' to set_multicycle_path (line %d)\n", s.c_str(), lineno);
+            } else {
+                if (have_multiplier)
+                    log_error("set_multicycle_path expects one multiplier, got '%s' too (line %d)\n", s.c_str(),
+                              lineno);
+                try {
+                    size_t used = 0;
+                    mcp.multiplier = std::stoi(s, &used);
+                    if (used != s.size())
+                        throw std::invalid_argument(s);
+                } catch (std::exception &e) {
+                    log_error("invalid multiplier '%s' to set_multicycle_path (line %d)\n", s.c_str(), lineno);
+                }
+                have_multiplier = true;
+            }
+        }
+        if (!have_multiplier)
+            log_error("set_multicycle_path needs a multiplier (line %d)\n", lineno);
+        if (have_setup && mcp.hold)
+            log_error("set_multicycle_path takes -setup or -hold, not both (line %d)\n", lineno);
+        if (have_start && have_end)
+            log_error("set_multicycle_path takes -start or -end, not both (line %d)\n", lineno);
+        if (mcp.multiplier < (mcp.hold ? 0 : 1))
+            log_error("set_multicycle_path multiplier %d is too small for %s (line %d)\n", mcp.multiplier,
+                      mcp.hold ? "hold" : "setup", lineno);
+        mcp.start = have_start || (mcp.hold && !have_end);
+        // A list given that matched nothing must not stand for every path
+        if ((have_from && mcp.from.empty()) || (have_to && mcp.to.empty())) {
+            log_warning("set_multicycle_path: the objects of -%s matched nothing, constraint ignored (line %d)\n",
+                        (have_from && mcp.from.empty()) ? "from" : "to", lineno);
+            return std::string{};
+        }
+        if (!have_from && !have_to)
+            log_warning("set_multicycle_path without -from or -to applies to every path (line %d)\n", lineno);
+        log_info("Multicycle path (line %d): %s %d (-%s), from %d object(s), to %d object(s)\n", lineno,
+                 mcp.hold ? "hold" : "setup", mcp.multiplier, mcp.start ? "start" : "end", int(mcp.from.size()),
+                 int(mcp.to.size()));
+        ctx->multicycle_paths.push_back(mcp);
+        return std::string{};
+    }
+
     void operator()()
     {
         while (!eof()) {
             skip_blank(true);
+            int line = lineno;
             auto args = get_arguments();
             if (args.empty())
                 continue;
+            // (messages of the command name its line, not the next one get_arguments went on to)
+            int next_line = lineno;
+            lineno = line;
             evaluate(args);
+            lineno = next_line;
         }
     }
 };

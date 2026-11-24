@@ -147,6 +147,10 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
             }
         }
         log_info("%.2f ns logic, %.2f ns routing\n", ctx->getDelayNS(logic_total), ctx->getDelayNS(route_total));
+        if (path.setup_cycles != 1 || path.hold_shift != 0)
+            log_info("multicycle path: %d clock cycle(s) for setup (%.2f ns), hold checked %.2f ns after the launch "
+                     "edge\n",
+                     path.setup_cycles, ctx->getDelayNS(path.max_delay), ctx->getDelayNS(path.hold_shift));
     };
 
     // Single domain paths

@@ -64,6 +64,7 @@ set(TEST_SOURCES
     tests/logic_check.cc
     tests/logic_eval.cc
     tests/mult.cc
+    tests/multicycle.cc
     tests/mx8.cc
     tests/netlist_eval.cc
     tests/netlist_eval.h

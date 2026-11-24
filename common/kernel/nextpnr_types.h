@@ -374,6 +374,37 @@ struct ClockConstraint
     DelayPair high;
     DelayPair low;
     DelayPair period;
+    // The name of the clock (create_clock -name, else the net it was given for), which stays when a packer
+    // copies the constraint to the nets behind a clock buffer: get_clocks finds the clock by it
+    IdString name;
+};
+
+// An object of a -from or -to list of a timing exception
+struct TimingPathPoint
+{
+    enum Type
+    {
+        CELL,  // every start or end point of the cell
+        PIN,   // the start or end point (or the clock pin of the ones) of a cell; the whole cell if the packer
+               // renamed the pin
+        NET,   // the start point driving the net, or the end points it reaches
+        CLOCK, // every start or end point clocked by the clock (ClockConstraint::name, or the clock net's name)
+    } type;
+    IdString name;
+    IdString pin;
+};
+
+// set_multicycle_path: the paths from any object of from to any of to (an empty list matches everything) have
+// multiplier periods for setup (the capture edge moves by multiplier - 1 periods), or with hold, the hold check
+// moves back by multiplier periods from its default edge (one period before the setup edge).
+struct MulticyclePath
+{
+    int multiplier = 1;
+    bool hold = false;
+    // The periods counted are those of the launch clock (-start), not the capture clock (-end); by default -end
+    // for setup and -start for hold
+    bool start = false;
+    std::vector<TimingPathPoint> from, to;
 };
 
 struct ClockFmax
@@ -459,6 +490,12 @@ struct CriticalPath
     // if sum[segments.delay] < 0 this is a hold/min violation
     // if sum[segments.delay] > max_delay this is a setup/max violation
     delay_t max_delay;
+
+    // A multicycle path (set_multicycle_path): the clock cycles it has for setup (max_delay includes them), and
+    // how much later than the launch edge its hold check is (a hold/min violation if sum[segments.delay] <
+    // hold_shift)
+    int setup_cycles = 1;
+    delay_t hold_shift = 0;
 
     // Individual path segments
     std::vector<Segment> segments;
