@@ -184,6 +184,8 @@ struct TimingAnalyser
     // longest paths are interesting for setup violations and shortest paths are interesting for hold violations
     CriticalPath build_critical_path_report(domain_id_t domain_pair, CellPortKey endpoint, bool longest_path);
     void build_crit_path_reports();
+    // The worst slacks of the multicycle paths (TimingResult::multicycle_slacks)
+    void build_multicycle_slack_report();
     void build_slack_histogram_report();
 
     std::vector<CriticalPath> get_min_delay_violations();
@@ -282,6 +284,10 @@ struct TimingAnalyser
         // than the launch edge the hold check is
         int setup_cycles = 1;
         delay_t setup_shift = 0, hold_shift = 0;
+        // The default hold check is at the capture edge this long before the launch edge: 0, or between the two
+        // edges of one clock its high (falling launch) or low time (rising launch). The hold check of the pair is
+        // hold_shift - hold_edge after the launch edge.
+        delay_t hold_edge = 0;
         // The pairs of the same launch and capture clock edges (which differ in their domain tags only) form a
         // group, whose criticalities are scaled together
         int group = -1;

@@ -359,4 +359,27 @@ void BaseCtx::copyBelPorts(IdString cell, BelId bel)
     }
 }
 
+void BaseCtx::moveTimingPoints(IdString old_cell, IdString new_cell, const dict<IdString, IdString> &port_map)
+{
+    for (auto &mcp : multicycle_paths) {
+        for (auto *list : {&mcp.from, &mcp.to}) {
+            std::vector<TimingPathPoint> moved;
+            for (auto &point : *list) {
+                if ((point.type != TimingPathPoint::CELL && point.type != TimingPathPoint::PIN) || point.name != old_cell) {
+                    moved.push_back(point);
+                    continue;
+                }
+                auto pin = point.type == TimingPathPoint::PIN ? port_map.find(point.pin) : port_map.end();
+                if (pin != port_map.end()) {
+                    moved.push_back({TimingPathPoint::PIN, new_cell, pin->second});
+                    continue;
+                }
+                for (auto &port : port_map)
+                    moved.push_back({TimingPathPoint::PIN, new_cell, port.second});
+            }
+            *list = std::move(moved);
+        }
+    }
+}
+
 NEXTPNR_NAMESPACE_END

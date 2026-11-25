@@ -150,7 +150,8 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
         if (path.setup_cycles != 1 || path.hold_shift != 0)
             log_info("multicycle path: %d clock cycle(s) for setup (%.2f ns), hold checked %.2f ns after the launch "
                      "edge\n",
-                     path.setup_cycles, ctx->getDelayNS(path.max_delay), ctx->getDelayNS(path.hold_shift));
+                     path.setup_cycles, ctx->getDelayNS(path.max_delay),
+                     ctx->getDelayNS(path.hold_shift - path.hold_edge));
     };
 
     // Single domain paths
@@ -177,6 +178,33 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
         std::string end = clock_event_name(ctx, report.clock_pair.end);
         log_info("Critical path report for cross-domain path '%s' -> '%s':\n", start.c_str(), end.c_str());
         print_path_report(report);
+    }
+
+    // Multicycle paths: their worst slacks and paths (they are seldom the critical ones)
+    for (auto &s : result.multicycle_slacks) {
+        if (hold_only)
+            break;
+        log_break();
+        std::string start = clock_event_name(ctx, s.clock_pair.start);
+        std::string end = clock_event_name(ctx, s.clock_pair.end);
+        auto endpoint = [ctx](const CriticalPath &path) {
+            if (path.segments.empty())
+                return std::string("-");
+            auto &to = path.segments.back().to;
+            return std::string(to.first.c_str(ctx)) + "." + to.second.c_str(ctx);
+        };
+        log_info("Multicycle paths '%s' -> '%s' (%d clock cycle(s) for setup, hold checked %.2f ns after the "
+                 "launch edge): %d end point(s)\n",
+                 start.c_str(), end.c_str(), s.setup_cycles,
+                 ctx->getDelayNS(s.hold_shift - s.hold_edge), s.endpoints);
+        log_info("    worst setup slack %.2f ns at %s\n", ctx->getDelayNS(s.setup_slack), endpoint(s.setup_path).c_str());
+        if (s.hold_path.segments.empty()) {
+            log_info("    no hold check\n");
+            continue;
+        }
+        log_info("    worst hold slack %.2f ns at %s, the shortest path:\n", ctx->getDelayNS(s.hold_slack),
+                 endpoint(s.hold_path).c_str());
+        print_path_report(s.hold_path);
     }
 
     // Min delay violated paths
