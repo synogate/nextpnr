@@ -167,6 +167,10 @@ template <typename R> struct ArchAPI : BaseCtx
     virtual WireId getPipSrcWire(PipId pip) const = 0;
     virtual WireId getPipDstWire(PipId pip) const = 0;
     virtual DelayQuad getPipDelay(PipId pip) const = 0;
+    // The least and the greatest delay of a pip, for the hold analysis of routed data paths (summed up by
+    // Context::getNetinfoRouteDelayRange). Its maximum must be getPipDelay(pip).maxDelay(), which the routers and the
+    // setup analysis take; getPipDelay stays one value for the routers' speed.
+    virtual DelayPair getPipDelayRange(PipId pip) const = 0;
     virtual Loc getPipLocation(PipId pip) const = 0;
     virtual bool isPipInverting(PipId pip) const = 0;
     // Group methods

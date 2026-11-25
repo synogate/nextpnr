@@ -51,6 +51,7 @@ void TimingAnalyser::run(bool update_route_delays, bool update_net_timings, bool
                          bool update_crit_paths)
 {
     reset_times();
+    max_delay_cache.clear();
     if (update_route_delays)
         get_route_delays();
     walk_forward();
@@ -176,9 +177,35 @@ void TimingAnalyser::get_route_delays()
         for (auto &usr : ni->users) {
             if (usr.cell->bel == BelId())
                 continue;
-            ports.at(CellPortKey(usr)).route_delay = DelayPair(ctx->getNetinfoRouteDelay(ni, usr));
+            ports.at(CellPortKey(usr)).route_delay = analysis_route_delay(ni, usr);
         }
     }
+    if (setup_only)
+        return;
+    // The clock pins of the clocked arcs one value, also where an arch does not class them as clock inputs (see
+    // analysis_route_delay)
+    for (auto &port : ports)
+        for (auto &arc : port.second.cell_arcs)
+            if (arc.type == CellArc::CLK_TO_Q || arc.type == CellArc::SETUP || arc.type == CellArc::HOLD) {
+                auto clock = ports.find(CellPortKey(port.first.cell, arc.other_port));
+                if (clock != ports.end())
+                    clock->second.route_delay = DelayPair(clock->second.route_delay.maxDelay());
+            }
+}
+
+DelayPair TimingAnalyser::analysis_route_delay(const NetInfo *net, const PortRef &usr) const
+{
+    // The setup analysis takes the maximum only (and is spared summing the minimum)
+    if (setup_only)
+        return DelayPair(ctx->getNetinfoRouteDelay(net, usr));
+    // Into a clock pin one value, the maximum: without common path pessimism removal, the least delay to the launching
+    // register and the greatest to the capturing one would make up a skew the shared part of the clock tree does not
+    // have
+    int clocks = 0;
+    if (ctx->getPortTimingClass(usr.cell, usr.port, clocks) == TMG_CLOCK_INPUT)
+        return DelayPair(ctx->getNetinfoRouteDelay(net, usr));
+    // Data paths: the hold checks take the least delay (one value where the arch has no range)
+    return ctx->getNetinfoRouteDelayRange(net, usr);
 }
 
 void TimingAnalyser::set_route_delay(CellPortKey port, DelayPair value) { ports.at(port).route_delay = value; }
@@ -794,7 +821,11 @@ void TimingAnalyser::walk_backward()
             set_required_time(ep.first, dom_id, init_required, 1, clock_key);
         }
     }
-    // Walk backwards in topological order
+    // Walk backwards in topological order. The required time is a pair: the setup part (min_delay, the earliest
+    // required time over the fanout) goes back by the greatest delays, the hold part (max_delay, the latest time the
+    // data may change and still meet the hold checks) by the least ones, so that the hold slack is exact at every port,
+    // not only at the end points
+    auto back = [](const DelayPair &delay) { return DelayPair(delay.maxDelay(), delay.minDelay()); };
     for (auto p : reversed_range(topological_order)) {
         auto &pd = ports.at(p);
         for (auto &req : pd.required) {
@@ -802,17 +833,15 @@ void TimingAnalyser::walk_backward()
                 // Input port: propagate delay back through net, subtracting route delay
                 NetInfo *net = port_info(p).net;
                 if (net != nullptr && net->driver.cell != nullptr)
-                    set_required_time(CellPortKey(net->driver), req.first,
-                                      req.second.value - DelayPair(pd.route_delay.maxDelay()), req.second.path_length,
-                                      p);
+                    set_required_time(CellPortKey(net->driver), req.first, req.second.value - back(pd.route_delay),
+                                      req.second.path_length, p);
             } else if (pd.type == PORT_OUT) {
                 // Output port : propagate delay back through cell, subtracting combinational delay
                 for (auto &fanin : pd.cell_arcs) {
                     if (fanin.type != CellArc::COMBINATIONAL)
                         continue;
                     set_required_time(CellPortKey(p.cell, fanin.other_port), req.first,
-                                      req.second.value - DelayPair(fanin.value.maxDelay()), req.second.path_length + 1,
-                                      p);
+                                      req.second.value - back(fanin.value.delayPair()), req.second.path_length + 1, p);
                 }
             }
         }
@@ -1199,7 +1228,9 @@ CriticalPath TimingAnalyser::build_critical_path_report(domain_id_t domain_pair,
         seg_logic.net = IdString();
         report.segments.push_back(seg_logic);
 
-        auto net_delay = DelayPair(ctx->getNetinfoRouteDelay(net, sink));
+        // (the shortest path with the least routing delays, as walk_forward took them)
+        auto net_delay =
+                longest_path ? DelayPair(ctx->getNetinfoRouteDelay(net, sink)) : analysis_route_delay(net, sink);
 
         CriticalPath::Segment seg_route;
         seg_route.type = CriticalPath::Segment::Type::ROUTING;
@@ -1254,6 +1285,44 @@ delay_t TimingAnalyser::get_max_delay(domain_id_t domain_pair)
         }
     }
     return max_delay + dp.setup_shift;
+}
+
+bool TimingAnalyser::has_hold_check(domain_id_t domain_pair) const
+{
+    const auto &dp = domain_pairs.at(domain_pair);
+    const auto &launch = domains.at(dp.key.launch).key;
+    const auto &capture = domains.at(dp.key.capture).key;
+    // (a clocked capture domain has register end points only: its end points are those of setup arcs)
+    if (launch.is_async() || capture.is_async())
+        return false;
+    return launch.clock == capture.clock || clock_delays.count(std::make_pair(launch.clock, capture.clock)) > 0;
+}
+
+delay_t TimingAnalyser::get_hold_slack(CellPortKey port) const
+{
+    delay_t slack = std::numeric_limits<delay_t>::max();
+    if (setup_only)
+        return slack;
+    // (compute_slack has the hold edge, the multicycle shift and clock to clock in it)
+    for (const auto &pdp : ports.at(port).domain_pairs)
+        if (has_hold_check(pdp.first))
+            slack = std::min(slack, pdp.second.hold_slack);
+    return slack;
+}
+
+delay_t TimingAnalyser::get_absolute_setup_slack(CellPortKey port)
+{
+    delay_t slack = std::numeric_limits<delay_t>::max();
+    for (const auto &pdp : ports.at(port).domain_pairs) {
+        if (pdp.first >= domain_id_t(max_delay_cache.size()))
+            max_delay_cache.resize(domain_pairs.size(), std::numeric_limits<delay_t>::lowest());
+        delay_t &max_delay = max_delay_cache.at(pdp.first);
+        if (max_delay == std::numeric_limits<delay_t>::lowest())
+            max_delay = get_max_delay(pdp.first);
+        // (as get_endpoint_timings: the delay of the path is -setup_slack)
+        slack = std::min(slack, max_delay + pdp.second.setup_slack);
+    }
+    return slack;
 }
 
 TimingAnalyser::PathClockDelays TimingAnalyser::get_clock_delays(const EndpointTiming &ep, const CriticalPath &path)

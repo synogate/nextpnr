@@ -175,6 +175,60 @@ delay_t Context::getNetinfoRouteDelay(const NetInfo *net_info, const PortRef &us
     return max_delay;
 }
 
+DelayPair Context::getNetinfoRouteDelayRange(const NetInfo *net_info, const PortRef &user_info) const
+{
+    // As getNetinfoRouteDelay, with the same sums for the maximum. Wire delays and the predictions of unrouted arcs
+    // are one value; so is an arch's override (as the analysis has always taken it)
+#ifdef ARCH_ECP5
+    if (net_info->is_global)
+        return DelayPair(0);
+#endif
+
+    if (net_info->wires.empty())
+        return DelayPair(predictArcDelay(net_info, user_info));
+
+    WireId src_wire = getNetinfoSourceWire(net_info);
+    if (src_wire == WireId())
+        return DelayPair(0);
+
+    DelayQuad quad_result;
+    if (getArcDelayOverride(net_info, user_info, quad_result))
+        return DelayPair(quad_result.maxDelay());
+
+    DelayPair result(0);
+    bool first = true;
+    for (auto dst_wire : getNetinfoSinkWires(net_info, user_info)) {
+        WireId cursor = dst_wire;
+        DelayPair delay(0);
+
+        while (cursor != WireId() && cursor != src_wire) {
+            auto it = net_info->wires.find(cursor);
+
+            if (it == net_info->wires.end())
+                break;
+
+            PipId pip = it->second.pip;
+            if (pip == PipId())
+                break;
+
+            delay += getPipDelayRange(pip);
+            delay += DelayPair(getWireDelay(cursor).maxDelay());
+            cursor = getPipSrcWire(pip);
+        }
+
+        if (cursor == src_wire)
+            delay += DelayPair(getWireDelay(src_wire).maxDelay()); // routed
+        else
+            delay = DelayPair(predictArcDelay(net_info, user_info)); // unrouted
+        // (the maximum starts at 0, as in getNetinfoRouteDelay)
+        result.min_delay = first ? delay.min_delay : std::min(result.min_delay, delay.min_delay);
+        result.max_delay = std::max(result.max_delay, delay.max_delay);
+        first = false;
+    }
+    result.min_delay = std::min(result.min_delay, result.max_delay);
+    return result;
+}
+
 DelayQuad Context::getNetinfoRouteDelayQuad(const NetInfo *net_info, const PortRef &user_info) const
 {
 #ifdef ARCH_ECP5

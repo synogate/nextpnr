@@ -8,6 +8,7 @@ set(SOURCES
     config.h
     constids.inc
     delay.cc
+    delay_cell.cc
     distance.cc
     distance.h
     extra_data.h
@@ -21,6 +22,7 @@ set(SOURCES
     logic_eval.cc
     lut_swap.cc
     gui_attrs.cc
+    hold_fix.cc
     pack.cc
     pack_bram.cc
     pack_clocking.cc
@@ -47,11 +49,14 @@ set(TEST_SOURCES
     tests/ccf.cc
     tests/clocking.cc
     tests/config_output.cc
+    tests/delay_cell.cc
     tests/design_scopes.cc
     tests/errors.cc
     tests/gui.cc
     tests/harness.cc
     tests/hierarchy.cc
+    tests/hold.cc
+    tests/hold_fix.cc
     tests/io_registers.cc
     tests/io_semantics.cc
     tests/known_bugs.h

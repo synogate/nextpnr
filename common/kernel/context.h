@@ -51,6 +51,9 @@ struct Context : Arch, DeterministicRNG
     WireId getNetinfoSinkWire(const NetInfo *net_info, const PortRef &sink, size_t phys_idx) const;
     delay_t getNetinfoRouteDelay(const NetInfo *net_info, const PortRef &sink) const;
     DelayQuad getNetinfoRouteDelayQuad(const NetInfo *net_info, const PortRef &sink) const;
+    // The least and the greatest routing delay of the arc from the pips' getPipDelayRange (for the hold analysis);
+    // the maximum is getNetinfoRouteDelay
+    DelayPair getNetinfoRouteDelayRange(const NetInfo *net_info, const PortRef &sink) const;
 
     // provided by router1.cc
     bool checkRoutedDesign() const;
@@ -102,8 +105,8 @@ struct Context : Arch, DeterministicRNG
     void log_timing_results(TimingResult &result, bool print_histogram, bool print_fmax, bool print_path,
                             bool warn_on_failure);
     // Only the hold/min time violations of the result (errors unless timing/allowFail), as log_timing_results with
-    // print_path shows them
-    void log_hold_violations(TimingResult &result);
+    // print_path shows them. corner: the timing corner (speed grade) the result is of, named in the messages if given
+    void log_hold_violations(TimingResult &result, const std::string &corner = std::string());
 
     // provided by sdc.cc
     void read_sdc(std::istream &in);

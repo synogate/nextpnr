@@ -931,6 +931,18 @@ Tri NetlistEvaluator::eval_port(const CellInfo *cell, IdString port)
         return eval_l2t4(cell);
     if (cell->type.in(id_CPE_ADDF, id_CPE_ADDF2, id_CPE_MX4))
         return eval_cpe(cell, port);
+    // A delay cell (delay_cell.cc): OUT1 / OUT2 are those of a whole CPE as its parameters configure it, with all
+    // inputs but IN6 unknown; CPOUT1 (tap 2) is OUT2 (C_O2 = 3: COMB2OUT) through the routing multiplexer of COUTX
+    // ({C_SEL_C, C_SELX} = 01, C_CX_I) back into CPOUT1 (C_HORIZ: the X pair, C_C_P: the carry), as cpe.v has it
+    if (cell->type == ctx->id("CPE_DELAY")) {
+        if (port.in(id_OUT1, id_OUT2))
+            return eval_cpe(cell, port);
+        auto param = [&](IdString name) { return int_or_default(cell->params, name, 0); };
+        if (port == id_CPOUT1 && param(id_C_O2) == 3 && param(id_C_SELX) == 1 && param(id_C_SEL_C) == 0 &&
+            param(id_C_CX_I) == 1 && param(id_C_HORIZ) == 1 && param(id_C_C_P) == 1)
+            return eval_cpe(cell, id_OUT2);
+        throw EvalUnsupported(stringf("delay cell '%s' port %s has no model", cell->name.c_str(ctx), port.c_str(ctx)));
+    }
     if (cell->type == id_CPE_MX8 && port == id_MUXOUT)
         return eval_mx8(cell);
     if (cell->type == id_CPE_CPLINES)

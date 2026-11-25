@@ -92,6 +92,8 @@ struct TimingAnalyser
     void set_route_delay(CellPortKey port, DelayPair value);
 
     float get_criticality(CellPortKey port) const { return ports.at(port).worst_crit; }
+    // The routing delay into an input port as the analysis takes it (see analysis_route_delay)
+    DelayPair get_route_delay(CellPortKey port) const { return ports.at(port).route_delay; }
     float get_setup_slack(CellPortKey port) const { return ports.at(port).worst_setup_slack; }
     float get_domain_setup_slack(CellPortKey port) const
     {
@@ -103,6 +105,19 @@ struct TimingAnalyser
         }
         return slack;
     }
+
+    // The slacks of the paths through a port (any port the analysis has, typically the input port of a net's user),
+    // after setup() or run(), without the path reports:
+    // - the worst hold slack, over the domain pairs that have a hold check (as get_min_delay_violations: a clocked
+    //   launch, the same or related clocks, register end points), with the hold edge and multicycle shift of the
+    //   pair; max() where there is none (and with setup_only). It is <= 0 exactly where a path violating hold passes
+    //   through the port, and at an end point it is the least EndpointTiming::hold_slack of the point.
+    delay_t get_hold_slack(CellPortKey port) const;
+    // - the worst setup slack in absolute terms, over all domain pairs (also between the two edges of a clock,
+    //   multicycle and unrelated or unclocked pairs, each against get_max_delay as get_endpoint_timings has it); at
+    //   an end point the least EndpointTiming::setup_slack of the point. (get_setup_slack covers the pairs of one
+    //   clock edge only, against their period.)
+    delay_t get_absolute_setup_slack(CellPortKey port);
 
     dict<std::pair<IdString, IdString>, delay_t> get_clock_delays() const { return clock_delays; }
 
@@ -180,6 +195,9 @@ struct TimingAnalyser
     void init_ports();
     void get_cell_delays();
     void get_route_delays();
+    // The routing delay of an arc as the analysis takes it: the least and the greatest delay into data pins (unless
+    // setup_only), one value (the greatest) into clock pins
+    DelayPair analysis_route_delay(const NetInfo *net, const PortRef &usr) const;
     void topo_sort();
     void setup_port_domains();
     void identify_related_domains();
@@ -224,6 +242,10 @@ struct TimingAnalyser
 
     // The delay a path between the clocks of a domain pair may have
     delay_t get_max_delay(domain_id_t domain_pair);
+    // get_max_delay per domain pair, filled on demand by get_absolute_setup_slack (cleared by run())
+    std::vector<delay_t> max_delay_cache;
+    // Whether the paths of a domain pair have a hold check (see get_hold_slack)
+    bool has_hold_check(domain_id_t domain_pair) const;
 
     // get the N worst endpoints for a given domain pair
     std::vector<CellPortKey> get_worst_eps(domain_id_t domain_pair, int count);

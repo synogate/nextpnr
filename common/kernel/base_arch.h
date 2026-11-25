@@ -316,6 +316,12 @@ template <typename R> struct BaseArch : ArchAPI<R>
     };
 
     // Delay methods
+    // By default one value, the maximum, as the timing analysis has always taken routing delays (the minimum of
+    // getPipDelay is not necessarily meant for hold checks)
+    virtual DelayPair getPipDelayRange(PipId pip) const override
+    {
+        return DelayPair(this->getPipDelay(pip).maxDelay());
+    }
     virtual bool getArcDelayOverride(const NetInfo * /*net_info*/, const PortRef & /*sink*/,
                                      DelayQuad & /*delay*/) const override
     {

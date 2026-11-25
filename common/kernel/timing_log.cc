@@ -38,8 +38,10 @@ static std::string clock_event_name(const Context *ctx, const ClockEvent &e, int
     return value;
 };
 
-// hold_only: only the hold/min time violations, not the critical paths
-static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_only = false)
+// hold_only: only the hold/min time violations, not the critical paths; corner: the timing corner the results are of
+// (named in the hold violations, if not empty)
+static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_only = false,
+                           const std::string &corner = std::string())
 {
     auto print_net_source = [ctx](const NetInfo *net) {
         // Check if this net is annotated with a source list
@@ -211,9 +213,10 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
     // Show maximum of 10
     auto num_min_violations = result.min_delay_violations.size();
     bool allow_fail = bool_or_default(ctx->settings, ctx->id("timing/allowFail"), false);
+    std::string in_corner = corner.empty() ? std::string() : " in timing corner '" + corner + "'";
     if (num_min_violations > 0) {
         log_break();
-        log_info("%zu Hold/min time violations (showing 10 worst paths):\n", num_min_violations);
+        log_info("%zu Hold/min time violations%s (showing 10 worst paths):\n", num_min_violations, in_corner.c_str());
         for (size_t i = 0; i < std::min((size_t)10, num_min_violations); ++i) {
             auto &report = result.min_delay_violations.at(i);
             log_break();
@@ -222,9 +225,9 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
 
             std::string message;
             if (report.clock_pair.start == report.clock_pair.end) {
-                message = "Hold/min time violation for clock '" + start + "':\n";
+                message = "Hold/min time violation for clock '" + start + "'" + in_corner + ":\n";
             } else {
-                message = "Hold/min time violation for path '" + start + "' -> '" + end + "':\n";
+                message = "Hold/min time violation for path '" + start + "' -> '" + end + "'" + in_corner + ":\n";
             }
 
             if (allow_fail) {
@@ -465,7 +468,10 @@ static void log_tns(const TimingResult &result)
     log_info("Total negative slack: %.3f ns over %d failing endpoint(s)\n", tns_ps / 1000.0, failing);
 }
 
-void Context::log_hold_violations(TimingResult &result) { log_crit_paths(this, result, true); }
+void Context::log_hold_violations(TimingResult &result, const std::string &corner)
+{
+    log_crit_paths(this, result, true, corner);
+}
 
 void Context::log_timing_results(TimingResult &result, bool print_histogram, bool print_fmax, bool print_path,
                                  bool warn_on_failure)

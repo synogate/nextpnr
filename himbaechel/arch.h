@@ -587,36 +587,18 @@ struct Arch : BaseArch<ArchRanges>
     {
         return normalise_wire(pip.tile, chip_pip_info(chip_info, pip).dst_wire);
     }
-    DelayQuad getPipDelay(PipId pip) const override
+    DelayQuad getPipDelay(PipId pip) const override { return DelayQuad(pip_delay<false>(pip)); }
+    // With min_pip_delays, the least delay from the min values of the speed grade; else one value as getPipDelay
+    DelayPair getPipDelayRange(PipId pip) const override
     {
-        auto &pip_data = chip_pip_info(chip_info, pip);
-        auto pip_tmg = get_pip_timing(pip_data);
-        if (pip_tmg != nullptr) {
-            // TODO: multi corner analysis
-            WireId src = getPipSrcWire(pip);
-            uint64_t input_res = fast_pip_delays ? 0 : (drive_res.count(src) ? drive_res.at(src) : 0);
-            uint64_t input_cap = fast_pip_delays ? 0 : (load_cap.count(src) ? load_cap.at(src) : 0);
-            auto src_tmg = get_node_timing(src);
-            if (src_tmg != nullptr)
-                input_res += (src_tmg->res.slow_max / 2);
-            // Scale delay (fF * mOhm -> ps)
-            delay_t total_delay = (input_res * input_cap) / uint64_t(1e6);
-            total_delay += pip_tmg->int_delay.slow_max;
-
-            WireId dst = getPipDstWire(pip);
-            auto dst_tmg = get_node_timing(dst);
-            if (dst_tmg != nullptr) {
-                total_delay +=
-                        ((pip_tmg->out_res.slow_max + uint64_t(dst_tmg->res.slow_max) / 2) * dst_tmg->cap.slow_max) /
-                        uint64_t(1e6);
-            }
-
-            return DelayQuad(total_delay);
-        } else {
-            // Pip with no specified delay. Return a notional value so the router still has something to work with.
-            return DelayQuad(100);
-        }
+        delay_t max_delay = pip_delay<false>(pip);
+        if (!min_pip_delays)
+            return DelayPair(max_delay);
+        return DelayPair(std::min(pip_delay<true>(pip), max_delay), max_delay);
     }
+    // Whether getPipDelayRange gives the least delays of the chip database (min of the fast and slow min values),
+    // set by a uarch whose database has min delays for the hold analysis. Off, it gives one value, the maximum.
+    bool min_pip_delays = false;
     DownhillPipRange getPipsDownhill(WireId wire) const override
     {
         return DownhillPipRange(chip_info, get_tile_wire_range(wire));
@@ -967,6 +949,40 @@ struct Arch : BaseArch<ArchRanges>
     bool fast_pip_delays = false;
     dict<WireId, uint64_t> drive_res;
     dict<WireId, uint64_t> load_cap;
+
+    // The delay of a pip from the slow max values of the speed grade (getPipDelay), or with MIN the least, from the
+    // lesser of the fast and slow min values. MIN leaves out the input RC term of the loads bound on the source wire:
+    // drive_res and load_cap only sum slow max values, and without them the delay is a lower bound.
+    template <bool MIN> delay_t pip_delay(PipId pip) const
+    {
+        auto value = [](const TimingValue &v) -> int32_t {
+            return MIN ? std::min(v.fast_min, v.slow_min) : v.slow_max;
+        };
+        auto &pip_data = chip_pip_info(chip_info, pip);
+        auto pip_tmg = get_pip_timing(pip_data);
+        if (pip_tmg != nullptr) {
+            WireId src = getPipSrcWire(pip);
+            uint64_t input_res = (MIN || fast_pip_delays) ? 0 : (drive_res.count(src) ? drive_res.at(src) : 0);
+            uint64_t input_cap = (MIN || fast_pip_delays) ? 0 : (load_cap.count(src) ? load_cap.at(src) : 0);
+            auto src_tmg = get_node_timing(src);
+            if (src_tmg != nullptr)
+                input_res += (value(src_tmg->res) / 2);
+            // Scale delay (fF * mOhm -> ps)
+            delay_t total_delay = (input_res * input_cap) / uint64_t(1e6);
+            total_delay += value(pip_tmg->int_delay);
+
+            WireId dst = getPipDstWire(pip);
+            auto dst_tmg = get_node_timing(dst);
+            if (dst_tmg != nullptr) {
+                total_delay += ((value(pip_tmg->out_res) + uint64_t(value(dst_tmg->res)) / 2) * value(dst_tmg->cap)) /
+                               uint64_t(1e6);
+            }
+            return total_delay;
+        } else {
+            // Pip with no specified delay. Return a notional value so the router still has something to work with.
+            return 100;
+        }
+    }
 
     delay_t ripup_penalty = 120;
 };

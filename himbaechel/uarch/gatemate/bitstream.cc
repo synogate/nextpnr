@@ -286,7 +286,10 @@ struct BitstreamBackend
         for (auto &cell : ctx->cells) {
             CfgLoc loc = get_config_loc(cell.second.get()->bel.tile);
             auto &params = cell.second.get()->params;
-            switch (cell.second->type.index) {
+            // (a delay cell is written as the other cells of a whole CPE are: its parameters are configuration words,
+            // and the LUT tables follow the inversion of the routing into its input)
+            IdString type = uarch->is_delay_cell(cell.second.get()) ? id_CPE_ADDF2 : cell.second->type;
+            switch (type.index) {
             case id_CPE_IBUF.index:
             case id_CPE_TOBUF.index:
             case id_CPE_OBUF.index:

@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <tuple>
 
 #include "axis.h"
 #include "distance.h"
@@ -179,6 +180,81 @@ struct GateMateImpl : HimbaechelAPI
     dict<WireId, bool> mx8_input_ways;
     // And those to its selects, with their nets
     dict<WireId, const NetInfo *> held_ways;
+    // Delay cells (delay_cell.cc): one CPE configured as a pure delay from its input IN6 to one output, for
+    // lengthening connections with hold violations. Type CPE_DELAY on the bel CPE_LT_FULL (the whole CPE, nothing else
+    // in it but the CP lines the routing of other nets makes); the output port is the bel pin of the tap: OUT1 (tap
+    // 0, the LUT tree), OUT2 (tap 1, the carry select of a two-bit adder) or CPOUT1 (tap 2, tap 1 and back through
+    // the carry lines). The taps' delays grow with the tap.
+    static constexpr int delay_cell_tap_count = 3;
+    IdString delay_cell_type; // CPE_DELAY (not in constids.inc, which would change the chip database)
+    bool is_delay_cell(const CellInfo *cell) const { return cell != nullptr && cell->type == delay_cell_type; }
+    // The tap of a delay cell (by its output port), or -1
+    int delay_cell_tap(const CellInfo *cell) const;
+    // The output port (bel pin) of a tap; the input is always IN6
+    IdString delay_cell_output(int tap) const;
+    // The delay of each tap from IN6 to its output, for the speed grade selected (select_speed_grade)
+    std::vector<DelayQuad> delay_cell_taps() const;
+    bool delay_cell_delay(int tap, DelayQuad &delay) const;
+    // Whether the CPE of `bel` (any bel of it) can take a delay cell of this tap now: no cell in it, the wires of the
+    // tap's path free, no bridge through it and (tap 2) no carry line select of the routing against the cell's
+    bool delay_cell_fits(BelId bel, int tap) const;
+    // A delay cell (hold$delay$<n>) between `net` and its sink `user`, placed in the CPE of `bel`: `net` drives its
+    // IN6, a new net (hold$delay$<n>$out) the sink. The routing of `net` to that sink is released; the two connections are unrouted
+    // (route them with route_ripped(), or ideal_path() and bind). nullptr if it does not fit (nothing changed).
+    CellInfo *insert_delay_cell(NetInfo *net, const PortRef &user, BelId bel, int tap);
+    // The exact undo of insert_delay_cell: the sinks of the cell's output back on its input net, the cell and the
+    // output net gone, with their routing. The route to the sink is restored as insert_delay_cell released it where
+    // its wires and selects are still free (true), else left unrouted (false; also for a cell from a loaded design).
+    bool remove_delay_cell(CellInfo *cell);
+    // The parameters and ports of a tap (the CPE configuration words; replaces the cell's)
+    void configure_delay_cell(CellInfo *cell, int tap) const;
+    // Some delay cell exists (set by insert_delay_cell and assignArchInfo): the checks for them are skipped otherwise
+    bool any_delay_cells = false;
+    // After the setup repairs (repairRoute, not for a design routed before): delay cells on the connections whose hold
+    // slack is below hold_fix_margin in any hold corner (the routed grade and hold_corners), where the setup slack in
+    // the routed grade allows, in rounds that each re-analyse all corners exactly (hold_fix.cc,
+    // docs/timing_constraints.md "Hold fixing"). With nothing below the margin it changes nothing.
+    void fix_hold();
+    bool hold_fix = true;              // --vopt hold-fix
+    float hold_fix_margin = 0.1f;      // --vopt hold-margin (ns)
+    int hold_fix_max_cells = 8;        // --vopt hold-fix-max-cells: delay cells in a chain on one connection
+    int hold_fix_radius = 6;           // --vopt hold-fix-radius: tiles around the sink searched for a free CPE
+    float hold_fix_setup_guard = 0.1f; // --vopt hold-fix-setup-guard (ns): setup slack a lengthened path keeps
+    // For tests: the routing of each round (and each single retry) counts as failed, so that all is undone
+    bool hold_fix_fail_routing = false;
+    // What the last fix_hold did, for tests and the log
+    enum class HoldFixReason
+    {
+        NO_BUDGET,     // no connection on the shortest path has the setup slack for the delay
+        NO_CPE,        // no free CPE near the connections that have it
+        NOT_ROUTABLE,  // the delay cells could not be routed (undone)
+        NO_GAIN,       // the delay cells did not raise the hold slack (the new routing faster than the old; undone)
+        CHAIN_CAP,     // the need is more than hold_fix_max_cells delay cells give
+        NO_CONNECTION, // no connection of the path can take a delay cell (a clock, 8:1 multiplexer input, ...)
+        UNRESOLVED     // the rounds ran out, or a round made no progress
+    };
+    struct HoldFixLeftover
+    {
+        IdString cell, port;  // the end point
+        std::string corner;   // where its hold slack is least
+        delay_t slack = 0;    // that hold slack
+        HoldFixReason reason = HoldFixReason::UNRESOLVED;
+        delay_t need = 0;     // the delay it needs in that corner
+        delay_t budget = 0;   // the most setup slack (less the guard) a connection of its path has
+        bool missing_hold_multicycle = false; // the need is of the order of a clock period
+    };
+    struct HoldFixReport
+    {
+        bool ran = false;            // the corners were analysed
+        std::vector<std::string> corners; // the hold corners, the routed grade last
+        std::vector<delay_t> worst_before, worst_after;
+        std::vector<int> below_before, below_after; // end points below the margin
+        std::vector<int> cells_by_tap;  // delay cells inserted and kept
+        int rounds = 0;
+        int removed = 0;                // connections padded and undone again (setup, no gain, routing)
+        std::vector<HoldFixLeftover> leftovers;
+    };
+    HoldFixReport hold_fix_report;
     // After routing, up to `rounds` repairs of connections on the critical paths, with rounds < 0 until
     // timing is met (reroute.cc)
     void repair_critical_routing(int rounds);
@@ -415,10 +491,19 @@ struct GateMateImpl : HimbaechelAPI
     // prefix of the SDF files written for each (timing-corners-sdf)
     std::vector<std::pair<int, int>> check_corners;
     std::string corner_sdf_prefix;
+    // hold-corners: the corners the hold check of the finished routing covers (besides the routed one, which it
+    // always covers); all of the performance mode by default
+    std::vector<std::pair<int, int>> hold_corners;
+    // hold-min-delays: the hold analysis takes the least routing delays (Arch::min_pip_delays)
+    bool hold_min_delays = true;
+    static std::vector<std::pair<int, int>> parse_corners(const std::string &value, int fpga_mode, bool allow_routed);
     // Selects the speed grade of a timing mode and performance mode (1..3 each) and the delays it has
     void select_speed_grade(int timing_mode, int fpga_mode);
     void log_speed_grade() const;
     void check_timing_corners();
+    // The timing of the finished routing (end of finishRoute): Fmax and hold of the routed grade, which stays
+    // ctx->timing_result, then the hold of the other hold corners
+    void check_finished_timing();
     std::map<const NetInfo *, int> global_signals;
     dict<std::pair<IdString, int>, NetInfo *> global_mapping;
     dict<std::pair<IdString, int>, IdString> global_clk_mapping;
@@ -589,7 +674,30 @@ struct GateMateImpl : HimbaechelAPI
     bool use_cp_for_cpe;
     bool use_bridges;
     bool use_cpout;
+
+    // What insert_delay_cell changed, for remove_delay_cell, by cell name: the net and sink split, and the routing
+    // to the sink it released (sink first)
+    struct DelayCellUndo
+    {
+        IdString net, sink_cell, sink_port;
+        std::vector<std::tuple<WireId, PipId, PlaceStrength>> released;
+    };
+    dict<IdString, DelayCellUndo> delay_cell_undo;
+    int delay_cell_serial = 0;
+    // Per tile: a delay cell of tap 2 runs its path through OUT2 unrouted, so no net may take OUT2's output
+    // multiplexer (C_O2) there (set with the pip masks)
+    std::vector<bool> delay_out2_held;
+    IdString id_cpe_c_o2; // the name of that multiplexer's pips, CPE.C_O2
 };
+
+// The routing of all nets, to restore what an attempt changed (reroute.cc)
+using RoutingSnapshot = std::vector<std::pair<NetInfo *, dict<WireId, PipMap>>>;
+RoutingSnapshot snapshot_routing(Context *ctx);
+// The nets whose routing differs from the snapshot get its routing back (nets made since are not in it)
+void restore_changed_routing(Context *ctx, const RoutingSnapshot &snapshot);
+// After a pass that changed the routing: the netlist consistent and the routing complete (else an error), and the
+// timing analysis logged
+void check_repaired_routing(Context *ctx, const char *what);
 
 NEXTPNR_NAMESPACE_END
 #endif

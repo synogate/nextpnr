@@ -232,6 +232,35 @@ bool eval_cpe(Cell &c, CellEvalResult &result)
     return true;
 }
 
+// A delay cell (delay_cell.cc): the CPE as its parameters configure it, from IN6, its only input. The other CPE inputs
+// are not routed: 0 here (the taps do not depend on them, which tests/delay_cell.cc checks with the test simulator
+// taking them as unknown). OUT1 / OUT2 are COMB1OUT / COMB2OUT as in eval_cpe; CPOUT1 is COMB2OUT on OUT2 taken
+// through the routing multiplexer of COUTX and back, as tap 2 sets the carry lines.
+bool eval_delay(Cell &c, CellEvalResult &result)
+{
+    int func = c.param(id_C_FUNCTION);
+    if ((func != 0 && func != C_ADDF2) || c.flag(id_C_I3))
+        return false;
+    Word in6 = c.in(id_IN6);
+    Word l00 = lut2(c.param(id_INIT_L00), 0, 0), l01 = lut2(c.param(id_INIT_L01), 0, 0);
+    Word l02 = lut2(c.param(id_INIT_L02), 0, in6), l03 = lut2(c.param(id_INIT_L03), 0, 0);
+    Word l10 = lut2(c.param(id_INIT_L10), l00, l01), l11 = lut2(c.param(id_INIT_L11), l02, l03);
+    // (the carry in is not routed either)
+    Word comb1 = lut2(c.param(id_INIT_L20), l10, l11);
+    Word comb2 = l10 ^ (func == C_ADDF2 ? mux(l11, l02, 0) : Word(0));
+    c.out(result, id_OUT1, comb1);
+    c.out(result, id_OUT2, comb2);
+    if (c.cell->ports.count(id_CPOUT1)) {
+        // CPOUT1 = COUTX (C_HORIZ, C_C_P) = the routing multiplexer (C_CX_I) on OUT2 ({C_SEL_C, C_SELX} = 01), which
+        // is COMB2OUT (C_O2 = 3); OUT1 would be CPOUT1 itself
+        if (c.param(id_C_O2) != 3 || !c.flag(id_C_HORIZ) || !c.flag(id_C_C_P) || !c.flag(id_C_CX_I) ||
+            c.flag(id_C_SEL_C) || !c.flag(id_C_SELX))
+            return false;
+        c.out(result, id_CPOUT1, comb2);
+    }
+    return true;
+}
+
 // The 8:1 multiplexer of a CPE: data on IN1 .. IN8, the selects S0, S1, S2 from CLK, EN and SR through their LUT1s
 // (C_CPE_CLK, C_CPE_EN, C_CPE_RES; a constant LUT1 takes no input), S0 / S1 XORed with CINY2 / PINY2 with C_CLKSEL /
 // C_ENSEL (after routing through the carry lines, as for a register's clock and enable). The adder that adds C_SN and
@@ -329,7 +358,7 @@ bool eval_cplines(Cell &c, CellEvalResult &result)
 //    COUTY1, CPOUT1, CPOUT2), CPE_MX4 (OUT1), CPE_MX8 (MUXOUT), CPE_COMP (COMPOUT = the inverse of L30 on COMB1
 //    (D0) and COMB2 (D1)), CPE_CPLINES (the six carry / propagate outputs), CPE_BRIDGE (MUXOUT = IN<C_SN + 1>),
 //    CPE_RAMI / RAMO / RAMIO (RAM_O = I with C_RAM_O, OUT = RAM_I with C_RAM_I: the paths between the fabric and a
-//    RAM's pins), the constant drivers (the packer's are CPE_L2T4 without inputs, INIT_L10 0b1111 or 0b0000; VCC /
+//    RAM's pins), CPE_DELAY (its tap's output = IN6), the constant drivers (the packer's are CPE_L2T4 without inputs, INIT_L10 0b1111 or 0b0000; VCC /
 //    GND cells as the frontend or a partition makes them drive all their outputs);
 //  - sinks only: CPE_FF, CPE_FF_U, CPE_FF_L, CPE_LATCH ("D", "CLK", "EN", "RESET", "SET", see eval_register), the
 //    output buffers ("A", the tristate ones also "T", compared as they are);
@@ -351,6 +380,8 @@ bool GateMateImpl::evaluateCell(const CellInfo *cell, const CellEvalInputs &inpu
         known = eval_cpe(c, result);
     else if (type == id_CPE_MX8)
         known = eval_mx8(c, result);
+    else if (is_delay_cell(cell))
+        known = eval_delay(c, result);
     else if (type.in(id_CPE_FF, id_CPE_FF_U, id_CPE_FF_L, id_CPE_LATCH))
         known = eval_register(ctx, c, result);
     else if (type == id_CPE_CPLINES)

@@ -18,6 +18,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <fstream>
 #include <queue>
@@ -33,6 +34,7 @@
 #include "router2.h"
 #include "timing.h"
 #include "timing_opt.h"
+#include "util.h"
 
 #define GEN_INIT_CONSTIDS
 #define HIMBAECHEL_CONSTIDS "uarch/gatemate/constids.inc"
@@ -59,7 +61,27 @@ po::options_description GateMateImpl::getUArchOptions()
                            "performance mode like best_eco");
     specific.add_options()("timing-corners-sdf", po::value<std::string>(),
                            "with timing-corners, also write an SDF file <prefix>_<corner>.sdf for each corner");
-    specific.add_options()("strategy", po::value<std::string>(),
+    specific.add_options()("hold-corners", po::value<std::string>(),
+                           "the corners the hold check of the finished routing covers besides the one it was routed "
+                           "for (a violation in any is an error unless --timing-allow-fail): 'all' (default: best, typ "
+                           "and worst in the performance mode), 'routed' (only the routed one) or a list as for "
+                           "timing-corners");
+    specific.add_options()("hold-min-delays", po::value<int>(),
+                           "1 (default): the hold analysis takes the least routing delays of the speed grade (the min "
+                           "values of the vendor's delay files); 0: the same delays as setup (the max values)");
+    specific.add_options()("hold-fix", po::value<int>(),
+                           "1 (default): after routing, delay cells on the connections whose hold slack is below "
+                           "hold-margin in any hold corner, where the setup slack allows; 0: none");
+    specific.add_options()("hold-margin", po::value<float>(),
+                           "the hold slack (ns) the hold fix repairs up to in every hold corner (default 0.1)");
+    specific.add_options()("hold-fix-max-cells", po::value<int>(),
+                           "the most delay cells in a chain on one connection (default 8); a connection needing more "
+                           "is reported");
+    specific.add_options()("hold-fix-radius", po::value<int>(),
+                           "how far (tiles) from the sink the hold fix searches a free CPE for a delay cell (default 6)");
+    specific.add_options()("hold-fix-setup-guard", po::value<float>(),
+                           "the setup slack (ns) a path keeps at least when the hold fix lengthens it (default 0.1)");
+    specific.add_options()("strategy",po::value<std::string>(),
                            "multi-die clock placement strategy (mirror (default), full or clk1)");
     specific.add_options()("force_die", po::value<std::string>(), "force specific die (example 1A,1B...)");
     specific.add_options()("clk-cp", "use CP lines for CLK and EN");
@@ -253,6 +275,7 @@ void GateMateImpl::init_database(Arch *arch)
     read_options(args);
     log_speed_grade();
     arch->set_speed_grade(speed_grade_name(timing_mode, fpga_mode));
+    arch->min_pip_delays = hold_min_delays;
 }
 
 void GateMateImpl::log_speed_grade() const
@@ -302,6 +325,118 @@ void GateMateImpl::check_timing_corners()
     select_speed_grade(routed_timing_mode, routed_fpga_mode);
 }
 
+void GateMateImpl::check_finished_timing()
+{
+    // The worst hold slack over the end points that have a hold check (max() if none)
+    auto worst_hold = [](TimingAnalyser &tmg) {
+        delay_t worst = std::numeric_limits<delay_t>::max();
+        for (auto &ep : tmg.get_endpoint_timings())
+            worst = std::min(worst, ep.hold_slack);
+        return worst;
+    };
+    auto log_hold = [&](const std::string &grade, TimingAnalyser &tmg, TimingResult &result) {
+        ctx->log_hold_violations(result, grade);
+        delay_t worst = worst_hold(tmg);
+        if (worst == std::numeric_limits<delay_t>::max())
+            log_info("Hold check in timing corner '%s': no paths with a hold check.\n", grade.c_str());
+        else
+            log_info("Hold check in timing corner '%s': %d violation(s), worst hold slack %.2f ns.\n", grade.c_str(),
+                     int(result.min_delay_violations.size()), ctx->getDelayNS(worst));
+        return !result.min_delay_violations.empty();
+    };
+
+    // The corners whose hold check fails, all reported before the error
+    std::vector<std::string> failing;
+    int routed_timing_mode = timing_mode, routed_fpga_mode = fpga_mode;
+    std::string routed_grade = speed_grade_name(timing_mode, fpga_mode);
+    {
+        log_break();
+        log_info("Timing of the finished routing:\n");
+        TimingAnalyser tmg(ctx);
+        tmg.setup_only = false;
+        tmg.with_clock_skew = true;
+        tmg.setup(ctx->detailed_timing_report, true, true);
+        auto &result = tmg.get_timing_result();
+        ctx->log_timing_results(result, false, true, false, false);
+        if (log_hold(routed_grade, tmg, result))
+            failing.push_back(routed_grade);
+        ctx->timing_result = result;
+    }
+    // The other corners: the hold violations only (timing-corners has the full reports). The delays of the speed
+    // grade change globally, so the routed grade is selected again at the end (which also has the clock tree delays
+    // searched again for it, on demand).
+    bool switched = false;
+    int further = 0;
+    auto start = std::chrono::steady_clock::now();
+    for (auto [corner_timing, corner_fpga] : hold_corners) {
+        if (corner_timing == routed_timing_mode && corner_fpga == routed_fpga_mode)
+            continue;
+        std::string grade = speed_grade_name(corner_timing, corner_fpga);
+        select_speed_grade(corner_timing, corner_fpga);
+        switched = true;
+        further++;
+        TimingAnalyser tmg(ctx);
+        tmg.setup_only = false;
+        tmg.with_clock_skew = true;
+        tmg.setup(false, false, true);
+        if (log_hold(grade, tmg, tmg.get_timing_result()))
+            failing.push_back(grade);
+    }
+    if (switched) {
+        select_speed_grade(routed_timing_mode, routed_fpga_mode);
+        log_info("Hold check of %d further timing corner(s): %.2f s.\n", further,
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    }
+
+    if (!failing.empty()) {
+        std::string list;
+        for (auto &grade : failing)
+            list += (list.empty() ? "'" : ", '") + grade + "'";
+        if (bool_or_default(ctx->settings, ctx->id("timing/allowFail"), false))
+            log_warning("Hold violations in timing corner(s) %s.\n", list.c_str());
+        else
+            log_nonfatal_error("Hold violations in timing corner(s) %s (--timing-allow-fail accepts them; "
+                               "--vopt hold-corners selects the corners).\n",
+                               list.c_str());
+    }
+}
+
+// The corners (timing mode, performance mode) of a timing-corners or hold-corners list: 'all' (best, typ and worst in
+// the performance mode fpga_mode) or best, typ and worst, optionally with a performance mode (best_eco); with
+// allow_routed also 'routed', the grade the design is routed for (which is no entry: it is checked anyway)
+std::vector<std::pair<int, int>> GateMateImpl::parse_corners(const std::string &value, int fpga_mode, bool allow_routed)
+{
+    static const std::map<std::string, int> corner_map = {{"best", 1}, {"typ", 2}, {"typical", 2}, {"worst", 3}};
+    static const std::map<std::string, int> mode_map = {{"lpr", 1}, {"eco", 2}, {"spd", 3}};
+    std::stringstream items(value);
+    std::string item;
+    std::vector<std::string> list;
+    while (std::getline(items, item, ',')) {
+        item.erase(0, item.find_first_not_of(" \t"));
+        item.erase(item.find_last_not_of(" \t") + 1);
+        if (item == "all")
+            list.insert(list.end(), {"best", "typ", "worst"});
+        else if (allow_routed && item == "routed")
+            continue;
+        else if (!item.empty())
+            list.push_back(item);
+    }
+    std::vector<std::pair<int, int>> corners;
+    for (auto &item : list) {
+        size_t underscore = item.find('_');
+        auto corner = corner_map.find(item.substr(0, underscore));
+        auto mode = underscore == std::string::npos ? mode_map.end() : mode_map.find(item.substr(underscore + 1));
+        if (corner == corner_map.end() || (underscore != std::string::npos && mode == mode_map.end()))
+            log_error("Invalid timing corner '%s', valid are %sbest, typ and worst, optionally followed by _lpr, _eco "
+                      "or _spd.\n",
+                      item.c_str(), allow_routed ? "all, routed, " : "all, ");
+        std::pair<int, int> entry(corner->second, mode == mode_map.end() ? fpga_mode : mode->second);
+        if (std::find(corners.begin(), corners.end(), entry) == corners.end())
+            corners.push_back(entry);
+    }
+    return corners;
+}
+
 void GateMateImpl::read_options(const ArchArgs &args)
 {
     // Unset options are back at their defaults
@@ -328,34 +463,21 @@ void GateMateImpl::read_options(const ArchArgs &args)
         timing_mode = parse_mode(args.options["time_mode"].as<std::string>(), timing_map,
                                  "timing valid values are {1:best, 2:typical, 3:worst}.\n");
     check_corners.clear();
-    if (args.options.count("timing-corners")) {
-        static const std::map<std::string, int> corner_map = {
-                {"best", 1}, {"typ", 2}, {"typical", 2}, {"worst", 3}};
-        static const std::map<std::string, int> mode_map = {{"lpr", 1}, {"eco", 2}, {"spd", 3}};
-        std::stringstream items(args.options["timing-corners"].as<std::string>());
-        std::string item;
-        std::vector<std::string> list;
-        while (std::getline(items, item, ',')) {
-            item.erase(0, item.find_first_not_of(" \t"));
-            item.erase(item.find_last_not_of(" \t") + 1);
-            if (item == "all")
-                list.insert(list.end(), {"best", "typ", "worst"});
-            else if (!item.empty())
-                list.push_back(item);
-        }
-        for (auto &item : list) {
-            size_t underscore = item.find('_');
-            auto corner = corner_map.find(item.substr(0, underscore));
-            auto mode = underscore == std::string::npos ? mode_map.end() : mode_map.find(item.substr(underscore + 1));
-            if (corner == corner_map.end() || (underscore != std::string::npos && mode == mode_map.end()))
-                log_error("Invalid timing corner '%s', valid are best, typ and worst, optionally followed by _lpr, "
-                          "_eco or _spd.\n",
-                          item.c_str());
-            std::pair<int, int> entry(corner->second, mode == mode_map.end() ? fpga_mode : mode->second);
-            if (std::find(check_corners.begin(), check_corners.end(), entry) == check_corners.end())
-                check_corners.push_back(entry);
-        }
-    }
+    if (args.options.count("timing-corners"))
+        check_corners = parse_corners(args.options["timing-corners"].as<std::string>(), fpga_mode, false);
+    // By default the finished routing has its hold checked in all corners of the performance mode
+    hold_corners = parse_corners(
+            args.options.count("hold-corners") ? args.options["hold-corners"].as<std::string>() : "all", fpga_mode,
+            true);
+    hold_min_delays = !args.options.count("hold-min-delays") || args.options["hold-min-delays"].as<int>() != 0;
+    hold_fix = !args.options.count("hold-fix") || args.options["hold-fix"].as<int>() != 0;
+    hold_fix_margin = args.options.count("hold-margin") ? args.options["hold-margin"].as<float>() : 0.1f;
+    hold_fix_max_cells = args.options.count("hold-fix-max-cells") ? args.options["hold-fix-max-cells"].as<int>() : 8;
+    hold_fix_radius = args.options.count("hold-fix-radius") ? args.options["hold-fix-radius"].as<int>() : 6;
+    hold_fix_setup_guard =
+            args.options.count("hold-fix-setup-guard") ? args.options["hold-fix-setup-guard"].as<float>() : 0.1f;
+    if (hold_fix_max_cells < 1 || hold_fix_radius < 0 || hold_fix_setup_guard < 0)
+        log_error("hold-fix-max-cells must be at least 1, hold-fix-radius and hold-fix-setup-guard not negative.\n");
     corner_sdf_prefix.clear();
     if (args.options.count("timing-corners-sdf"))
         corner_sdf_prefix = args.options["timing-corners-sdf"].as<std::string>();
@@ -621,6 +743,7 @@ void GateMateImpl::optionsChanged()
 {
     std::string grade = speed_grade_name(timing_mode, fpga_mode);
     read_options(ctx->args);
+    ctx->min_pip_delays = hold_min_delays;
     if (speed_grade_name(timing_mode, fpga_mode) != grade) {
         // For all that follows: the timing analysis, the placer and router (their delay tables are built again in
         // prepare_options, keyed by the speed grade) and the bitstream
@@ -635,6 +758,8 @@ void GateMateImpl::init(Context *ctx)
     HimbaechelAPI::init(ctx);
     tmg_link_o = ctx->id("$TMG_LINK_O");
     tmg_link_i = ctx->id("$TMG_LINK_I");
+    delay_cell_type = ctx->id("CPE_DELAY");
+    id_cpe_c_o2 = ctx->id("CPE.C_O2");
     prepare_options();
     auto &options = ctx->args.options;
     if (options.count("refine-temp"))
@@ -818,6 +943,24 @@ bool GateMateImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
                 return false;
         }
     }
+    // A delay cell takes the whole CPE: nothing else may be in it but the CP lines the routing of other nets makes
+    if (any_delay_cells && bel_type.in(id_CPE_LT_U, id_CPE_LT_L, id_CPE_LT_FULL, id_CPE_FF_U, id_CPE_FF_L,
+                                       id_CPE_RAMIO_U, id_CPE_RAMIO_L, id_CPE_COMP, id_CPE_CPLINES, id_CPE_BRIDGE)) {
+        Loc loc = ctx->getBelLocation(bel);
+        if (is_delay_cell(cell)) {
+            for (int z : {CPE_LT_U_Z, CPE_LT_L_Z, CPE_FF_U_Z, CPE_FF_L_Z, CPE_RAMIO_U_Z, CPE_RAMIO_L_Z, CPE_COMP_Z,
+                          CPE_BRIDGE_Z}) {
+                BelId other = ctx->getBelByLocation(Loc(loc.x, loc.y, z));
+                if (other != BelId() && ctx->getBoundBelCell(other))
+                    return false;
+            }
+        } else if (cell->type != id_CPE_CPLINES) {
+            BelId full = ctx->getBelByLocation(Loc(loc.x, loc.y, CPE_LT_FULL_Z));
+            const CellInfo *other = full != BelId() ? ctx->getBoundBelCell(full) : nullptr;
+            if (is_delay_cell(other) && other != cell)
+                return false;
+        }
+    }
 
     if (getBelBucketForBel(bel) == id_CPE_FF) {
         Loc loc = ctx->getBelLocation(bel);
@@ -986,7 +1129,16 @@ void GateMateImpl::check_regions()
 }
 
 // (also after a placed and routed design was loaded, and after routing, see postRoute)
-void GateMateImpl::assignArchInfo() { update_gui_labels(); }
+void GateMateImpl::assignArchInfo()
+{
+    // (a design loaded with delay cells)
+    for (auto &cell : ctx->cells)
+        if (is_delay_cell(cell.second.get())) {
+            any_delay_cells = true;
+            break;
+        }
+    update_gui_labels();
+}
 
 void GateMateImpl::postPlace()
 {
@@ -1018,6 +1170,7 @@ void GateMateImpl::compute_pip_masks(bool with_routing)
     used_cpes.assign(tiles, false);
     pip_data.assign(tiles, 0);
     pip_mask.assign(tiles, 0);
+    delay_out2_held.clear();
 
     auto set_param_mask_data = [&](CellInfo *cell, IdString param, uint32_t pip_mask, uint32_t &mask, uint32_t &data) {
         if (cell->params.count(param)) {
@@ -1037,6 +1190,14 @@ void GateMateImpl::compute_pip_masks(bool with_routing)
         if (cell.second.get()->type.in(id_CPE_FF, id_CPE_LATCH) &&
             ctx->getBelLocation(cell.second.get()->bel).z == CPE_FF_U_Z)
             marked_used = true;
+        // A delay cell uses all of the CPE's logic (no bridge through it); of tap 2 also OUT2, unrouted
+        if (is_delay_cell(cell.second.get())) {
+            marked_used = true;
+            if (delay_cell_tap(cell.second.get()) == 2) {
+                delay_out2_held.resize(tiles, false);
+                delay_out2_held[cell.second->bel.tile] = true;
+            }
+        }
         if (marked_used)
             used_cpes[cell.second.get()->bel.tile] = true;
 
@@ -1175,6 +1336,10 @@ bool GateMateImpl::checkPipAvail(PipId pip) const
         return false;
     if (extra_data.type == PipExtra::PIP_EXTRA_MUX && IdString(extra_data.name).in(id_LUT2_10, id_LUT2_11) &&
         !lut_bypass_allowed(pip))
+        return false;
+    // OUT2 of a delay cell of tap 2 carries its path into the carry lines without being routed
+    if (!delay_out2_held.empty() && delay_out2_held[pip.tile] && extra_data.type == PipExtra::PIP_EXTRA_MUX &&
+        IdString(extra_data.name) == id_cpe_c_o2)
         return false;
     if (extra_data.type != PipExtra::PIP_EXTRA_MUX || (extra_data.flags & MUX_ROUTING) == 0)
         return true;
@@ -1553,6 +1718,8 @@ void GateMateImpl::repairRoute()
             improve_lut_inputs(lut_swap_rounds);
         fix_mx8_inputs();
     }
+    // Last: hold is repaired on the routing as it stays, within the setup slack the passes above left
+    fix_hold();
     if (report_crit_routing)
         report_critical_routing();
     if (ctx->args.options.count("place-crit-out")) {
@@ -2018,18 +2185,7 @@ void GateMateImpl::finishRoute()
 
     // The bridges, CP lines and pass-through LUTs are cells now, with delays other than the pips they were
     // analysed as: the timing (hold included) of what goes into the bitstream
-    {
-        log_break();
-        log_info("Timing of the finished routing:\n");
-        TimingAnalyser tmg(ctx);
-        tmg.setup_only = false;
-        tmg.with_clock_skew = true;
-        tmg.setup(ctx->detailed_timing_report, true, true);
-        auto &result = tmg.get_timing_result();
-        ctx->log_timing_results(result, false, true, false, false);
-        ctx->log_hold_violations(result);
-        ctx->timing_result = result;
-    }
+    check_finished_timing();
 
     const ArchArgs &args = ctx->args;
     if (args.options.count("out")) {
@@ -2462,6 +2618,8 @@ IdString GateMateImpl::getBelBucketForCellType(IdString cell_type) const
         return id_CPE_RAMIO;
     else if (cell_type.in(id_RAM, id_RAM_HALF, id_RAM_HALF_DUMMY))
         return id_RAM_HALF;
+    else if (cell_type == delay_cell_type)
+        return id_CPE_LT_FULL;
     else
         return cell_type;
 }
@@ -2500,6 +2658,8 @@ bool GateMateImpl::isValidBelForCellType(IdString cell_type, BelId bel) const
         return cell_type.in(id_RAM_HALF, id_RAM);
     else if (bel_type == id_RAM_HALF_L)
         return cell_type.in(id_RAM_HALF, id_RAM_HALF_DUMMY);
+    else if (bel_type == id_CPE_LT_FULL && cell_type == delay_cell_type)
+        return true;
     else
         return (bel_type == cell_type);
 }

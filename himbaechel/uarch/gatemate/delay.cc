@@ -460,9 +460,14 @@ bool GateMateImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdStrin
             {id_D0_03, id_IN7}, {id_D1_03, id_IN8}, {id_D0_11, id_IN5}, {id_D1_11, id_IN7},
     };
 
+    // A delay cell: from IN6 to the output of its tap (delay_cell.cc)
+    if (is_delay_cell(cell)) {
+        int tap = delay_cell_tap(cell);
+        return tap >= 0 && fromPort == id_IN6 && toPort == delay_cell_output(tap) && delay_cell_delay(tap, delay);
+    }
     // (the analytic placer asks before the cell has a bel: a CPE_LT_L goes to a lower half, whose inputs have
     // other names in the timing database; taken for an upper half, an adder's operands there had no arcs)
-    int z = (cell->bel != BelId()) ? (ctx->getBelLocation(cell->bel).z % 2) : (cell->type == id_CPE_LT_L ? 1 : 0);
+    int z =(cell->bel != BelId()) ? (ctx->getBelLocation(cell->bel).z % 2) : (cell->type == id_CPE_LT_L ? 1 : 0);
     if (cell->type.in(id_CPE_L2T4, id_CPE_LT_L, id_CPE_LT_U)) {
         // Internal connection from upper L2T4 into the lower half
         if (fromPort == id_COMBIN && toPort == id_OUT)
@@ -638,7 +643,12 @@ TimingPortClass GateMateImpl::getPortTimingClass(const CellInfo *cell, IdString 
 {
     auto disconnected = [cell](IdString p) { return !cell->ports.count(p) || cell->ports.at(p).net == nullptr; };
     clockInfoCount = 0;
-    if (cell->type.in(id_CPE_L2T4, id_CPE_LT_L, id_CPE_LT_U)) {
+    if (is_delay_cell(cell)) {
+        if (port == id_IN6)
+            return TMG_COMB_INPUT;
+        int tap = delay_cell_tap(cell);
+        return tap >= 0 && port == delay_cell_output(tap) ? TMG_COMB_OUTPUT : TMG_IGNORE;
+    } else if (cell->type.in(id_CPE_L2T4, id_CPE_LT_L, id_CPE_LT_U)) {
         if (port.in(id_IN1, id_IN2, id_IN3, id_IN4, id_COMBIN, id_CINY1, id_CINY2, id_CINX, id_PINX, id_PINY1, id_PINY2,
                     id_D0_00, id_D1_00, id_D0_01, id_D1_01, id_D0_10, id_D1_10, id_D0_02, id_D1_02, id_D0_03, id_D1_03,
                     id_D0_11, id_D1_11) ||

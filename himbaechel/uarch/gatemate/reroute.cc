@@ -410,10 +410,9 @@ bool weakly_routed(const NetInfo *net)
             return false;
     return true;
 }
+} // namespace
 
-// The routing of all nets, to restore what an attempt changed
-using RoutingSnapshot = std::vector<std::pair<NetInfo *, dict<WireId, PipMap>>>;
-
+// (declared in gatemate.h, for the hold fix too)
 RoutingSnapshot snapshot_routing(Context *ctx)
 {
     RoutingSnapshot snapshot;
@@ -466,7 +465,6 @@ void check_repaired_routing(Context *ctx, const char *what)
     }
     timing_analysis(ctx, false, true, false, false, true);
 }
-} // namespace
 
 // Lay a connection on its ideal path, displacing the other nets there (to be routed again with the
 // rest), and bind it with STRENGTH_PLACER, from the last wire of the path the net reaches already. As
@@ -1332,7 +1330,7 @@ void GateMateImpl::relocate_register(CellInfo *lut, CellInfo *ff, BelId lt)
 }
 
 // Bridges through a CPE drive DIN2 (C_BR), so a register or latch in its upper half blocks them, as does an 8:1
-// multiplexer driving MUXOUT itself (as postPlace() marks it)
+// multiplexer driving MUXOUT itself or a delay cell (as postPlace() marks it)
 void GateMateImpl::update_used_cpe(int tile)
 {
     if (used_cpes.empty())
@@ -1341,9 +1339,10 @@ void GateMateImpl::update_used_cpe(int tile)
     tile_xy(ctx->chip_info, tile, x, y);
     BelId ff = ctx->getBelByLocation(Loc(x, y, CPE_FF_U_Z));
     BelId full = ctx->getBelByLocation(Loc(x, y, CPE_LT_FULL_Z));
+    const CellInfo *full_cell = full != BelId() ? ctx->getBoundBelCell(full) : nullptr;
     used_cpes[tile] =
             (ff != BelId() && ctx->getBoundBelCell(ff) && ctx->getBoundBelCell(ff)->type.in(id_CPE_FF, id_CPE_LATCH)) ||
-            (full != BelId() && ctx->getBoundBelCell(full) && ctx->getBoundBelCell(full)->type == id_CPE_MX8);
+            (full_cell && (full_cell->type == id_CPE_MX8 || is_delay_cell(full_cell)));
 }
 
 // After a register moved: route its clock to its new CLK_INT from the clock net's routing as it
