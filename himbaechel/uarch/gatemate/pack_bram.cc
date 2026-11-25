@@ -582,36 +582,46 @@ void GateMatePacker::pack_ram()
 
 void GateMatePacker::remap_ram_half(CellInfo *half, CellInfo *cell, int num)
 {
+    // The ports of the half and their names on the merged cell, for the timing constraints that name the half
+    dict<IdString, IdString> port_map;
+    auto move = [&](IdString port, IdString cell_port) {
+        if (half->ports.count(port))
+            port_map[port] = cell_port;
+        rename_or_move(half, cell, port, cell_port);
+    };
+
     int index = num ? 2 : 0;
 
-    rename_or_move(half, cell, ctx->id("CLKA[0]"), ctx->idf("CLKA[%d]", index));
-    rename_or_move(half, cell, ctx->id("CLKB[0]"), ctx->idf("CLKB[%d]", index));
-    rename_or_move(half, cell, ctx->id("ENA[0]"), ctx->idf("ENA[%d]", index));
-    rename_or_move(half, cell, ctx->id("ENB[0]"), ctx->idf("ENB[%d]", index));
-    rename_or_move(half, cell, ctx->id("GLWEA[0]"), ctx->idf("GLWEA[%d]", index));
-    rename_or_move(half, cell, ctx->id("GLWEB[0]"), ctx->idf("GLWEB[%d]", index));
+    move(ctx->id("CLKA[0]"), ctx->idf("CLKA[%d]", index));
+    move(ctx->id("CLKB[0]"), ctx->idf("CLKB[%d]", index));
+    move(ctx->id("ENA[0]"), ctx->idf("ENA[%d]", index));
+    move(ctx->id("ENB[0]"), ctx->idf("ENB[%d]", index));
+    move(ctx->id("GLWEA[0]"), ctx->idf("GLWEA[%d]", index));
+    move(ctx->id("GLWEB[0]"), ctx->idf("GLWEB[%d]", index));
     for (int i = 0; i < 20; i++) {
-        rename_or_move(half, cell, ctx->idf("WEA[%d]", i), ctx->idf("WEA[%d]", i + 20 * num));
-        rename_or_move(half, cell, ctx->idf("WEB[%d]", i), ctx->idf("WEB[%d]", i + 20 * num));
-        rename_or_move(half, cell, ctx->idf("DIA[%d]", i), ctx->idf("DIA[%d]", i + 20 * num));
-        rename_or_move(half, cell, ctx->idf("DIB[%d]", i), ctx->idf("DIB[%d]", i + 20 * num));
-        rename_or_move(half, cell, ctx->idf("DOA[%d]", i), ctx->idf("DOA[%d]", i + 20 * num));
-        rename_or_move(half, cell, ctx->idf("DOB[%d]", i), ctx->idf("DOB[%d]", i + 20 * num));
+        move(ctx->idf("WEA[%d]", i), ctx->idf("WEA[%d]", i + 20 * num));
+        move(ctx->idf("WEB[%d]", i), ctx->idf("WEB[%d]", i + 20 * num));
+        move(ctx->idf("DIA[%d]", i), ctx->idf("DIA[%d]", i + 20 * num));
+        move(ctx->idf("DIB[%d]", i), ctx->idf("DIB[%d]", i + 20 * num));
+        move(ctx->idf("DOA[%d]", i), ctx->idf("DOA[%d]", i + 20 * num));
+        move(ctx->idf("DOB[%d]", i), ctx->idf("DOB[%d]", i + 20 * num));
     }
     for (int i = 0; i < 16; i++) {
-        rename_or_move(half, cell, ctx->idf("ADDRA0[%d]", i), ctx->idf("ADDRA%d[%d]", num, i));
-        rename_or_move(half, cell, ctx->idf("ADDRB0[%d]", i), ctx->idf("ADDRB%d[%d]", num, i));
+        move(ctx->idf("ADDRA0[%d]", i), ctx->idf("ADDRA%d[%d]", num, i));
+        move(ctx->idf("ADDRB0[%d]", i), ctx->idf("ADDRB%d[%d]", num, i));
     }
 
     index = num ? 1 : 0;
-    rename_or_move(half, cell, ctx->id("ECC1B_ERRA[0]"), ctx->idf("ECC1B_ERRA[%d]", index));
-    rename_or_move(half, cell, ctx->id("ECC1B_ERRB[0]"), ctx->idf("ECC1B_ERRB[%d]", index));
-    rename_or_move(half, cell, ctx->id("ECC2B_ERRA[0]"), ctx->idf("ECC2B_ERRA[%d]", index));
-    rename_or_move(half, cell, ctx->id("ECC2B_ERRB[0]"), ctx->idf("ECC2B_ERRB[%d]", index));
+    move(ctx->id("ECC1B_ERRA[0]"), ctx->idf("ECC1B_ERRA[%d]", index));
+    move(ctx->id("ECC1B_ERRB[0]"), ctx->idf("ECC1B_ERRB[%d]", index));
+    move(ctx->id("ECC2B_ERRA[0]"), ctx->idf("ECC2B_ERRA[%d]", index));
+    move(ctx->id("ECC2B_ERRB[0]"), ctx->idf("ECC2B_ERRB[%d]", index));
 
+    // (shared by both halves: not a point of the half)
     for (int i = 1; i < 5; i++)
         if (!cell->getPort(ctx->idf("CLOCK%d", i)))
             rename_or_move(half, cell, ctx->idf("CLOCK%d", i), ctx->idf("CLOCK%d", i));
+    ctx->moveTimingPoints(half->name, cell->name, port_map);
 
     static dict<IdString, IdString> map_params = {
             {id_RAM_cfg_forward_a0_clk, id_RAM_cfg_forward_a1_clk},

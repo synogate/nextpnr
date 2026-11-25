@@ -550,9 +550,12 @@ void TimingWidget::showSlack(int index)
         else if (pc.setup_exception >= 0)
             edge = "one period before the setup edge of the multicycle path (set_multicycle_path -hold moves it "
                    "back)";
+        else if (pc.hold_edge != 0)
+            edge = "the capture edge before the launch edge (the other edge of the clock)";
         else
             edge = "the launch edge";
-        row(top, "Hold edge", signedDelay(pc.hold_shift), edge);
+        delay_t hold_edge = pc.hold_shift - pc.hold_edge;
+        row(top, "Hold edge", signedDelay(hold_edge), edge);
         if (hold_clocks.capture != 0)
             row(top, "Capture clock delay", signedDelay(hold_clocks.capture),
                 "clock network to the capturing register");
@@ -560,7 +563,7 @@ void TimingWidget::showSlack(int index)
             row(top, "Clock to clock", signedDelay(-p.clock_to_clock), "delay between the related clocks");
         if (p.check != 0)
             row(top, "Hold time", signedDelay(p.check), endpoint);
-        delay_t required = pc.hold_shift + hold_clocks.capture + p.check - p.clock_to_clock;
+        delay_t required = hold_edge + hold_clocks.capture + p.check - p.clock_to_clock;
         bold(row(top, "Required time", formatDelay(required), "the earliest time the data may arrive"));
         delay_t arrival = arrivalRows(top, p, hold_clocks, "shortest");
         restRow(top, ep.hold_slack - (arrival - required));

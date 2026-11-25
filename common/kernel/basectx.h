@@ -245,6 +245,11 @@ struct BaseCtx
     CellInfo *createCell(IdString name, IdString type);
     void copyBelPorts(IdString cell, BelId bel);
 
+    // A packer replaced old_cell by new_cell (after the timing constraints were read): the port port_map[p] of
+    // new_cell is the port p of old_cell. The timing exceptions that name old_cell, or a pin of it, name these
+    // ports of new_cell instead (a cell, or a pin the packer renamed before, becomes every port in port_map).
+    void moveTimingPoints(IdString old_cell, IdString new_cell, const dict<IdString, IdString> &port_map);
+
     // Workaround for lack of wrappable constructors
     DecalXY constructDecalXY(DecalId decal, float x, float y);
 

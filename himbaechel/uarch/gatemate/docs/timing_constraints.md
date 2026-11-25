@@ -55,6 +55,15 @@ domain pair has one multicycle setting, and it is used for:
 - the hold checks after routing and of the finished routing, and the Paths tab of the GUI. Path reports say
   `multicycle path: …`.
 
+Multicycle paths are seldom the critical paths of their clock, so the timing report lists them on their own:
+per constraint and clock edge pair the number of end points, the worst setup slack and the worst hold slack with
+the shortest path (`Multicycle paths 'negedge clk' -> 'posedge clk' (2 clock cycle(s) for setup, …)`).
+
+The RAMs are replaced by new cells after placement (two halves of a block become `$ram$merged$id…`, a single
+one `…$full`); a constraint naming a RAM or one of its pins then names the new cell's ports of that half.
+
+Without multicycle constraints the analysis is the same as before.
+
 ## In the GUI
 
 - **Paths** tab: below a selected path, the **Slack** table shows how its slacks come about. For setup: the
@@ -68,5 +77,3 @@ domain pair has one multicycle setting, and it is used for:
   launch clock) its lists match, the number it applies to and the worst setup slack among them. Below, the
   paths of the selected exception (or of all), with what the exceptions do to each; a selected path is selected
   in the device view.
-
-Without multicycle constraints the analysis is the same as before.

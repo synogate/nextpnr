@@ -409,11 +409,24 @@ void TimingAnalyser::apply_timing_exceptions(domain_id_t pair)
     dp.setup_cycles = 1;
     dp.setup_shift = 0;
     dp.hold_shift = 0;
+    dp.hold_edge = 0;
     dp.setup_exception = -1;
     dp.hold_exception = -1;
     dp.exceptions.clear();
     const auto &launch = domains.at(dp.key.launch).key;
     const auto &capture = domains.at(dp.key.capture).key;
+    if (!launch.is_async() && !capture.is_async() && launch.clock == capture.clock && launch.edge != capture.edge) {
+        // (the time from the edge before the launch edge: what of the period the setup check does not have)
+        delay_t period = ctx->getDelayFromNS(1.0e9 / ctx->setting<float>("target_freq"));
+        delay_t setup = period / 2;
+        auto net = ctx->nets.find(launch.clock);
+        if (net != ctx->nets.end() && net->second->clkconstr) {
+            period = net->second->clkconstr->period.minDelay();
+            setup = (capture.edge == RISING_EDGE ? net->second->clkconstr->low : net->second->clkconstr->high)
+                            .minDelay();
+        }
+        dp.hold_edge = period - setup;
+    }
     if (exceptions.empty())
         return;
     auto clock_named = [&](const ResolvedException::Points &points, IdString clock) {
@@ -896,7 +909,8 @@ void TimingAnalyser::compute_slack()
             auto &req = pd.required.at(dp.key.capture);
             pdp.second.setup_slack = 0 - (arr.value.maxDelay() - req.value.minDelay() + clock_to_clock);
             if (!setup_only)
-                pdp.second.hold_slack = arr.value.minDelay() - req.value.maxDelay() + clock_to_clock - dp.hold_shift;
+                pdp.second.hold_slack =
+                        arr.value.minDelay() - req.value.maxDelay() + clock_to_clock - (dp.hold_shift - dp.hold_edge);
             pdp.second.max_path_length = arr.path_length + req.path_length;
             if (same_event(dp.key.launch, dp.key.capture))
                 pd.worst_setup_slack = std::min(pd.worst_setup_slack, dp.period.minDelay() + pdp.second.setup_slack);
@@ -1059,6 +1073,7 @@ CriticalPath TimingAnalyser::build_critical_path_report(domain_id_t domain_pair,
     report.max_delay = get_max_delay(domain_pair);
     report.setup_cycles = dp.setup_cycles;
     report.hold_shift = dp.hold_shift;
+    report.hold_edge = dp.hold_edge;
 
     auto crit_path_rev = walk_crit_path(domain_pair, endpoint, longest_path);
     auto crit_path = boost::adaptors::reverse(crit_path_rev);
@@ -1283,6 +1298,7 @@ TimingAnalyser::PairConstraints TimingAnalyser::get_pair_constraints(domain_id_t
     pc.setup_cycles = dp.setup_cycles;
     pc.setup_shift = dp.setup_shift;
     pc.hold_shift = dp.hold_shift;
+    pc.hold_edge = dp.hold_edge;
     pc.setup_exception = dp.setup_exception;
     pc.hold_exception = dp.hold_exception;
     pc.exceptions = dp.exceptions;
@@ -1325,7 +1341,7 @@ std::vector<TimingAnalyser::EndpointTiming> TimingAnalyser::get_endpoint_timings
                 // as for the min delay violations: only between registers of the same or related clocks
                 auto related_clocks = clock_delays.count(std::make_pair(launch.key.clock, capture.key.clock)) > 0;
                 if (setup_only || !is_register || launch.key.is_async() ||
-                    (!same_event(arr.first, capture_id) && !related_clocks))
+                    (launch.key.clock != capture.key.clock && !related_clocks))
                     timing.hold_slack = std::numeric_limits<delay_t>::max();
                 else
                     timing.hold_slack = pdp->second.hold_slack;
@@ -1438,6 +1454,62 @@ void TimingAnalyser::build_crit_path_reports()
     };
 
     std::sort(xclock_reports.begin(), xclock_reports.end(), cmp_crit_path);
+
+    build_multicycle_slack_report();
+}
+
+void TimingAnalyser::build_multicycle_slack_report()
+{
+    auto &slacks = result.multicycle_slacks;
+    slacks.clear();
+    if (exceptions.empty())
+        return;
+    // One entry per clock edge pair and exception (pairs of different domain tags with the same one are merged)
+    struct Worst
+    {
+        int index;
+        domain_id_t setup_pair = -1, hold_pair = -1;
+        CellPortKey setup_ep, hold_ep;
+    };
+    std::vector<Worst> worst;
+    for (auto &ep : get_endpoint_timings()) {
+        auto &dp = domain_pairs.at(ep.domain_pair);
+        if (dp.setup_cycles == 1 && dp.hold_shift == 0)
+            continue;
+        int index = -1;
+        for (int i = 0; i < int(slacks.size()); i++)
+            if (slacks.at(i).clock_pair == ep.clock_pair && slacks.at(i).setup_cycles == dp.setup_cycles &&
+                slacks.at(i).hold_shift == dp.hold_shift)
+                index = i;
+        if (index == -1) {
+            index = int(slacks.size());
+            slacks.emplace_back();
+            slacks.back().clock_pair = ep.clock_pair;
+            slacks.back().setup_cycles = dp.setup_cycles;
+            slacks.back().hold_shift = dp.hold_shift;
+            slacks.back().hold_edge = dp.hold_edge;
+            worst.push_back({index});
+        }
+        auto &s = slacks.at(index);
+        s.endpoints++;
+        if (ep.setup_slack < s.setup_slack) {
+            s.setup_slack = ep.setup_slack;
+            worst.at(index).setup_pair = ep.domain_pair;
+            worst.at(index).setup_ep = ep.endpoint;
+        }
+        if (ep.hold_slack < s.hold_slack) {
+            s.hold_slack = ep.hold_slack;
+            worst.at(index).hold_pair = ep.domain_pair;
+            worst.at(index).hold_ep = ep.endpoint;
+        }
+    }
+    for (auto &w : worst) {
+        auto &s = slacks.at(w.index);
+        if (w.setup_pair != -1)
+            s.setup_path = build_critical_path_report(w.setup_pair, w.setup_ep, true);
+        if (w.hold_pair != -1)
+            s.hold_path = build_critical_path_report(w.hold_pair, w.hold_ep, false);
+    }
 }
 
 void TimingAnalyser::build_slack_histogram_report()
@@ -1504,7 +1576,8 @@ std::vector<CriticalPath> TimingAnalyser::get_min_delay_violations()
                 auto clocks = std::make_pair(launch_clock, capture_clock);
                 auto related_clocks = clock_delays.count(clocks) > 0;
 
-                if (launch.key.is_async() || (!same_event(launch_id, capture_id) && !related_clocks)) {
+                // (the two edges of one clock too: hold_edge has the time between them)
+                if (launch.key.is_async() || (launch_clock != capture_clock && !related_clocks)) {
                     continue;
                 }
 
@@ -1513,8 +1586,9 @@ std::vector<CriticalPath> TimingAnalyser::get_min_delay_violations()
                     clock_to_clock = clock_delays.at(clocks);
                 }
 
+                const auto &dp = domain_pairs.at(dom_pair_id);
                 auto hold_slack = arr.value.minDelay() - req.value.maxDelay() + clock_to_clock -
-                                  domain_pairs.at(dom_pair_id).hold_shift;
+                                  (dp.hold_shift - dp.hold_edge);
 
                 if (hold_slack <= 0) {
                     auto report = build_critical_path_report(dom_pair_id, ep.first, false);
@@ -1529,7 +1603,7 @@ std::vector<CriticalPath> TimingAnalyser::get_min_delay_violations()
 
     for (size_t i = 0; i < violations.size(); ++i) {
         // (the hold slack: a multicycle path is checked later than the launch edge)
-        delay_t delay = -violations[i].hold_shift;
+        delay_t delay = -(violations[i].hold_shift - violations[i].hold_edge);
         for (const auto &seg : violations[i].segments) {
             delay += seg.delay;
         }

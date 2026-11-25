@@ -252,6 +252,80 @@ TEST_F(GateMateMulticycleTest, routed_design)
     EXPECT_EQ(path.max_delay, 2 * period());
     for (auto &violation : tmg->get_timing_result().min_delay_violations)
         EXPECT_NE(violation.segments.back().to.first, slow_to->name) << "hold violation at the multicycle path";
+    // The report of the multicycle paths: their worst slacks and paths
+    auto &slacks = tmg->get_timing_result().multicycle_slacks;
+    ASSERT_EQ(slacks.size(), 1u);
+    EXPECT_EQ(slacks.at(0).setup_cycles, 2);
+    EXPECT_EQ(slacks.at(0).endpoints, 1);
+    EXPECT_EQ(slacks.at(0).setup_slack, endpoint(*tmg, slow_to).setup_slack);
+    EXPECT_EQ(slacks.at(0).hold_slack, endpoint(*tmg, slow_to).hold_slack);
+    ASSERT_FALSE(slacks.at(0).hold_path.segments.empty());
+    EXPECT_EQ(slacks.at(0).hold_path.segments.back().to.first, slow_to->name);
+    EXPECT_EQ(slacks.at(0).setup_path.segments.back().to.first, slow_to->name);
+}
+
+// After placement, repack_ram replaces the RAM halves by a new RAM cell per block ($ram$merged$id..., ...$full),
+// with the ports renamed: a constraint naming the RAM (or one of its pins) must name the new cell's ports then.
+// It did not, so the router and the final analysis timed the RAM's paths with one period (dmg_soc register file).
+TEST_F(GateMateMulticycleTest, ram_keeps_its_constraint_after_the_repack)
+{
+    for (std::string from : {"[get_cells ram]", "[get_pins {ram/A_DO[0]}]"}) {
+        SCOPED_TRACE(from);
+        init_context("CCGM1A1", {"--allow-unconstrained"});
+        clk = global_clock("clk");
+        CellInfo *ram = ctx->createCell(ctx->id("ram"), id_CC_BRAM_20K);
+        ram->params[id_RAM_MODE] = Property("TDP");
+        for (auto p : {id_A_RD_WIDTH, id_A_WR_WIDTH})
+            ram->params[p] = Property(5, 32);
+        connect_input(ram, id_A_CLK, clk);
+        connect_input(ram, ctx->id("A_ADDR[7]"), input("a"));
+        slow_to = dff("after_ram", chain("inv", 4, connect_output(ram, ctx->id("A_DO[0]"))), clk);
+        output("x", slow_to->getPort(id_Q));
+        sdc("create_clock -name sys -period 10 [get_nets {clk$y}]\n"
+            "set_multicycle_path 2 -from " +
+            from + "\n");
+        ASSERT_EQ(ctx->timing_exceptions.size(), 1u);
+        implement();
+        EXPECT_FALSE(ctx->cells.count(ctx->id("ram"))) << "the RAM was not replaced by the repack";
+        auto tmg = analyse();
+        auto path = tmg->get_endpoint_path(endpoint(*tmg, slow_to), true);
+        EXPECT_EQ(path.setup_cycles, 2);
+        EXPECT_EQ(path.max_delay, 2 * period());
+    }
+}
+
+// Between the two edges of one clock (falling edge registers feeding rising edge ones, as the register file of
+// dmg_soc) the default hold check is at the rising edge half a period before the launch edge. These paths had no
+// hold check at all, so neither had a multicycle path between them: with setup 2, its data must take half a
+// period (the next data is launched half a period before the capture edge).
+TEST_F(GateMateMulticycleTest, hold_check_between_the_two_edges_of_a_clock)
+{
+    design();
+    fast_from->params[id_CLK_INV] = Property(1, 1);
+    implement();
+    auto check = [&](const std::string &constraints) {
+        ctx->timing_exceptions.clear();
+        sdc(constraints);
+        auto tmg = analyse();
+        bool violation = false;
+        for (auto &path : tmg->get_timing_result().min_delay_violations)
+            violation |= path.segments.back().to.first == fast_to->name;
+        return std::make_pair(endpoint(*tmg, fast_to).hold_slack, violation);
+    };
+    auto plain = check("");
+    ASSERT_NE(plain.first, std::numeric_limits<delay_t>::max()) << "no hold check";
+    // (the data may change from half a period before the launch edge on)
+    EXPECT_GT(plain.first, period() / 2);
+    EXPECT_FALSE(plain.second);
+    std::string setup = "set_multicycle_path 2 -from [get_cells fast_from] -to [get_cells fast_to]\n";
+    auto two = check(setup);
+    EXPECT_EQ(two.first, plain.first - period());
+    // two inverters take less than half a period
+    EXPECT_LT(two.first, 0);
+    EXPECT_TRUE(two.second);
+    auto back = check(setup + "set_multicycle_path 1 -hold -from [get_cells fast_from] -to [get_cells fast_to]\n");
+    EXPECT_EQ(back.first, plain.first);
+    EXPECT_FALSE(back.second);
 }
 
 // The exceptions keep their command (without a comment after it) and its line, for the GUI

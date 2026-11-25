@@ -505,10 +505,11 @@ struct CriticalPath
     delay_t max_delay;
 
     // A multicycle path (set_multicycle_path): the clock cycles it has for setup (max_delay includes them), and
-    // how much later than the launch edge its hold check is (a hold/min violation if sum[segments.delay] <
-    // hold_shift)
+    // how much later than its default edge the hold check is. The default hold check is at the capture edge
+    // hold_edge before the launch edge (0, or between the two edges of one clock the high or low time): a
+    // hold/min violation if sum[segments.delay] < hold_shift - hold_edge
     int setup_cycles = 1;
-    delay_t hold_shift = 0;
+    delay_t hold_shift = 0, hold_edge = 0;
 
     // Individual path segments
     std::vector<Segment> segments;
@@ -523,6 +524,21 @@ struct NetSinkTiming
     std::pair<IdString, IdString> cell_port;
     // Delay
     DelayPair delay;
+};
+
+// The paths of one multicycle exception (set_multicycle_path) between two clock edges: how close they are to
+// failing. They are rarely the critical paths of their clock, so the reports do not show them otherwise.
+struct MulticycleSlack
+{
+    ClockPair clock_pair;
+    int setup_cycles = 1;
+    delay_t hold_shift = 0, hold_edge = 0; // as in CriticalPath
+    int endpoints = 0;
+    // The worst slacks; the hold slack is max() where no hold check applies
+    delay_t setup_slack = std::numeric_limits<delay_t>::max(), hold_slack = std::numeric_limits<delay_t>::max();
+    // The longest path to the end point of the worst setup slack, the shortest to the one of the worst hold slack
+    // (no segments where no hold check applies)
+    CriticalPath setup_path, hold_path;
 };
 
 struct TimingResult
@@ -544,6 +560,9 @@ struct TimingResult
 
     // Min delay violations, only hold time for now
     std::vector<CriticalPath> min_delay_violations;
+
+    // The multicycle paths, per exception and clock edge pair
+    std::vector<MulticycleSlack> multicycle_slacks;
 };
 
 // Represents the contents of a non-leaf cell in a design

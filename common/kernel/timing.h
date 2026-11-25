@@ -147,9 +147,10 @@ struct TimingAnalyser
         // two edges of a clock), without multicycle paths
         delay_t clock_required;
         // The multicycle path: its clock cycles for setup, the time it adds to the required time, and how much
-        // later than the launch edge the hold check is
+        // later than its default edge the hold check is. The default hold check is at the capture edge hold_edge
+        // before the launch edge (0, or between the two edges of one clock its high or low time).
         int setup_cycles;
-        delay_t setup_shift, hold_shift;
+        delay_t setup_shift, hold_shift, hold_edge;
         // The exceptions that apply to the setup and the hold check (-1: none)
         int setup_exception, hold_exception;
         // All exceptions matching the pair: also those a more specific or later one overrides, and false paths
@@ -213,6 +214,8 @@ struct TimingAnalyser
     // longest paths are interesting for setup violations and shortest paths are interesting for hold violations
     CriticalPath build_critical_path_report(domain_id_t domain_pair, CellPortKey endpoint, bool longest_path);
     void build_crit_path_reports();
+    // The worst slacks of the multicycle paths (TimingResult::multicycle_slacks)
+    void build_multicycle_slack_report();
     void build_slack_histogram_report();
 
     std::vector<CriticalPath> get_min_delay_violations();
@@ -315,6 +318,10 @@ struct TimingAnalyser
         // ctx->timing_exceptions)
         int setup_exception = -1, hold_exception = -1;
         std::vector<int> exceptions;
+        // The default hold check is at the capture edge this long before the launch edge: 0, or between the two
+        // edges of one clock its high (falling launch) or low time (rising launch). The hold check of the pair is
+        // hold_shift - hold_edge after the launch edge.
+        delay_t hold_edge = 0;
         // The pairs of the same launch and capture clock edges (which differ in their domain tags only) form a
         // group, whose criticalities are scaled together
         int group = -1;
