@@ -1,8 +1,8 @@
 # Exceptions tab (beside Clocks): the timing exceptions of the SDC file with the paths they match and apply to,
 # and in the Paths tab how the slacks of a path come about (required time from the clock and the multicycle path,
 # arrival time, the constraints on it). designs/multicycle.v with designs/multicycle.sdc: line 2 a multicycle
-# path overridden by the more specific one of line 3 (setup 2) and line 4 (hold 1), line 5 a false path (listed,
-# not applied).
+# path overridden by the more specific one of line 3 (setup 2) and line 4 (hold 1), line 5 a false path (its
+# paths have no slacks).
 # design: multicycle
 resize 1600 1000
 delay 600
@@ -16,7 +16,7 @@ waitidle
 delay 400
 tab Exceptions
 assert_label exceptionSummary 4 timing exception(s)
-assert_label exceptionSummary False paths are listed, but not applied
+assert_label exceptionSummary The paths of a false path are not timed
 dock exceptionList
 shot 01_exceptions.png
 # the multicycle path of line 3 applies to the paths from the operands
@@ -27,10 +27,10 @@ assert_label exceptionPathSummary applies to setup: 2 clock cycles
 assert_label exceptionPathSummary line 2: set_multicycle_path 4
 assert_label exceptionPathSummary overridden by line 3
 shot 02_multicycle_paths.png
-# the false path: matched, not applied
+# the false path: its paths have neither check
 dock exceptionList set_false_path
 dock exceptionPaths posedge
-assert_label exceptionPathSummary false path: not applied
+assert_label exceptionPathSummary false path: no setup and no hold check
 shot 03_false_path.png
 # Paths tab: the longest path between registers is a multicycle path from the operands (8 ns for the adder tree
 # at 250 MHz)
@@ -51,6 +51,12 @@ dock pathSlack applies to setup: 2 clock cycles: set_multicycle_path 2
 dock pathSlack overridden by line 3: set_multicycle_path 4
 dock pathSlack applies to hold
 shot 04_path_slack.png
+# a false path in the Paths tab (no slack in the first columns): the checks name the line that takes them away
+dock pathList -
+dock pathSlack not checked: line 5
+dock pathSlack false path: not checked
+dock pathSlack false path: no setup and no hold check
+shot 04b_false_path_slack.png
 action Route
 waitidle
 delay 400

@@ -50,9 +50,9 @@ struct ClockDomainKey
 {
     IdString clock;
     ClockEdge edge;
-    // The timing exceptions (multicycle paths) whose -from (launch) or -to (capture) lists name the start or end
-    // points of the domain: start and end points of one clock edge named by different constraints are different
-    // domains, so that each pair of domains has one exception. 0: named by none
+    // The timing exceptions (multicycle and false paths) whose -from (launch) or -to (capture) lists name the start
+    // or end points of the domain: start and end points of one clock edge named by different constraints are
+    // different domains, so that each pair of domains has one exception. 0: named by none
     int tag = 0;
     ClockDomainKey(IdString clock_net, ClockEdge edge, int tag = 0) : clock(clock_net), edge(edge), tag(tag) {};
     inline bool is_async() const { return clock == IdString(); }
@@ -109,14 +109,16 @@ struct TimingAnalyser
     // The slacks of the paths through a port (any port the analysis has, typically the input port of a net's user),
     // after setup() or run(), without the path reports:
     // - the worst hold slack, over the domain pairs that have a hold check (as get_min_delay_violations: a clocked
-    //   launch, the same or related clocks, register end points), with the hold edge and multicycle shift of the
-    //   pair; max() where there is none (and with setup_only). It is <= 0 exactly where a path violating hold passes
-    //   through the port, and at an end point it is the least EndpointTiming::hold_slack of the point.
+    //   launch, the same or related clocks, register end points, no false path), with the hold edge and multicycle
+    //   shift of the pair; max() where there is none (and with setup_only). It is <= 0 exactly where a path
+    //   violating hold passes through the port, and at an end point it is the least EndpointTiming::hold_slack of
+    //   the point.
     delay_t get_hold_slack(CellPortKey port) const;
     // - the worst setup slack in absolute terms, over all domain pairs (also between the two edges of a clock,
-    //   multicycle and unrelated or unclocked pairs, each against get_max_delay as get_endpoint_timings has it); at
-    //   an end point the least EndpointTiming::setup_slack of the point. (get_setup_slack covers the pairs of one
-    //   clock edge only, against their period.)
+    //   multicycle and unrelated or unclocked pairs, each against get_max_delay as get_endpoint_timings has it,
+    //   without the false paths); at an end point the least EndpointTiming::setup_slack of the point; max() if
+    //   only false paths pass through the port. (get_setup_slack covers the pairs of one clock edge only, against
+    //   their period.)
     delay_t get_absolute_setup_slack(CellPortKey port);
 
     dict<std::pair<IdString, IdString>, delay_t> get_clock_delays() const { return clock_delays; }
@@ -142,8 +144,11 @@ struct TimingAnalyser
         ClockPair clock_pair;
         // Longest path delay, including setup time and clock-to-clock delay
         delay_t delay;
-        // Slacks; the hold slack is max() where no hold analysis applies (unclocked endpoints, unrelated clocks)
+        // Slacks; the hold slack is max() where no hold analysis applies (unclocked endpoints, unrelated clocks),
+        // and either is max() where a false path takes the check away
         delay_t setup_slack, hold_slack;
+        // A false path (set_false_path) takes the setup check, or a hold check there would be, away
+        bool false_setup = false, false_hold = false;
     };
     // All endpoints with their timing, for listing paths
     std::vector<EndpointTiming> get_endpoint_timings();
@@ -166,9 +171,14 @@ struct TimingAnalyser
         // before the launch edge (0, or between the two edges of one clock its high or low time).
         int setup_cycles;
         delay_t setup_shift, hold_shift, hold_edge;
-        // The exceptions that apply to the setup and the hold check (-1: none)
+        // A false path: the setup or the hold check of the paths is not made (a false path goes before every
+        // multicycle path; the cycles and shifts above are those of the multicycle paths all the same, as the hold
+        // check of a path that is false for setup only follows them)
+        bool false_setup, false_hold;
+        // The exceptions that apply to the setup and the hold check (-1: none): the false path, else the
+        // multicycle path
         int setup_exception, hold_exception;
-        // All exceptions matching the pair: also those a more specific or later one overrides, and false paths
+        // All exceptions matching the pair: also those a more specific or later one, or a false path, overrides
         std::vector<int> exceptions;
     };
     PairConstraints get_pair_constraints(domain_id_t domain_pair);
@@ -206,8 +216,8 @@ struct TimingAnalyser
     void resolve_timing_exceptions();
     // The domain tag of a start point (launch) or an end point (capture) clocked by clock_port
     int point_tag(CellPortKey port, IdString clock_port, bool launch);
-    // The cycles and the shifts of the setup and hold checks of a domain pair from its multicycle paths, and the
-    // exceptions matching it
+    // The cycles and the shifts of the setup and hold checks of a domain pair from its multicycle paths, the checks
+    // its false paths take away, and the exceptions matching it
     void apply_timing_exceptions(domain_id_t pair);
     // Whether two domains are the same clock edge (they may differ in their tags)
     bool same_event(domain_id_t a, domain_id_t b) const
@@ -336,6 +346,9 @@ struct TimingAnalyser
         // than the launch edge the hold check is
         int setup_cycles = 1;
         delay_t setup_shift = 0, hold_shift = 0;
+        // False path: the setup or the hold check of the pair is not made. Its slacks do not count in the worst
+        // slacks, the criticality, Fmax and the reports.
+        bool false_setup = false, false_hold = false;
         // The exceptions applying to the setup and the hold check, and all matching the pair (indices into
         // ctx->timing_exceptions)
         int setup_exception = -1, hold_exception = -1;

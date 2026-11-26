@@ -508,7 +508,11 @@ void TimingWidget::showSlack(int index)
     // setup time, arrival = launch clock delay + data path, slack = required - arrival
     {
         Parts p = parts_of(setup_path);
-        auto top = slackRow(nullptr, "Setup check", ep.setup_slack, "slack = required time - arrival time");
+        // (a false path: the times the check would have, without a slack)
+        auto top = pc.false_setup ? bold(row(nullptr, "Setup check", "-",
+                                             "not checked: " + TimingText::exceptionName(ctx, pc.setup_exception)))
+                                  : slackRow(nullptr, "Setup check", ep.setup_slack,
+                                             "slack = required time - arrival time");
         QString edges;
         if (unclocked)
             edges = "unclocked start or end point: one period of the launch clock, or of the default target";
@@ -521,7 +525,7 @@ void TimingWidget::showSlack(int index)
                             .arg(launch.edge == RISING_EDGE ? "rising" : "falling",
                                  capture.edge == RISING_EDGE ? "rising edge" : "falling edge");
         row(top, "Capture edge", signedDelay(pc.clock_required), edges);
-        if (pc.setup_exception >= 0)
+        if (pc.setup_exception >= 0 && !pc.false_setup)
             row(top, QString("Multicycle path: %1 cycles").arg(pc.setup_cycles), signedDelay(pc.setup_shift),
                 TimingText::exceptionName(ctx, pc.setup_exception));
         if (setup_clocks.capture != 0)
@@ -534,8 +538,12 @@ void TimingWidget::showSlack(int index)
         delay_t required = pc.clock_required + pc.setup_shift + setup_clocks.capture - p.clock_to_clock - p.check;
         bold(row(top, "Required time", formatDelay(required), QString()));
         delay_t arrival = arrivalRows(top, p, setup_clocks, "longest");
-        restRow(top, ep.setup_slack - (required - arrival));
-        slackRow(top, "Slack", ep.setup_slack, "required time - arrival time");
+        if (pc.false_setup) {
+            row(top, "Slack", "-", "false path: not checked");
+        } else {
+            restRow(top, ep.setup_slack - (required - arrival));
+            slackRow(top, "Slack", ep.setup_slack, "required time - arrival time");
+        }
         slackList->addTopLevelItem(top);
     }
 
@@ -547,7 +555,7 @@ void TimingWidget::showSlack(int index)
         QString edge;
         if (pc.hold_exception >= 0)
             edge = TimingText::exceptionName(ctx, pc.hold_exception);
-        else if (pc.setup_exception >= 0)
+        else if (pc.setup_cycles != 1)
             edge = "one period before the setup edge of the multicycle path (set_multicycle_path -hold moves it "
                    "back)";
         else if (pc.hold_edge != 0)
@@ -569,6 +577,9 @@ void TimingWidget::showSlack(int index)
         restRow(top, ep.hold_slack - (arrival - required));
         slackRow(top, "Slack", ep.hold_slack, "arrival time - required time");
         slackList->addTopLevelItem(top);
+    } else if (ep.false_hold) {
+        slackList->addTopLevelItem(
+                row(nullptr, "Hold check", "-", "not checked: " + TimingText::exceptionName(ctx, pc.hold_exception)));
     } else {
         slackList->addTopLevelItem(row(nullptr, "Hold check", "-",
                                        "not checked: an unclocked start or end point, or unrelated clocks"));
@@ -697,12 +708,20 @@ QString TimingText::exceptionName(Context *ctx, int index)
 QString TimingText::exceptionStatus(Context *ctx, const TimingAnalyser::PairConstraints &pc, int index)
 {
     const TimingException &exc = ctx->timing_exceptions.at(index);
-    if (exc.type == TimingException::FALSE_PATH)
-        return "false path: not applied, the timing analysis does not support false paths yet";
+    if (exc.type == TimingException::FALSE_PATH) {
+        // (every false path matching takes its checks away, though the pair names one of them)
+        if (exc.setup && exc.hold)
+            return "false path: no setup and no hold check";
+        return exc.setup ? "false path: no setup check" : "false path: no hold check";
+    }
     if (index == pc.setup_exception)
         return QString("applies to setup: %1 clock cycles").arg(pc.setup_cycles);
     if (index == pc.hold_exception)
         return QString("applies to hold: the hold check %1 cycle(s) back").arg(exc.multiplier);
+    // A false path goes before the multicycle paths
+    if (exc.hold ? pc.false_hold : pc.false_setup)
+        return QString("overridden by the false path of line %1")
+                .arg(ctx->timing_exceptions.at(exc.hold ? pc.hold_exception : pc.setup_exception).line);
     if (pc.clock_pair.start.clock == IdString() || pc.clock_pair.end.clock == IdString())
         return "no effect: the path starts or ends at an unclocked point";
     int winner = exc.hold ? pc.hold_exception : pc.setup_exception;

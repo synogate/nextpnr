@@ -9,7 +9,7 @@ are those of the synthesised netlist (as in the JSON file).
 |---|---|
 | `create_clock -period <ns> [-name <name>] <objects>` | on nets, cell pins or ports. The name (else the net's name) stays with the constraint when the packer copies it behind a clock buffer, and `get_clocks` finds the clock by it. |
 | `set_multicycle_path <n> [-setup\|-hold] [-start\|-end] [-from <objects>] [-to <objects>]` | see below |
-| `set_false_path [-setup\|-hold] [-from <objects>] [-to <objects>]` | recorded and shown in the GUI with the paths it covers, but not applied by the timing analysis yet |
+| `set_false_path [-setup\|-hold] [-from <objects>] [-to <objects>]` | the paths are not timed, see below |
 | `get_cells`, `get_pins`, `get_nets`, `get_ports`, `get_clocks` | names or patterns with `*` and `?` (brackets are bus indices, `{a[3]}`) |
 
 ## Multicycle paths
@@ -42,12 +42,34 @@ every path. Without `-from` and `-to` a constraint applies to every path (also w
 
 Of several constraints for one path, the most specific wins (`-from` and `-to`, then `-from`, then `-to`), of
 equally specific ones the last. Setup and hold constraints are chosen separately. Paths from or to I/O pads
-(asynchronous start and end points) are not timed against a clock, so constraints on them have no effect.
+(asynchronous start and end points) are not timed against a clock, so multicycle constraints on them have no
+effect.
+
+## False paths
+
+`set_false_path` takes paths out of the timing analysis: both checks, or with `-setup` or `-hold` that check
+only. `-from` and `-to` are as for multicycle paths (`-through` is not supported). A false path goes before
+every multicycle path on the same paths, however specific that is. If it is false for setup only, the hold check
+stays where the multicycle paths put it.
+
+A path that is false for setup:
+
+- has no setup slack, takes no part in Fmax, the critical path reports, the slack histogram and TNS;
+- has criticality 0 and no slack for the placers, the router and the repair passes: they do not work on it, and
+  it may get slower than the clock allows;
+- gives the hold fix no setup limit (where a hold check is left).
+
+A path that is false for hold has no hold check: no hold violation in any corner, and the hold fix leaves it
+alone. Paths from or to I/O pads leave the cross-domain reports.
+
+The timing report says how much is taken out (`False paths: N end point(s) without a setup check, M without a
+hold check`, end points counted per launch clock edge). Check the numbers: a pattern that matches more than
+intended hides real violations.
 
 ## In the flow
 
 The timing analyser gives the start and end points that constraints name their own clock domains. Every
-domain pair has one multicycle setting, and it is used for:
+domain pair has one multicycle setting (and is a false path or not), and it is used for:
 
 - the slack and the criticality that the placers, the router and the repair passes work with. The pairs of one
   launch/capture clock edge are scaled together, so a multicycle path is as critical as the time it has;
@@ -62,7 +84,7 @@ the shortest path (`Multicycle paths 'negedge clk' -> 'posedge clk' (2 clock cyc
 The RAMs are replaced by new cells after placement (two halves of a block become `$ram$merged$id…`, a single
 one `…$full`); a constraint naming a RAM or one of its pins then names the new cell's ports of that half.
 
-Without multicycle constraints the analysis is the same as before.
+Without timing exceptions the analysis is the same as before.
 
 ## Hold checks
 
@@ -143,8 +165,8 @@ Limits:
 
 - A path that keeps more setup slack than the guard may become slower: the worst setup slack of a clock that meets
   its constraint can fall to the guard (it still meets it); Fmax of a failing clock and the TNS do not change.
-- The fixer knows no false paths (`set_false_path` is not applied by the analysis yet): a false path below the
-  margin is padded like any other.
+- False paths (`set_false_path`, `set_false_path -hold`) are not padded. A delay cell on a connection that a
+  false path shares with a timed path lengthens the false path too.
 - No clock-side fixes and no routing detours as padding; a design routed before is skipped (one log line).
 - A delay cell's delay grows from best to worst corner by about 2.2x, more than the two periods of a setup
   multicycle do: a setup multicycle without `-hold` on a short path is often unfixable in all corners at once.
@@ -157,9 +179,11 @@ Limits:
   launching register and the data path); for hold the same with the hold edge, the hold time and the shortest
   path. Each row says where it comes from (the SDC line of an exception, the register). Below that, the
   constraints on the path: the clocks with their constraints and every exception whose lists match it, with
-  what it does (applies to setup or hold, overridden by line N, a false path that is not applied).
+  what it does (applies to setup or hold, overridden by line N, a false path taking a check away). A check
+  that a false path takes away shows `-` as its slack, with the times it would have.
 - **Exceptions** tab: every timing exception of the SDC file with its line, the number of paths (end points per
-  launch clock) its lists match, the number it applies to and the worst setup slack among them. Below, the
+  launch clock) its lists match, the number it applies to and the worst setup slack among them (`-` for a
+  false path: its paths have none). Below, the
   paths of the selected exception (or of all), with what the exceptions do to each; a selected path is selected
   in the device view.
 

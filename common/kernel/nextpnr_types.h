@@ -399,8 +399,9 @@ struct TimingPathPoint
 // - MULTICYCLE (set_multicycle_path): for setup, the paths have multiplier periods (the capture edge moves by
 //   multiplier - 1 periods); for hold, the hold check moves back by multiplier periods from its default edge (one
 //   period before the setup edge).
-// - FALSE_PATH (set_false_path): the paths are not timed. Recorded (and shown in the GUI with the paths it covers),
-//   but not applied by the timing analysis yet.
+// - FALSE_PATH (set_false_path): the paths are not timed (with -setup or -hold, that check of them is not made).
+//   The timing analysis leaves them out of the slacks, the criticalities, Fmax and the reports; it goes before
+//   every multicycle path.
 struct TimingException
 {
     enum Type
@@ -563,6 +564,9 @@ struct TimingResult
 
     // The multicycle paths, per exception and clock edge pair
     std::vector<MulticycleSlack> multicycle_slacks;
+
+    // The end points (per launch domain) whose setup check, and whose hold check, a false path takes away
+    int false_setup_paths = 0, false_hold_paths = 0;
 };
 
 // Represents the contents of a non-leaf cell in a design

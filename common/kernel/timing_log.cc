@@ -199,7 +199,11 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
                  "launch edge): %d end point(s)\n",
                  start.c_str(), end.c_str(), s.setup_cycles,
                  ctx->getDelayNS(s.hold_shift - s.hold_edge), s.endpoints);
-        log_info("    worst setup slack %.2f ns at %s\n", ctx->getDelayNS(s.setup_slack), endpoint(s.setup_path).c_str());
+        if (s.setup_path.segments.empty())
+            log_info("    no setup check (false path)\n");
+        else
+            log_info("    worst setup slack %.2f ns at %s\n", ctx->getDelayNS(s.setup_slack),
+                     endpoint(s.setup_path).c_str());
         if (s.hold_path.segments.empty()) {
             log_info("    no hold check\n");
             continue;
@@ -247,8 +251,16 @@ static void log_fmax(Context *ctx, TimingResult &result, bool warn_on_failure)
 
     bool allow_fail = bool_or_default(ctx->settings, ctx->id("timing/allowFail"), false);
 
+    // What set_false_path takes out of the analysis (end points per launch clock edge)
+    auto log_false_paths = [&]() {
+        if (result.false_setup_paths > 0 || result.false_hold_paths > 0)
+            log_info("False paths: %d end point(s) without a setup check, %d without a hold check\n",
+                     result.false_setup_paths, result.false_hold_paths);
+    };
+
     if (result.clock_paths.empty() && result.clock_paths.empty()) {
         log_info("No Fmax available; no interior timing paths found in design.\n");
+        log_false_paths();
         return;
     }
 
@@ -393,6 +405,7 @@ static void log_fmax(Context *ctx, TimingResult &result, bool warn_on_failure)
         if (eclock != IdString())
             log_info("Clock '%s' has no interior paths\n", eclock.c_str(ctx));
     }
+    log_false_paths();
     log_break();
 
     int start_field_width = 0, end_field_width = 0;

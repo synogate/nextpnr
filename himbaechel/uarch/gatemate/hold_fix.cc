@@ -158,7 +158,8 @@ struct HoldFixer
             if (ep.setup_slack < 0)
                 s.tns += ep.setup_slack;
             auto &start = ep.clock_pair.start, &end = ep.clock_pair.end;
-            if (start.clock == IdString() || start.clock != end.clock || ep.delay <= 0)
+            // (a false path limits no clock)
+            if (start.clock == IdString() || start.clock != end.clock || ep.delay <= 0 || ep.false_setup)
                 continue;
             if (!cycles.count(ep.domain_pair))
                 cycles[ep.domain_pair] = tmg.get_pair_constraints(ep.domain_pair).setup_cycles;

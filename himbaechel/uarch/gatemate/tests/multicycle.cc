@@ -351,8 +351,8 @@ TEST_F(GateMateMulticycleTest, exceptions_keep_their_source)
     EXPECT_TRUE(fp.to.empty());
 }
 
-// What the analyser tells about the exceptions of a path: the one that applies, the ones it overrides, false
-// paths (matched, but without effect)
+// What the analyser tells about the exceptions of a path: the one that applies, the ones it overrides, and a false
+// path, which goes before them
 TEST_F(GateMateMulticycleTest, pair_constraints)
 {
     design();
@@ -371,23 +371,30 @@ TEST_F(GateMateMulticycleTest, pair_constraints)
     }();
     auto tmg = analyse();
 
+    // The multicycle paths keep their cycles and shifts under the false path, which is the exception of both checks
     auto slow = endpoint(*tmg, slow_to);
     auto pc = tmg->get_pair_constraints(slow.domain_pair);
-    EXPECT_EQ(pc.setup_exception, 1);
-    EXPECT_EQ(pc.hold_exception, -1);
+    EXPECT_TRUE(pc.false_setup);
+    EXPECT_TRUE(pc.false_hold);
+    EXPECT_EQ(pc.setup_exception, 2);
+    EXPECT_EQ(pc.hold_exception, 2);
     EXPECT_EQ(pc.setup_cycles, 2);
     EXPECT_EQ(pc.setup_shift, period());
     EXPECT_EQ(pc.hold_shift, period());
     EXPECT_EQ(pc.clock_required, period());
     EXPECT_EQ(pc.exceptions, (std::vector<int>{0, 1, 2}));
 
-    // The false path is matched, but the path is timed as without it
+    // The false path alone: the path has no slacks, its delay is the same
     auto fast = endpoint(*tmg, fast_to);
     auto fast_pc = tmg->get_pair_constraints(fast.domain_pair);
     EXPECT_EQ(fast_pc.exceptions, (std::vector<int>{2}));
-    EXPECT_EQ(fast_pc.setup_exception, -1);
-    EXPECT_EQ(fast.setup_slack, endpoint(*plain, fast_to).setup_slack);
-    EXPECT_EQ(fast.hold_slack, endpoint(*plain, fast_to).hold_slack);
+    EXPECT_EQ(fast_pc.setup_exception, 2);
+    EXPECT_EQ(fast_pc.setup_cycles, 1);
+    EXPECT_TRUE(fast.false_setup);
+    EXPECT_TRUE(fast.false_hold);
+    EXPECT_EQ(fast.setup_slack, std::numeric_limits<delay_t>::max());
+    EXPECT_EQ(fast.hold_slack, std::numeric_limits<delay_t>::max());
+    EXPECT_EQ(fast.delay, endpoint(*plain, fast_to).delay);
 
     // A false path from an input pad (an unclocked start point) matches the paths from it
     bool from_pad = false;
@@ -400,4 +407,151 @@ TEST_F(GateMateMulticycleTest, pair_constraints)
         EXPECT_EQ(ep.endpoint.cell, fast_from->name);
     }
     EXPECT_TRUE(from_pad);
+}
+
+// A false path (set_false_path) is not timed: no slacks at its end point, no part in Fmax, in the critical path, in
+// the criticality and the slacks that the placer and the router see, and no hold violation. The other paths are as
+// without it.
+TEST_F(GateMateMulticycleTest, false_path_is_not_timed)
+{
+    design();
+    implement();
+    const delay_t none = std::numeric_limits<delay_t>::max();
+    CellPortKey slow_d(slow_to->name, id_DIN), fast_d(fast_to->name, id_DIN);
+    auto before = analyse();
+    ASSERT_GT(endpoint(*before, slow_to).delay, endpoint(*before, fast_to).delay) << "precondition: slow is slower";
+    EXPECT_FLOAT_EQ(before->get_criticality(slow_d), 1.0f);
+    EXPECT_EQ(before->get_timing_result().false_setup_paths, 0);
+
+    sdc("set_false_path -from [get_cells slow_from] -to [get_cells slow_to]\n");
+    auto after = analyse();
+    auto slow = endpoint(*after, slow_to);
+    EXPECT_TRUE(slow.false_setup);
+    EXPECT_TRUE(slow.false_hold);
+    EXPECT_EQ(slow.setup_slack, none);
+    EXPECT_EQ(slow.hold_slack, none);
+    EXPECT_EQ(slow.delay, endpoint(*before, slow_to).delay);
+    EXPECT_EQ(after->get_absolute_setup_slack(slow_d), none);
+    EXPECT_EQ(after->get_hold_slack(slow_d), none);
+    EXPECT_EQ(after->get_setup_slack(slow_d), float(none));
+    EXPECT_FLOAT_EQ(after->get_criticality(slow_d), 0.0f);
+    // (the inverters of the path too: nothing else passes through them)
+    for (auto &cell : ctx->cells)
+        if (cell.first.str(ctx).rfind("slow", 0) == 0 && cell.second.get() != slow_from)
+            for (auto &port : cell.second->ports)
+                if (port.second.type == PORT_IN && port.second.net != nullptr && port.second.net->name != clock_net())
+                    EXPECT_FLOAT_EQ(after->get_criticality(CellPortKey(cell.first, port.first)), 0.0f)
+                            << cell.first.c_str(ctx) << "." << port.first.c_str(ctx);
+
+    // The fast path is the clock's only one now
+    auto fast = endpoint(*after, fast_to);
+    EXPECT_FALSE(fast.false_setup);
+    EXPECT_EQ(fast.setup_slack, endpoint(*before, fast_to).setup_slack);
+    EXPECT_EQ(fast.hold_slack, endpoint(*before, fast_to).hold_slack);
+    EXPECT_FLOAT_EQ(after->get_criticality(fast_d), 1.0f);
+    float expected = 1000 / ctx->getDelayNS(fast.delay);
+    EXPECT_NEAR(fmax(*after), expected, expected * 0.01f);
+    EXPECT_GT(fmax(*after), fmax(*before) * 1.2f);
+    auto &result = after->get_timing_result();
+    EXPECT_EQ(result.clock_paths.at(clock_net()).segments.back().to.first, fast_to->name);
+    EXPECT_EQ(result.false_setup_paths, 1);
+    EXPECT_EQ(result.false_hold_paths, 1);
+    EXPECT_TRUE(result.multicycle_slacks.empty());
+}
+
+// -setup and -hold: the one check only
+TEST_F(GateMateMulticycleTest, false_path_for_setup_or_hold_only)
+{
+    design();
+    implement();
+    const delay_t none = std::numeric_limits<delay_t>::max();
+    auto plain = endpoint(*analyse(), slow_to);
+    auto with = [&](const std::string &option) {
+        ctx->timing_exceptions.clear();
+        sdc("set_false_path " + option + " -to [get_cells slow_to]\n");
+        auto tmg = analyse();
+        auto &result = tmg->get_timing_result();
+        EXPECT_EQ(result.false_setup_paths, option == "-hold" ? 0 : 1);
+        EXPECT_EQ(result.false_hold_paths, option == "-setup" ? 0 : 1);
+        return endpoint(*tmg, slow_to);
+    };
+    auto setup = with("-setup");
+    EXPECT_EQ(setup.setup_slack, none);
+    EXPECT_EQ(setup.hold_slack, plain.hold_slack);
+    EXPECT_TRUE(setup.false_setup);
+    EXPECT_FALSE(setup.false_hold);
+    auto hold = with("-hold");
+    EXPECT_EQ(hold.setup_slack, plain.setup_slack);
+    EXPECT_EQ(hold.hold_slack, none);
+    EXPECT_FALSE(hold.false_setup);
+    EXPECT_TRUE(hold.false_hold);
+}
+
+// A false path goes before a multicycle path, however specific: a setup multicycle without -hold leaves a hold
+// violation, which set_false_path -hold takes away while the setup check keeps its cycles
+TEST_F(GateMateMulticycleTest, false_path_goes_before_a_multicycle_path)
+{
+    design();
+    implement();
+    auto plain = endpoint(*analyse(), fast_to);
+    std::string multicycle = "set_multicycle_path 3 -from [get_cells fast_from] -to [get_cells fast_to]\n";
+    auto violated = [&](TimingAnalyser &tmg) {
+        bool found = false;
+        for (auto &path : tmg.get_timing_result().min_delay_violations)
+            found |= path.segments.back().to.first == fast_to->name;
+        return found;
+    };
+    sdc(multicycle);
+    auto moved = analyse();
+    ASSERT_LT(endpoint(*moved, fast_to).hold_slack, 0) << "precondition: the hold check two periods later fails";
+    EXPECT_TRUE(violated(*moved));
+
+    ctx->timing_exceptions.clear();
+    sdc("set_false_path -hold -to [get_cells fast_to]\n" + multicycle);
+    auto tmg = analyse();
+    auto fast = endpoint(*tmg, fast_to);
+    EXPECT_EQ(fast.setup_slack, plain.setup_slack + 2 * period());
+    EXPECT_EQ(fast.hold_slack, std::numeric_limits<delay_t>::max());
+    EXPECT_FALSE(violated(*tmg));
+    auto pc = tmg->get_pair_constraints(fast.domain_pair);
+    EXPECT_EQ(pc.setup_exception, 1);
+    EXPECT_EQ(pc.hold_exception, 0);
+    EXPECT_FALSE(pc.false_setup);
+    EXPECT_TRUE(pc.false_hold);
+    // The multicycle report has its setup slack, and no hold path
+    auto &slacks = tmg->get_timing_result().multicycle_slacks;
+    ASSERT_EQ(slacks.size(), 1u);
+    EXPECT_EQ(slacks.at(0).setup_slack, fast.setup_slack);
+    EXPECT_TRUE(slacks.at(0).hold_path.segments.empty());
+}
+
+// From the input pads (unclocked start points): the paths leave the cross-domain reports
+TEST_F(GateMateMulticycleTest, false_path_from_pads)
+{
+    design();
+    implement();
+    auto from_pad = [&](TimingAnalyser &tmg) {
+        int reports = 0;
+        for (auto &path : tmg.get_timing_result().xclock_paths)
+            reports += path.clock_pair.start.clock == IdString() && path.clock_pair.end.clock != IdString();
+        return reports;
+    };
+    auto before = analyse();
+    ASSERT_GT(from_pad(*before), 0) << "precondition: paths from the pads to the registers";
+    sdc("set_false_path -from [get_cells a b]\n");
+    auto after = analyse();
+    EXPECT_EQ(from_pad(*after), 0);
+    int taken = 0;
+    for (auto &ep : after->get_endpoint_timings())
+        if (ep.clock_pair.start.clock == IdString() && ep.clock_pair.end.clock != IdString()) {
+            EXPECT_TRUE(ep.false_setup) << ep.endpoint.cell.c_str(ctx);
+            // (no hold check from an unclocked point anyway: none the false path takes)
+            EXPECT_FALSE(ep.false_hold);
+            taken++;
+        }
+    EXPECT_EQ(taken, 2);
+    EXPECT_EQ(after->get_timing_result().false_setup_paths, 2);
+    EXPECT_EQ(after->get_timing_result().false_hold_paths, 0);
+    // the clock's own paths as before
+    EXPECT_EQ(fmax(*after), fmax(*before));
 }

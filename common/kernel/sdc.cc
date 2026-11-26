@@ -601,9 +601,9 @@ struct SDCParser
                      exc.hold ? "hold" : "setup", exc.multiplier, exc.start ? "start" : "end", int(exc.from.size()),
                      int(exc.to.size()));
         else
-            log_warning("False path (line %d), from %d object(s), to %d object(s): not applied by the timing "
-                        "analysis yet (the GUI lists the paths it covers)\n",
-                        lineno, int(exc.from.size()), int(exc.to.size()));
+            log_info("False path (line %d): no %s check, from %d object(s), to %d object(s)\n", lineno,
+                     exc.setup && exc.hold ? "setup and no hold" : exc.setup ? "setup" : "hold", int(exc.from.size()),
+                     int(exc.to.size()));
         ctx->timing_exceptions.push_back(exc);
         return std::string{};
     }

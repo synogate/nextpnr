@@ -41,9 +41,11 @@ bool matches(const TimingAnalyser::PairConstraints &pc, int exception)
     return exception < 0 || std::find(pc.exceptions.begin(), pc.exceptions.end(), exception) != pc.exceptions.end();
 }
 
-bool applies(const TimingAnalyser::PairConstraints &pc, int exception)
+// (a false path applies wherever it matches: the pair names one of several only)
+bool applies(const Context *ctx, const TimingAnalyser::PairConstraints &pc, int exception)
 {
-    return pc.setup_exception == exception || pc.hold_exception == exception;
+    return pc.setup_exception == exception || pc.hold_exception == exception ||
+           ctx->timing_exceptions.at(exception).type == TimingException::FALSE_PATH;
 }
 } // namespace
 
@@ -225,13 +227,14 @@ void ExceptionsWidget::analyse()
         const TimingException &exc = ctx->timing_exceptions.at(i);
         false_paths += exc.type == TimingException::FALSE_PATH;
         int paths_matched = 0, paths_applied = 0;
+        // (the paths of a false path for setup have no setup slack)
         delay_t wns = NO_SLACK;
         for (auto &m : matched) {
             if (!matches(m.second, i))
                 continue;
             paths_matched++;
-            if (applies(m.second, i) || exc.type == TimingException::FALSE_PATH) {
-                paths_applied += applies(m.second, i);
+            if (applies(ctx, m.second, i)) {
+                paths_applied++;
                 wns = std::min(wns, m.first.setup_slack);
             }
         }
@@ -273,8 +276,8 @@ void ExceptionsWidget::analyse()
                                  "of.%3")
                                  .arg(count)
                                  .arg(matched.size())
-                                 .arg(false_paths > 0 ? " False paths are listed, but not applied by the timing "
-                                                        "analysis yet."
+                                 .arg(false_paths > 0 ? " The paths of a false path are not timed: they have no "
+                                                        "slack ('-')."
                                                       : ""));
     updatePaths();
     QApplication::restoreOverrideCursor();

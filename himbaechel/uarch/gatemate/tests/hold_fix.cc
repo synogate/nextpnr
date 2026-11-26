@@ -524,6 +524,39 @@ TEST_F(GateMateHoldFixPairTest, opposite_edges)
     }
 }
 
+// False paths are left alone: the path of multicycle_needs_a_chain (its hold check fails by nanoseconds) gets no cell
+// and is no leftover under set_false_path or set_false_path -hold, and the finished routing has no hold violation.
+// Under set_false_path -setup the hold check stays and is repaired, with no setup slack to keep.
+TEST_F(GateMateHoldFixPairTest, false_paths_are_left_alone)
+{
+    const std::string multicycle = "set_multicycle_path 2 -setup -from [get_cells from] -to [get_cells to]\n";
+    for (std::string option : {"", " -hold"}) {
+        SCOPED_TRACE("set_false_path" + option);
+        init_context("CCGM1A1", {"--allow-unconstrained", "--hold-corners=routed"});
+        pair(6);
+        sdc(multicycle + "set_false_path" + option + " -from [get_cells from] -to [get_cells to]\n");
+        route_deferred();
+        EXPECT_EQ(hold_slack_to(), std::numeric_limits<delay_t>::max());
+        ctx->repairRoute();
+        EXPECT_TRUE(delay_cells().empty());
+        EXPECT_TRUE(all_leftovers().empty());
+        ctx->finishRoute();
+        EXPECT_TRUE(ctx->timing_result.min_delay_violations.empty());
+        EXPECT_TRUE(ctx->checkRoutedDesign());
+    }
+
+    init_context("CCGM1A1", {"--allow-unconstrained", "--hold-corners=routed"});
+    pair(6);
+    sdc(multicycle + "set_false_path -setup -from [get_cells from] -to [get_cells to]\n");
+    route_deferred();
+    ASSERT_LT(hold_slack_to(), -ctx->getDelayFromNS(3)) << "precondition: a need of a few nanoseconds";
+    ctx->repairRoute();
+    EXPECT_GE(delay_cells().size(), 2u);
+    EXPECT_GE(hold_slack_to(), ctx->getDelayFromNS(0.1));
+    EXPECT_TRUE(all_leftovers().empty());
+    EXPECT_TRUE(ctx->checkRoutedDesign());
+}
+
 // The chain cap: a need beyond hold-fix-max-cells cells is reported (as a probably missing -hold), not filled
 TEST_F(GateMateHoldFixPairTest, chain_cap_reports_a_missing_hold_multicycle)
 {
