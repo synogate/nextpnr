@@ -403,12 +403,14 @@ void TimingWidget::showSlack(int index)
     const auto &ep = path.timing;
     bool hold_sorted = SortBy(sortCombo->currentData().toInt()) == HOLD_SLACK;
 
-    // The parts of a path: the data path (clock-to-q or source, logic, routing), the clock-to-clock delay and the
-    // setup or hold time. (Its clock skew segment is left out: the clock delays at the two ends come from the
-    // analysis, which counts them also where the report has no skew, as at an unclocked end.)
+    // The parts of a path: the data path (clock-to-q or source, logic, routing), the clock-to-clock delay, the
+    // setup or hold time, and the delays outside of the device before an input and after an output
+    // (set_input_delay, set_output_delay). (Its clock skew segment is left out: the clock delays at the two ends
+    // come from the analysis, which counts them also where the report has no skew, as at an unclocked end.)
     struct Parts
     {
-        delay_t data = 0, clock_to_clock = 0, check = 0;
+        delay_t data = 0, clock_to_clock = 0, check = 0, input = 0, output = 0;
+        bool has_input = false, has_output = false;
         int logic = 0, routing = 0;
     };
     auto parts_of = [](const CriticalPath &p) {
@@ -426,6 +428,14 @@ void TimingWidget::showSlack(int index)
             case CriticalPath::Segment::Type::HOLD:
                 // (the segment is the negated hold time)
                 parts.check -= segment.delay;
+                break;
+            case CriticalPath::Segment::Type::INPUT_DELAY:
+                parts.input += segment.delay;
+                parts.has_input = true;
+                break;
+            case CriticalPath::Segment::Type::OUTPUT_DELAY:
+                parts.output += segment.delay;
+                parts.has_output = true;
                 break;
             case CriticalPath::Segment::Type::LOGIC:
                 parts.logic++;
@@ -446,6 +456,8 @@ void TimingWidget::showSlack(int index)
     CriticalPath setup_path;
     std::optional<CriticalPath> hold_path;
     TimingAnalyser::PathClockDelays setup_clocks, hold_clocks;
+    // The input delays at the start point and the output delays at the end point (indices into ctx->io_delays)
+    std::vector<int> input_delays, output_delays;
     {
         std::lock_guard<std::mutex> lock_ui(ctx->ui_mutex);
         std::lock_guard<std::mutex> lock(ctx->mutex);
@@ -454,8 +466,16 @@ void TimingWidget::showSlack(int index)
         setup_clocks = analyser->get_clock_delays(ep, setup_path);
         if (ep.hold_slack != NO_SLACK) {
             hold_path = hold_sorted ? path.path : analyser->get_endpoint_path(ep, false);
-            hold_clocks = analyser->get_clock_delays(ep, *hold_path);
+            hold_clocks = analyser->get_clock_delays(ep, *hold_path, false);
         }
+        if (pc.io_capture)
+            output_delays = analyser->get_io_delays(ep.endpoint, true);
+        if (pc.io_launch)
+            for (auto &segment : setup_path.segments)
+                if (segment.type == CriticalPath::Segment::Type::SOURCE) {
+                    input_delays = analyser->get_io_delays(CellPortKey(segment.from.first, segment.from.second), false);
+                    break;
+                }
     }
 
     auto signedDelay = [&](delay_t delay) {
@@ -481,20 +501,59 @@ void TimingWidget::showSlack(int index)
             item->setForeground(1, Qt::red);
         return item;
     };
-    // The arrival time: the clock delay to the launching register and the data path
+    // Where the clock edge of an input or output delay is: at the pad of the clock, or at the port of a clock the
+    // design puts out
+    auto edgePlace = [&](int ref) {
+        if (ref == 0 || ref > int(ctx->forwarded_clocks.size()))
+            return QString("the clock pad");
+        const ForwardedClock &fc = ctx->forwarded_clocks.at(ref - 1);
+        return QString("the port '%1' of the clock '%2'").arg(fc.port.c_str(ctx)).arg(fc.name.c_str(ctx));
+    };
+    // The arrival time: the clock delay to the launching register (or the delay outside of the device before an
+    // input) and the data path
     auto arrivalRows = [&](QTreeWidgetItem *top, const Parts &p, const TimingAnalyser::PathClockDelays &clocks,
-                           const char *which) {
+                           const char *which, bool longest) {
         if (clocks.launch != 0)
-            row(top, "Launch clock delay", signedDelay(clocks.launch), "clock network to the launching register");
+            row(top, "Launch clock delay", signedDelay(clocks.launch),
+                !pc.io_capture ? QString("clock network to the launching register")
+                : pc.io_capture_ref == 0
+                        ? QString("clock network from the clock pad to the launching register")
+                        : QString("clock edge at the launching register, against that at %1")
+                                  .arg(edgePlace(pc.io_capture_ref)));
+        if (p.has_input)
+            row(top, "Input delay", signedDelay(p.input),
+                QString("outside of the device, after the clock edge at %1: set_input_delay %2")
+                        .arg(edgePlace(pc.io_launch_ref))
+                        .arg(longest ? "-max" : "-min"));
         row(top, "Data path", signedDelay(p.data),
-            QString("%1 path: clock-to-q, %2 logic and %3 routing segment(s) (listed below)")
+            QString("%1 path: %2, %3 logic and %4 routing segment(s) (listed below)")
                     .arg(which)
+                    .arg(p.has_input ? "pad buffer" : "clock-to-q")
                     .arg(p.logic)
                     .arg(p.routing));
-        delay_t arrival = clocks.launch + p.data;
+        delay_t arrival = clocks.launch + p.input + p.data;
         bold(row(top, "Arrival time", formatDelay(arrival), QString()));
         return arrival;
     };
+    // The clock delay to the capturing register, or the delay outside of the device after an output (negated: it is
+    // taken from the required time)
+    auto captureRows = [&](QTreeWidgetItem *top, const Parts &p, const TimingAnalyser::PathClockDelays &clocks,
+                           bool longest) {
+        if (clocks.capture != 0)
+            row(top, "Capture clock delay", signedDelay(clocks.capture),
+                !pc.io_launch ? QString("clock network to the capturing register")
+                : pc.io_launch_ref == 0
+                        ? QString("clock network from the clock pad to the capturing register")
+                        : QString("clock edge at the capturing register, against that at %1")
+                                  .arg(edgePlace(pc.io_launch_ref)));
+        if (p.has_output)
+            row(top, "Output delay", signedDelay(-p.output),
+                QString("outside of the device, before the clock edge at %1: set_output_delay %2")
+                        .arg(edgePlace(pc.io_capture_ref))
+                        .arg(longest ? "-max" : "-min"));
+    };
+    const QString no_maximum = "not checked: the input or output delay has no maximum (-max)";
+    const QString no_minimum = "not checked: the input or output delay has no minimum (-min)";
     // What the itemised times leave of the analysed slack (none, unless the report differs from the analysis)
     auto restRow = [&](QTreeWidgetItem *top, delay_t rest) {
         if (std::abs(ctx->getDelayNS(rest)) >= 0.0005)
@@ -511,6 +570,7 @@ void TimingWidget::showSlack(int index)
         // (a false path: the times the check would have, without a slack)
         auto top = pc.false_setup ? bold(row(nullptr, "Setup check", "-",
                                              "not checked: " + TimingText::exceptionName(ctx, pc.setup_exception)))
+                   : pc.no_setup  ? bold(row(nullptr, "Setup check", "-", no_maximum))
                                   : slackRow(nullptr, "Setup check", ep.setup_slack,
                                              "slack = required time - arrival time");
         QString edges;
@@ -528,18 +588,19 @@ void TimingWidget::showSlack(int index)
         if (pc.setup_exception >= 0 && !pc.false_setup)
             row(top, QString("Multicycle path: %1 cycles").arg(pc.setup_cycles), signedDelay(pc.setup_shift),
                 TimingText::exceptionName(ctx, pc.setup_exception));
-        if (setup_clocks.capture != 0)
-            row(top, "Capture clock delay", signedDelay(setup_clocks.capture),
-                "clock network to the capturing register");
+        captureRows(top, p, setup_clocks, true);
         if (p.clock_to_clock != 0)
             row(top, "Clock to clock", signedDelay(-p.clock_to_clock), "delay between the related clocks");
         if (p.check != 0)
             row(top, "Setup time", signedDelay(-p.check), endpoint);
-        delay_t required = pc.clock_required + pc.setup_shift + setup_clocks.capture - p.clock_to_clock - p.check;
+        delay_t required = pc.clock_required + pc.setup_shift + setup_clocks.capture - p.output - p.clock_to_clock -
+                           p.check;
         bold(row(top, "Required time", formatDelay(required), QString()));
-        delay_t arrival = arrivalRows(top, p, setup_clocks, "longest");
+        delay_t arrival = arrivalRows(top, p, setup_clocks, "longest", true);
         if (pc.false_setup) {
             row(top, "Slack", "-", "false path: not checked");
+        } else if (pc.no_setup) {
+            row(top, "Slack", "-", no_maximum);
         } else {
             restRow(top, ep.setup_slack - (required - arrival));
             slackRow(top, "Slack", ep.setup_slack, "required time - arrival time");
@@ -564,22 +625,22 @@ void TimingWidget::showSlack(int index)
             edge = "the launch edge";
         delay_t hold_edge = pc.hold_shift - pc.hold_edge;
         row(top, "Hold edge", signedDelay(hold_edge), edge);
-        if (hold_clocks.capture != 0)
-            row(top, "Capture clock delay", signedDelay(hold_clocks.capture),
-                "clock network to the capturing register");
+        captureRows(top, p, hold_clocks, false);
         if (p.clock_to_clock != 0)
             row(top, "Clock to clock", signedDelay(-p.clock_to_clock), "delay between the related clocks");
         if (p.check != 0)
             row(top, "Hold time", signedDelay(p.check), endpoint);
-        delay_t required = hold_edge + hold_clocks.capture + p.check - p.clock_to_clock;
+        delay_t required = hold_edge + hold_clocks.capture - p.output + p.check - p.clock_to_clock;
         bold(row(top, "Required time", formatDelay(required), "the earliest time the data may arrive"));
-        delay_t arrival = arrivalRows(top, p, hold_clocks, "shortest");
+        delay_t arrival = arrivalRows(top, p, hold_clocks, "shortest", false);
         restRow(top, ep.hold_slack - (arrival - required));
         slackRow(top, "Slack", ep.hold_slack, "arrival time - required time");
         slackList->addTopLevelItem(top);
     } else if (ep.false_hold) {
         slackList->addTopLevelItem(
                 row(nullptr, "Hold check", "-", "not checked: " + TimingText::exceptionName(ctx, pc.hold_exception)));
+    } else if (ep.no_hold) {
+        slackList->addTopLevelItem(row(nullptr, "Hold check", "-", no_minimum));
     } else {
         slackList->addTopLevelItem(row(nullptr, "Hold check", "-",
                                        "not checked: an unclocked start or end point, or unrelated clocks"));
@@ -604,6 +665,24 @@ void TimingWidget::showSlack(int index)
         }
         if (pc.exceptions.empty())
             row(top, "Exceptions", QString(), "none (set_multicycle_path, set_false_path)");
+        // The delays outside of the device
+        for (auto *delays : {&input_delays, &output_delays})
+            for (int index : *delays) {
+                const IoDelay &io = ctx->io_delays.at(index);
+                row(top, QString("Line %1").arg(io.line), QString(),
+                    QString(io.output ? "output delay: " : "input delay: ") + QString::fromStdString(io.source));
+            }
+        // The clocks the design puts out that these delays are against
+        std::vector<int> refs{pc.io_launch_ref};
+        if (pc.io_capture_ref != pc.io_launch_ref)
+            refs.push_back(pc.io_capture_ref);
+        for (int ref : refs) {
+            if (ref == 0 || ref > int(ctx->forwarded_clocks.size()))
+                continue;
+            const ForwardedClock &fc = ctx->forwarded_clocks.at(ref - 1);
+            row(top, QString("Line %1").arg(fc.line), QString(),
+                "clock at the port: " + QString::fromStdString(fc.source));
+        }
         slackList->addTopLevelItem(top);
     }
     slackList->expandAll();

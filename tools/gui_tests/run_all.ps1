@@ -19,6 +19,10 @@
     two_clocks    designs/two_clocks.v (two clocks, a falling edge, a path between the clocks), pins unconstrained
     multicycle    designs/multicycle.v with designs/multicycle.sdc (multicycle paths, one overridden, a false
                   path), pins unconstrained
+    io_delays     designs/multicycle.v with designs/io_delays.sdc (input and output delays against the clock),
+                  pins unconstrained
+    forwarded_clock  designs/forwarded_clock.v with designs/forwarded_clock.sdc (input and output delays against
+                  a clock the design puts out), pins unconstrained
     counter_wrap  a top level instantiating the 008-counter (module core) as the blackbox u_core, with its CCF and
                   the counter implemented as a partition (placed and routed without the GUI) loaded into u_core
                   (--vopt partition=u_core:core_pnr.json; not packed)
@@ -132,6 +136,30 @@ function Get-Design([string]$name) {
                 if (-not (Test-Path $mc)) { throw "could not synthesize $mc (see $designs\multicycle_synth.log)" }
             }
             return @{ Json = $mc; Extra = "--vopt allow-unconstrained --sdc $here\designs\multicycle.sdc" }
+        }
+        "io_delays" {
+            # designs/multicycle.v with designs/io_delays.sdc: input and output delays (set_input_delay,
+            # set_output_delay) on its data ports
+            $mc = Join-Path $designs "multicycle.json"
+            if (-not (Test-Path $mc)) {
+                Push-Location $designs
+                & $Yosys -ql multicycle_synth.log -p "read_verilog -sv $here\designs\multicycle.v; synth_gatemate -luttree -top top -run :vlog; write_json multicycle.json"
+                Pop-Location
+                if (-not (Test-Path $mc)) { throw "could not synthesize $mc (see $designs\multicycle_synth.log)" }
+            }
+            return @{ Json = $mc; Extra = "--vopt allow-unconstrained --sdc $here\designs\io_delays.sdc" }
+        }
+        "forwarded_clock" {
+            # designs/forwarded_clock.v with designs/forwarded_clock.sdc: input and output delays against a clock
+            # the design puts out (create_generated_clock on an output port)
+            $fc = Join-Path $designs "forwarded_clock.json"
+            if (-not (Test-Path $fc)) {
+                Push-Location $designs
+                & $Yosys -ql forwarded_clock_synth.log -p "read_verilog -sv $here\designs\forwarded_clock.v; synth_gatemate -luttree -top top -run :vlog; write_json forwarded_clock.json"
+                Pop-Location
+                if (-not (Test-Path $fc)) { throw "could not synthesize $fc (see $designs\forwarded_clock_synth.log)" }
+            }
+            return @{ Json = $fc; Extra = "--vopt allow-unconstrained --sdc $here\designs\forwarded_clock.sdc" }
         }
         "counter_wrap" {
             $core = Join-Path $designs "core.json"

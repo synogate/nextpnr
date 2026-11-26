@@ -421,6 +421,47 @@ struct TimingException
     int line = 0;
 };
 
+// An input or output delay of the SDC file (set_input_delay, set_output_delay): what is outside of the device on
+// the paths from or to a top level port, against a clock of the design at its source (the clock pad).
+// - input: the data is at the port from min to max after the clock edge (the clock-to-output time of the device
+//   driving it and the board traces)
+// - output: the data must be at the port max before the clock edge (the setup time of the device it goes to and
+//   the board traces) and stay there until -min after it (min is the trace delay less the hold time of that device)
+// The timing analysis makes the paths from an input and to an output with such a delay paths of the clock: with
+// max they have a setup check, with min a hold check. Without one, the paths start or end unclocked.
+struct IoDelay
+{
+    bool output = false;
+    // The top level port, or the cell of its pad buffer (get_cells)
+    IdString port, cell;
+    // The clock by its name (ClockConstraint::name, the name of a net with a clock constraint, or the name of a
+    // clock the design puts out: ForwardedClock) and its edge
+    IdString clock;
+    ClockEdge edge = RISING_EDGE;
+    // The delays given (-max, -min; both without either option), in ns
+    bool has_min = false, has_max = false;
+    float min_ns = 0, max_ns = 0;
+    // The command as written in the SDC file (the last one for the port and clock), and its line there
+    std::string source;
+    int line = 0;
+};
+
+// A clock that the design puts out at a port, for a device outside that is clocked by it (create_generated_clock
+// on an output port). Input and output delays against it are times against its edge at that port: the timing
+// analysis follows the clock from the port back to the clock net of the registers, and the delay of that way
+// takes the place of the delay of the clock network from the source of the clock.
+struct ForwardedClock
+{
+    IdString name;
+    // The top level port the clock leaves the device at
+    IdString port;
+    // The clock at the port is the inverse of the clock of the registers (-invert)
+    bool invert = false;
+    // The command as written in the SDC file, and its line there
+    std::string source;
+    int line = 0;
+};
+
 struct ClockFmax
 {
     float achieved;
@@ -459,7 +500,12 @@ struct CriticalPath
             LOGIC,      // Combinational logic delay
             ROUTING,    // Routing delay
             SETUP,      // Setup time in sink
-            HOLD        // Hold time in sink
+            HOLD,       // Hold time in sink
+            // The delay outside of the device before an input port (set_input_delay: its max on the longest, its
+            // min on the shortest path) and after an output port (set_output_delay, likewise). The delay of the
+            // pad buffer is the SOURCE segment after the one, a LOGIC segment before the other.
+            INPUT_DELAY,
+            OUTPUT_DELAY,
         };
 
         [[maybe_unused]] static const std::string type_to_str(Type typ)
@@ -481,6 +527,10 @@ struct CriticalPath
                 return "setup";
             case Type::HOLD:
                 return "hold";
+            case Type::INPUT_DELAY:
+                return "in-delay";
+            case Type::OUTPUT_DELAY:
+                return "out-delay";
             default:
                 NPNR_ASSERT_FALSE("Impossible Segment::Type");
             }
@@ -542,6 +592,27 @@ struct MulticycleSlack
     CriticalPath setup_path, hold_path;
 };
 
+// The paths of one input or output delay (IoDelay, by its index in Context::io_delays): how close they are to
+// failing
+struct IoDelaySlack
+{
+    int index = -1;
+    // The start points (input) or end points (output) it is on
+    int points = 0;
+    // The worst slacks of the paths from or to them; max() where the check is not made (no -max or no -min, false
+    // paths, unrelated clocks)
+    delay_t setup_slack = std::numeric_limits<delay_t>::max(), hold_slack = std::numeric_limits<delay_t>::max();
+};
+
+// A clock the design puts out (ForwardedClock, by its index in Context::forwarded_clocks), as the analysis found
+// it: the time of its edge at the port after the edge at the driver of a clock net of registers
+struct ForwardedClockDelay
+{
+    int index = -1;
+    IdString clock_net;
+    delay_t min_delay = 0, max_delay = 0;
+};
+
 struct TimingResult
 {
     // Achieved and target Fmax for all clock domains
@@ -567,6 +638,13 @@ struct TimingResult
 
     // The end points (per launch domain) whose setup check, and whose hold check, a false path takes away
     int false_setup_paths = 0, false_hold_paths = 0;
+
+    // The input and output delays that the analysis applies, and why it does not apply the others (a port without
+    // start or end point, a clock that clocks no register)
+    std::vector<IoDelaySlack> io_slacks;
+    std::vector<std::string> io_notes;
+    // The clocks the design puts out that such delays are against
+    std::vector<ForwardedClockDelay> forwarded_clocks;
 };
 
 // Represents the contents of a non-leaf cell in a design

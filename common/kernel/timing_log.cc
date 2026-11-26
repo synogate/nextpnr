@@ -85,7 +85,9 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
                 segment.type == CriticalPath::Segment::Type::SOURCE ||
                 segment.type == CriticalPath::Segment::Type::LOGIC ||
                 segment.type == CriticalPath::Segment::Type::SETUP ||
-                segment.type == CriticalPath::Segment::Type::HOLD) {
+                segment.type == CriticalPath::Segment::Type::HOLD ||
+                segment.type == CriticalPath::Segment::Type::INPUT_DELAY ||
+                segment.type == CriticalPath::Segment::Type::OUTPUT_DELAY) {
                 logic_total += delay;
 
                 log_info("%10s % 5.2f % 5.2f Source %s.%s\n", CriticalPath::Segment::type_to_str(segment.type).c_str(),
@@ -220,7 +222,9 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
     std::string in_corner = corner.empty() ? std::string() : " in timing corner '" + corner + "'";
     if (num_min_violations > 0) {
         log_break();
-        log_info("%zu Hold/min time violations%s (showing 10 worst paths):\n", num_min_violations, in_corner.c_str());
+        bool later = ctx->hold_checked_later && corner.empty();
+        log_info("%zu Hold/min time violations%s (showing 10 worst paths)%s:\n", num_min_violations, in_corner.c_str(),
+                 later ? ", before the repairs and the check of the finished routing" : "");
         for (size_t i = 0; i < std::min((size_t)10, num_min_violations); ++i) {
             auto &report = result.min_delay_violations.at(i);
             log_break();
@@ -234,7 +238,10 @@ static void log_crit_paths(const Context *ctx, TimingResult &result, bool hold_o
                 message = "Hold/min time violation for path '" + start + "' -> '" + end + "'" + in_corner + ":\n";
             }
 
-            if (allow_fail) {
+            // (not an error yet where the arch repairs hold and checks the finished routing)
+            if (ctx->hold_checked_later && corner.empty()) {
+                log_info("%s", message.c_str());
+            } else if (allow_fail) {
                 log_warning("%s", message.c_str());
             } else {
                 log_nonfatal_error("%s", message.c_str());
@@ -258,9 +265,80 @@ static void log_fmax(Context *ctx, TimingResult &result, bool warn_on_failure)
                      result.false_setup_paths, result.false_hold_paths);
     };
 
+    // The input and output delays (set_input_delay, set_output_delay): the worst slacks of their paths
+    auto log_io_delays = [&]() {
+        for (auto &note : result.io_notes)
+            log_warning("%s\n", note.c_str());
+        if (result.io_slacks.empty())
+            return;
+        const delay_t none = std::numeric_limits<delay_t>::max();
+        // One entry per command (or pair of commands, for the minimum and the maximum) of the SDC file: its ports
+        // have the same delays
+        struct Group
+        {
+            const IoDelay *io;
+            int ports = 0;
+            delay_t setup = std::numeric_limits<delay_t>::max(), hold = std::numeric_limits<delay_t>::max();
+            IdString setup_port, hold_port;
+        };
+        std::vector<Group> groups;
+        for (auto &s : result.io_slacks) {
+            const IoDelay &io = ctx->io_delays.at(s.index);
+            auto group = std::find_if(groups.begin(), groups.end(), [&](const Group &g) {
+                return g.io->output == io.output && g.io->source == io.source && g.io->clock == io.clock &&
+                       g.io->edge == io.edge;
+            });
+            if (group == groups.end())
+                group = groups.insert(groups.end(), Group{&io});
+            IdString port = io.port != IdString() ? io.port : io.cell;
+            group->ports++;
+            if (s.setup_slack < group->setup) {
+                group->setup = s.setup_slack;
+                group->setup_port = port;
+            }
+            if (s.hold_slack < group->hold) {
+                group->hold = s.hold_slack;
+                group->hold_port = port;
+            }
+        }
+        auto slack = [&](const char *check, delay_t value, IdString port) {
+            return value == none ? stringf("no %s check", check)
+                                 : stringf("worst %s slack %.2f ns at '%s'", check, ctx->getDelayNS(value),
+                                           port.c_str(ctx));
+        };
+        log_info("Input and output delays (the paths from the inputs and to the outputs):\n");
+        // The clocks the design puts out that delays are against: where their edge at the port is
+        for (auto &fc : result.forwarded_clocks) {
+            const ForwardedClock &clock = ctx->forwarded_clocks.at(fc.index);
+            log_info("    clock '%s' at the port '%s': %.2f to %.2f ns after the clock net '%s'%s\n",
+                     clock.name.c_str(ctx), clock.port.c_str(ctx), ctx->getDelayNS(fc.min_delay),
+                     ctx->getDelayNS(fc.max_delay), fc.clock_net.c_str(ctx), clock.invert ? ", inverted" : "");
+        }
+        for (auto &g : groups) {
+            std::string source = g.io->source;
+            if (source.empty())
+                source = g.io->output ? "set_output_delay" : "set_input_delay";
+            log_info("    %s\n", source.c_str());
+            std::string message = stringf("        %d port(s): %s, %s\n", g.ports,
+                                          slack("setup", g.setup, g.setup_port).c_str(),
+                                          slack("hold", g.hold, g.hold_port).c_str());
+            // (hold is no error yet where the arch repairs it and checks the finished routing)
+            bool failed = (g.setup != none && g.setup < 0) ||
+                          (g.hold != none && g.hold < 0 && !ctx->hold_checked_later);
+            // (as the frequencies of the clocks below)
+            if (!warn_on_failure || !failed)
+                log_info("%s", message.c_str());
+            else if (allow_fail)
+                log_warning("%s", message.c_str());
+            else
+                log_nonfatal_error("%s", message.c_str());
+        }
+    };
+
     if (result.clock_paths.empty() && result.clock_paths.empty()) {
         log_info("No Fmax available; no interior timing paths found in design.\n");
         log_false_paths();
+        log_io_delays();
         return;
     }
 
@@ -406,6 +484,7 @@ static void log_fmax(Context *ctx, TimingResult &result, bool warn_on_failure)
             log_info("Clock '%s' has no interior paths\n", eclock.c_str(ctx));
     }
     log_false_paths();
+    log_io_delays();
     log_break();
 
     int start_field_width = 0, end_field_width = 0;

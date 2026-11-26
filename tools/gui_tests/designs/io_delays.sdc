@@ -1,0 +1,5 @@
+create_clock -name sys -period 20 [get_ports clk]
+set_input_delay -clock sys -max 4 [get_ports {din[*]}]
+set_input_delay -clock sys -min 1 [get_ports {din[*]}]
+set_input_delay -clock sys -max 4 [get_ports {sel[*]}]
+set_output_delay -clock sys 3 [get_ports {dout[*]}]

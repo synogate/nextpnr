@@ -1428,6 +1428,9 @@ void GateMateImpl::preRoute()
 {
     if (partition_unrouted)
         log_error("A partition written with --vopt partition-unrouted is not routed; run with --no-route.\n");
+    // Hold is repaired after the router (fix_hold) and checked on the finished routing in all hold corners
+    // (check_finished_timing): the router's own report must not raise what is repaired
+    ctx->hold_checked_later = true;
     if (as_partition)
         find_partition_free_nets();
     if (replicate_fanout > 0)
@@ -2185,6 +2188,7 @@ void GateMateImpl::finishRoute()
 
     // The bridges, CP lines and pass-through LUTs are cells now, with delays other than the pips they were
     // analysed as: the timing (hold included) of what goes into the bitstream
+    ctx->hold_checked_later = false;
     check_finished_timing();
 
     const ArchArgs &args = ctx->args;

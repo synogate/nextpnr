@@ -1,0 +1,37 @@
+# Input and output delays against a clock the design puts out (create_generated_clock on an output port) in the
+# Paths tab: designs/forwarded_clock.v with designs/forwarded_clock.sdc. The slack table names the port of the clock
+# as the place of the clock edge, and the constraint of the clock.
+# design: forwarded_clock
+resize 1600 1000
+delay 600
+action Pack
+waitidle
+action Place
+waitidle
+delay 400
+tab Paths
+combo pathLaunch posedge $iopadmap$clk
+combo pathLatch posedge $iopadmap$clk
+combo pathSort Delay
+dock pathList
+shot 01_paths.png
+# a path to an output: the launching register's clock edge against that at the port of the clock
+dock pathList $iopadmap$top.dout
+dock pathSlack
+dock pathSlack Output delay
+dock pathSlack Launch clock delay
+dock pathSlack output delay: set_output_delay -clock fwd -max 2
+dock pathSlack clock at the port: create_generated_clock -name fwd
+dock pathSegments out-delay
+shot 02_output_path.png
+# a path from an input: its data comes after the edge at the port of the clock
+combo pathSort Hold slack
+dock pathList
+dock pathList $iopadmap$top.din
+dock pathSlack
+dock pathSlack Input delay
+dock pathSlack Capture clock delay
+dock pathSlack input delay: set_input_delay -clock fwd -max 6
+dock pathSlack clock at the port: create_generated_clock -name fwd
+dock pathSegments in-delay
+shot 03_input_path.png

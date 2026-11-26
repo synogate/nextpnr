@@ -287,7 +287,8 @@ void TimingDock::showPath(int index)
             bool routing = seg.type == CriticalPath::Segment::Type::ROUTING;
             IdString name = routing ? seg.net
                             : (seg.type == CriticalPath::Segment::Type::SETUP ||
-                               seg.type == CriticalPath::Segment::Type::HOLD)
+                               seg.type == CriticalPath::Segment::Type::HOLD ||
+                               seg.type == CriticalPath::Segment::Type::OUTPUT_DELAY)
                                     ? seg.to.first
                                     : seg.from.first;
             item->setText(3, name.c_str(ctx));

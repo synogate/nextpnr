@@ -223,7 +223,9 @@ struct SDCParser
             }
 
             char c = peek();
-            if (!in_quotes && !in_braces && !escaped && (std::isblank(c) || c == ']')) {
+            // (a word ends with its line too, or it would go on with the first word of the next command)
+            if (!in_quotes && !in_braces && !escaped &&
+                (std::isblank(c) || c == ']' || c == ';' || c == '\n' || c == '\r')) {
                 break;
             }
             get();
@@ -258,12 +260,22 @@ struct SDCParser
             return cmd_get_pins(arguments);
         else if (cmd == "create_clock")
             return cmd_create_clock(arguments);
+        else if (cmd == "create_generated_clock")
+            return cmd_create_generated_clock(arguments);
         else if (cmd == "get_clocks")
             return cmd_get_clocks(arguments);
         else if (cmd == "set_false_path")
             return cmd_timing_exception(arguments, TimingException::FALSE_PATH);
         else if (cmd == "set_multicycle_path")
             return cmd_timing_exception(arguments, TimingException::MULTICYCLE);
+        else if (cmd == "set_input_delay")
+            return cmd_io_delay(arguments, false);
+        else if (cmd == "set_output_delay")
+            return cmd_io_delay(arguments, true);
+        else if (cmd == "all_inputs")
+            return cmd_all_ports(arguments, false);
+        else if (cmd == "all_outputs")
+            return cmd_all_ports(arguments, true);
         else
             log_error("Unsupported SDC command '%s'\n", cmd.c_str());
     }
@@ -329,6 +341,9 @@ struct SDCParser
                 if (net.second->clkconstr->name != IdString())
                     names.insert(net.second->clkconstr->name);
             }
+        // (and the clocks the design puts out)
+        for (auto &fc : ctx->forwarded_clocks)
+            names.insert(fc.name);
         std::vector<SdcEntity> clocks;
         for (int i = 1; i < int(arguments.size()); i++) {
             auto &arg = arguments.at(i);
@@ -487,6 +502,75 @@ struct SDCParser
         return std::string{};
     }
 
+    // create_generated_clock [-name <name>] [-source <object>] [-invert] [-divide_by 1] [-multiply_by 1] <output port>
+    // A clock the design puts out at a port, as the reference of input and output delays. (The analysis follows the
+    // clock back from the port itself, so -source only says where it comes from.)
+    SdcValue cmd_create_generated_clock(const std::vector<SdcValue> &arguments)
+    {
+        const char *cmd = "create_generated_clock";
+        std::string name;
+        bool invert = false;
+        std::vector<SdcEntity> objects;
+        for (int i = 1; i < int(arguments.size()); i++) {
+            auto &arg = arguments.at(i);
+            if (!arg.is_string) {
+                objects.insert(objects.end(), arg.list.begin(), arg.list.end());
+                continue;
+            }
+            const std::string &s = arg.str;
+            if (s == "-name") {
+                if (++i >= int(arguments.size()) || !arguments.at(i).is_string)
+                    log_error("expecting string argument to -name (line %d)\n", lineno);
+                name = arguments.at(i).str;
+            } else if (s == "-source") {
+                if (++i >= int(arguments.size()))
+                    log_error("missing object after -source in %s (line %d)\n", cmd, lineno);
+            } else if (s == "-invert") {
+                invert = true;
+            } else if (s == "-divide_by" || s == "-multiply_by") {
+                if (++i >= int(arguments.size()) || !arguments.at(i).is_string)
+                    log_error("missing factor after %s in %s (line %d)\n", s.c_str(), cmd, lineno);
+                if (arguments.at(i).str != "1")
+                    log_error("%s %s %s is not supported: only a clock of the frequency of the clock it comes from "
+                              "(line %d)\n",
+                              cmd, s.c_str(), arguments.at(i).str.c_str(), lineno);
+            } else if (s.at(0) == '-') {
+                log_error("unsupported argument '%s' to %s (line %d)\n", s.c_str(), cmd, lineno);
+            } else {
+                // A port by its name
+                auto ports = cmd_get_ports({SdcValue(std::string("get_ports")), SdcValue(s)});
+                if (ports.list.empty())
+                    log_error("%s: no port '%s' (line %d)\n", cmd, s.c_str(), lineno);
+                objects.insert(objects.end(), ports.list.begin(), ports.list.end());
+            }
+        }
+        if (objects.size() != 1 || objects.front().type != SdcEntity::ENTITY_PORT ||
+            ctx->ports.at(objects.front().name).type == PORT_IN)
+            log_error("%s is supported for a clock the design puts out: it expects one output port, for input and "
+                      "output delays against the clock at that port (line %d)\n",
+                      cmd, lineno);
+        ForwardedClock fc;
+        fc.port = objects.front().name;
+        fc.name = name.empty() ? fc.port : ctx->id(name);
+        fc.invert = invert;
+        fc.source = command;
+        fc.line = lineno;
+        for (auto &net : ctx->nets)
+            if (net.second->clkconstr && net.second->clkconstr->name == fc.name)
+                log_error("%s: there is a clock '%s' already (line %d)\n", cmd, fc.name.c_str(ctx), lineno);
+        // (again for a name or a port: the later one replaces the earlier one)
+        auto &clocks = ctx->forwarded_clocks;
+        clocks.erase(std::remove_if(clocks.begin(), clocks.end(),
+                                    [&](const ForwardedClock &other) {
+                                        return other.name == fc.name || other.port == fc.port;
+                                    }),
+                     clocks.end());
+        clocks.push_back(fc);
+        log_info("Clock '%s' (line %d): the clock the design puts out at the port '%s'%s\n", fc.name.c_str(ctx),
+                 lineno, fc.port.c_str(ctx), invert ? ", inverted" : "");
+        return std::string{};
+    }
+
     // set_multicycle_path <multiplier> [-setup | -hold] [-start | -end] [-from <objects>] [-to <objects>]
     // set_false_path [-setup | -hold] [-from <objects>] [-to <objects>]
     SdcValue cmd_timing_exception(const std::vector<SdcValue> &arguments, TimingException::Type type)
@@ -605,6 +689,167 @@ struct SDCParser
                      exc.setup && exc.hold ? "setup and no hold" : exc.setup ? "setup" : "hold", int(exc.from.size()),
                      int(exc.to.size()));
         ctx->timing_exceptions.push_back(exc);
+        return std::string{};
+    }
+
+    // all_inputs, all_outputs: the top level ports of the direction (bidirectional ones in both)
+    SdcValue cmd_all_ports(const std::vector<SdcValue> &arguments, bool outputs)
+    {
+        if (arguments.size() > 1)
+            log_error("%s takes no arguments (line %d)\n", arguments.at(0).str.c_str(), lineno);
+        std::vector<SdcEntity> ports;
+        for (auto &port : ctx->ports)
+            if (port.second.type == PORT_INOUT || (port.second.type == PORT_OUT) == outputs)
+                ports.emplace_back(SdcEntity::ENTITY_PORT, port.first);
+        return ports;
+    }
+
+    // set_input_delay | set_output_delay -clock <clock> [-clock_fall] [-min] [-max] [-add_delay] <delay> <ports>
+    SdcValue cmd_io_delay(const std::vector<SdcValue> &arguments, bool output)
+    {
+        const char *cmd = output ? "set_output_delay" : "set_input_delay";
+        IdString clock;
+        ClockEdge edge = RISING_EDGE;
+        bool have_clock = false, have_delay = false, have_min = false, have_max = false, add_delay = false;
+        bool have_objects = false;
+        float delay = 0;
+        std::vector<SdcEntity> objects;
+        auto number = [](const std::string &s, float &value) {
+            try {
+                size_t used = 0;
+                value = std::stof(s, &used);
+                return used == s.size();
+            } catch (std::exception &e) {
+                return false;
+            }
+        };
+        for (int i = 1; i < int(arguments.size()); i++) {
+            auto &arg = arguments.at(i);
+            if (!arg.is_string) {
+                objects.insert(objects.end(), arg.list.begin(), arg.list.end());
+                have_objects = true;
+                continue;
+            }
+            const std::string &s = arg.str;
+            float value = 0;
+            if (s == "-clock") {
+                if (++i >= int(arguments.size()))
+                    log_error("missing clock after -clock in %s (line %d)\n", cmd, lineno);
+                auto &val = arguments.at(i);
+                have_clock = true;
+                // (by its name: a clock the packer makes, as the output of a PLL, is not there yet)
+                if (val.is_string) {
+                    clock = ctx->id(val.str);
+                    continue;
+                }
+                if (val.list.size() > 1)
+                    log_error("%s -clock expects one clock, got %d (line %d)\n", cmd, int(val.list.size()), lineno);
+                for (auto &ety : val.list) {
+                    if (ety.type != SdcEntity::ENTITY_CLOCK)
+                        log_error("%s -clock expects a clock (its name, or get_clocks) (line %d)\n", cmd, lineno);
+                    clock = ety.name;
+                }
+            } else if (s == "-clock_fall") {
+                edge = FALLING_EDGE;
+            } else if (s == "-min") {
+                have_min = true;
+            } else if (s == "-max") {
+                have_max = true;
+            } else if (s == "-add_delay") {
+                add_delay = true;
+            } else if (number(s, value)) {
+                // (before the options are told from the objects: a delay may be negative)
+                if (have_delay)
+                    log_error("%s expects one delay, got '%s' too (line %d)\n", cmd, s.c_str(), lineno);
+                delay = value;
+                have_delay = true;
+            } else if (s.at(0) == '-') {
+                log_error("unsupported argument '%s' to %s (line %d)\n", s.c_str(), cmd, lineno);
+            } else {
+                // A port by its name
+                auto ports = cmd_get_ports({SdcValue(std::string("get_ports")), SdcValue(s)});
+                objects.insert(objects.end(), ports.list.begin(), ports.list.end());
+                have_objects = true;
+            }
+        }
+        if (!have_delay)
+            log_error("%s needs a delay (line %d)\n", cmd, lineno);
+        if (!have_clock)
+            log_error("%s needs -clock: the delay is that against a clock edge (line %d)\n", cmd, lineno);
+        if (!have_objects)
+            log_error("%s needs the ports the delay is for (line %d)\n", cmd, lineno);
+        if (clock == IdString()) {
+            log_warning("%s: -clock matched no clock, constraint ignored (line %d)\n", cmd, lineno);
+            return std::string{};
+        }
+        int applied = 0;
+        for (auto &ety : objects) {
+            IdString port, cell;
+            if (ety.type == SdcEntity::ENTITY_PORT) {
+                port = ety.name;
+                PortType type = ctx->ports.at(port).type;
+                if (type != PORT_INOUT && (type == PORT_OUT) != output) {
+                    log_warning("%s: '%s' is an %s port, constraint ignored for it (line %d)\n", cmd, port.c_str(ctx),
+                                type == PORT_OUT ? "output" : "input", lineno);
+                    continue;
+                }
+            } else if (ety.type == SdcEntity::ENTITY_CELL) {
+                cell = ety.name;
+            } else {
+                log_error("%s expects ports (get_ports, all_inputs, all_outputs) or the cells of pad buffers "
+                          "(get_cells) (line %d)\n",
+                          cmd, lineno);
+            }
+            auto same_point = [&](const IoDelay &io) {
+                return io.output == output && io.port == port && io.cell == cell;
+            };
+            // Without -add_delay, the delay replaces those against other clock edges
+            auto &delays = ctx->io_delays;
+            if (!add_delay)
+                delays.erase(std::remove_if(delays.begin(), delays.end(),
+                                            [&](const IoDelay &io) {
+                                                return same_point(io) && (io.clock != clock || io.edge != edge);
+                                            }),
+                             delays.end());
+            auto found = std::find_if(delays.begin(), delays.end(), [&](const IoDelay &io) {
+                return same_point(io) && io.clock == clock && io.edge == edge;
+            });
+            if (found == delays.end()) {
+                IoDelay io;
+                io.output = output;
+                io.port = port;
+                io.cell = cell;
+                io.clock = clock;
+                io.edge = edge;
+                found = delays.insert(delays.end(), io);
+            }
+            // (neither -min nor -max: both)
+            if (have_max || !have_min) {
+                found->has_max = true;
+                found->max_ns = delay;
+            }
+            if (have_min || !have_max) {
+                found->has_min = true;
+                found->min_ns = delay;
+            }
+            if (found->has_min && found->has_max && found->min_ns > found->max_ns)
+                log_warning("%s: the minimum %.2f ns of '%s' is above its maximum %.2f ns (line %d)\n", cmd,
+                            found->min_ns, (port != IdString() ? port : cell).c_str(ctx), found->max_ns, lineno);
+            // (the commands for the minimum and the maximum; one for both replaces them)
+            if (found->source.empty() || have_min == have_max)
+                found->source = command;
+            else if (found->source.find(command) == std::string::npos)
+                found->source += "; " + command;
+            found->line = lineno;
+            applied++;
+        }
+        if (applied == 0) {
+            log_warning("%s: the ports matched nothing, constraint ignored (line %d)\n", cmd, lineno);
+            return std::string{};
+        }
+        log_info("%s delay (line %d): %s%.2f ns %s the %s edge of '%s', %d port(s)\n", output ? "Output" : "Input",
+                 lineno, have_min == have_max ? "" : have_max ? "max " : "min ", delay, output ? "before" : "after",
+                 edge == RISING_EDGE ? "rising" : "falling", clock.c_str(ctx), applied);
         return std::string{};
     }
 

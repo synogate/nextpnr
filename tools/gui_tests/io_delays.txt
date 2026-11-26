@@ -1,0 +1,38 @@
+# Input and output delays (set_input_delay, set_output_delay) in the Paths tab: designs/multicycle.v with
+# designs/io_delays.sdc. The paths from din and sel and to dout are paths of the clock; the slack table has the
+# delay outside of the device and the clock network from the clock pad to the register at the other end.
+# design: io_delays
+resize 1600 1000
+delay 600
+action Pack
+waitidle
+action Place
+waitidle
+delay 400
+tab Paths
+combo pathLaunch posedge $iopadmap$clk
+combo pathLatch posedge $iopadmap$clk
+combo pathSort Delay
+dock pathList
+shot 01_paths.png
+# a path to an output: the output delay is taken from the required time, the launching register has the clock
+# network from the clock pad
+dock pathList $iopadmap$top.dout
+dock pathSlack
+dock pathSlack Output delay
+dock pathSlack Launch clock delay
+dock pathSlack output delay: set_output_delay -clock sys 3
+dock pathSegments
+dock pathSegments out-delay
+shot 02_output_path.png
+# a path from an input (the worst hold slacks: the clock network delays the capturing register): the input delay in
+# the arrival time, its minimum on the shortest path
+combo pathSort Hold slack
+dock pathList
+dock pathList -
+dock pathSlack
+dock pathSlack Input delay
+dock pathSlack Capture clock delay
+dock pathSlack input delay: set_input_delay -clock sys -max 4
+dock pathSegments in-delay
+shot 03_input_path.png

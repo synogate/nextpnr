@@ -57,6 +57,7 @@ set(TEST_SOURCES
     tests/hierarchy.cc
     tests/hold.cc
     tests/hold_fix.cc
+    tests/io_delays.cc
     tests/io_registers.cc
     tests/io_semantics.cc
     tests/known_bugs.h

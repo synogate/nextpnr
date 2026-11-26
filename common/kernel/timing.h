@@ -54,14 +54,30 @@ struct ClockDomainKey
     // or end points of the domain: start and end points of one clock edge named by different constraints are
     // different domains, so that each pair of domains has one exception. 0: named by none
     int tag = 0;
-    ClockDomainKey(IdString clock_net, ClockEdge edge, int tag = 0) : clock(clock_net), edge(edge), tag(tag) {};
+    // The start points (launch) or end points (capture) with an input or output delay against the clock edge
+    // (IO_POINT): they are at the source of the clock (its pad), not behind its network as the registers are, and
+    // without a maximum or a minimum delay their paths have no setup or no hold check (IO_NO_SETUP, IO_NO_HOLD).
+    // 0: the registers of the clock
+    // The bits from IO_REF_SHIFT on: what the delays are against. 0: the clock at its source; else 1 + the index
+    // of a clock the design puts out (Context::forwarded_clocks), and the points are at the port of that clock.
+    enum
+    {
+        IO_POINT = 1,
+        IO_NO_SETUP = 2,
+        IO_NO_HOLD = 4,
+        IO_REF_SHIFT = 3,
+    };
+    int io = 0;
+    inline int io_ref() const { return io >> IO_REF_SHIFT; }
+    ClockDomainKey(IdString clock_net, ClockEdge edge, int tag = 0, int io = 0)
+            : clock(clock_net), edge(edge), tag(tag), io(io) {};
     inline bool is_async() const { return clock == IdString(); }
 
-    unsigned int hash() const { return mkhash(mkhash(clock.hash(), int(edge)), tag); }
+    unsigned int hash() const { return mkhash(mkhash(mkhash(clock.hash(), int(edge)), tag), io); }
 
     inline bool operator==(const ClockDomainKey &other) const
     {
-        return (clock == other.clock) && (edge == other.edge) && (tag == other.tag);
+        return (clock == other.clock) && (edge == other.edge) && (tag == other.tag) && (io == other.io);
     }
 };
 
@@ -109,7 +125,8 @@ struct TimingAnalyser
     // The slacks of the paths through a port (any port the analysis has, typically the input port of a net's user),
     // after setup() or run(), without the path reports:
     // - the worst hold slack, over the domain pairs that have a hold check (as get_min_delay_violations: a clocked
-    //   launch, the same or related clocks, register end points, no false path), with the hold edge and multicycle
+    //   launch, the same or related clocks, register end points or outputs with a minimum output delay, no false
+    //   path, no input without a minimum input delay), with the hold edge and multicycle
     //   shift of the pair; max() where there is none (and with setup_only). It is <= 0 exactly where a path
     //   violating hold passes through the port, and at an end point it is the least EndpointTiming::hold_slack of
     //   the point.
@@ -149,6 +166,9 @@ struct TimingAnalyser
         delay_t setup_slack, hold_slack;
         // A false path (set_false_path) takes the setup check, or a hold check there would be, away
         bool false_setup = false, false_hold = false;
+        // An input or output delay of the path has no maximum (no setup check) or no minimum (no hold check there
+        // would be): the slack is max()
+        bool no_setup = false, no_hold = false;
     };
     // All endpoints with their timing, for listing paths
     std::vector<EndpointTiming> get_endpoint_timings();
@@ -180,17 +200,45 @@ struct TimingAnalyser
         int setup_exception, hold_exception;
         // All exceptions matching the pair: also those a more specific or later one, or a false path, overrides
         std::vector<int> exceptions;
+        // The paths start at inputs with an input delay (io_launch), or end at outputs with an output delay
+        // (io_capture), against the clock; such a delay without a maximum or a minimum leaves the setup or the
+        // hold check out
+        bool io_launch, io_capture, no_setup, no_hold;
+        // What these delays are against: 0 the clock at its source, else 1 + the index of the clock the design
+        // puts out (Context::forwarded_clocks)
+        int io_launch_ref = 0, io_capture_ref = 0;
     };
     PairConstraints get_pair_constraints(domain_id_t domain_pair);
 
-    // The clock delays (the routing of the clock nets to the clock pins) that the analysis counts in the arrival
-    // time at the start point and in the required time at the end point of a path of an end point (with
-    // with_clock_skew; 0 for unclocked points)
+    // The clock delays that the analysis counts in the arrival time at the start point and in the required time at
+    // the end point of a path of an end point: the routing of the clock nets to the clock pins (with
+    // with_clock_skew; 0 for unclocked points). On a path from an input or to an output with a delay against the
+    // clock, that end is at the source of the clock (0), and the register at the other end has the delay of the
+    // clock network from there to its clock net in addition (get_clock_latency: the value that is against the
+    // check, which is the longest path's setup or the shortest path's hold check).
     struct PathClockDelays
     {
         delay_t launch = 0, capture = 0;
     };
-    PathClockDelays get_clock_delays(const EndpointTiming &ep, const CriticalPath &path);
+    PathClockDelays get_clock_delays(const EndpointTiming &ep, const CriticalPath &path, bool longest_path = true);
+
+    // The input delays on a start point or the output delays on an end point (indices into ctx->io_delays)
+    std::vector<int> get_io_delays(CellPortKey point, bool output) const;
+    // The delay from the source of a clock to the driver of a clock net: back through the clock buffers and the
+    // routing between them to the pad, or to where another clock comes in (the reference of a PLL); its least and
+    // its greatest value. Of the clock nets that inputs or outputs with a delay are timed against; 0 for others.
+    // The paths from an input and to an output have no part of the clock network in common with the clock of the
+    // device outside, so each check takes the value against it: a late capture clock for the hold of an input and
+    // a late launch clock for the setup of an output (the greatest), an early one for the setup of an input and
+    // the hold of an output (the least).
+    // With ref (1 + the index of a clock the design puts out), the points are at the port of that clock instead:
+    // its edge there is after the edge at the driver of the clock net, by the way from the net to the port, so
+    // the value is that delay negated (its least: the greatest delay to the port).
+    DelayPair get_clock_latency(IdString clock_net, int ref = 0) const
+    {
+        auto found = clock_latency.find(std::make_pair(clock_net, ref));
+        return found == clock_latency.end() ? DelayPair(0) : found->second;
+    }
 
     // Enable analysis of clock skew between FFs.
     bool with_clock_skew = false;
@@ -214,6 +262,30 @@ struct TimingAnalyser
 
     // The timing exceptions of the design, resolved for this analysis
     void resolve_timing_exceptions();
+    // The input and output delays of the design on its start and end points (io_starts, io_ends)
+    void resolve_io_delays();
+    // clock_latency, with the routing delays of the run
+    void update_clock_latencies();
+    DelayPair clock_source_latency(const NetInfo *net);
+    // The way of a clock back from a point: the nets on it, each with the delay from its driver to the point
+    typedef std::vector<std::pair<IdString, DelayPair>> ClockWay;
+    // Back from a net (already 'delay' from the point): through the cell that drives it by the input the clock
+    // comes in by, and over the net into that input, to the source of the clock. Returns the delay from there.
+    // clock: the clock looked for; none takes the first clock met. through_ddr: also through a register that puts
+    // out both edges of its clock (which so puts out the clock itself).
+    DelayPair clock_way(const NetInfo *net, const ClockConstraint *clock, DelayPair delay, ClockWay *way,
+                        bool through_ddr);
+    // The routing delay into a pin of a clock's way: its least and its greatest value
+    DelayPair clock_route_delay(const CellInfo *cell, IdString pin);
+    // The start points (input) or end points (output) at a top level port, or of the cell of its pad buffer
+    std::vector<CellPortKey> pad_points(IdString port, IdString cell, bool output);
+    // The delay of the pad buffer of such a point: of the cell arcs between it and the pins of the pad side (which
+    // the arch gives no timing class). pad_pin: the pin of the pad side (that on pad_net, if several have an arc)
+    DelayPair pad_buffer_delay(CellPortKey point, bool output, const NetInfo *pad_net, IdString &pad_pin);
+    // A clock the design puts out (index into ctx->forwarded_clocks): the time of its edge at the port after the
+    // edge at the driver of a clock net. False if the clock at the port does not come from that net (or from the
+    // clock network before it).
+    bool forwarded_clock_delay(int index, IdString clock_net, DelayPair &delay);
     // The domain tag of a start point (launch) or an end point (capture) clocked by clock_port
     int point_tag(CellPortKey port, IdString clock_port, bool launch);
     // The cycles and the shifts of the setup and hold checks of a domain pair from its multicycle paths, the checks
@@ -244,6 +316,8 @@ struct TimingAnalyser
     void build_crit_path_reports();
     // The worst slacks of the multicycle paths (TimingResult::multicycle_slacks)
     void build_multicycle_slack_report();
+    // The worst slacks of the input and output delays (TimingResult::io_slacks)
+    void build_io_slack_report();
     void build_slack_histogram_report();
 
     std::vector<CriticalPath> get_min_delay_violations();
@@ -256,6 +330,12 @@ struct TimingAnalyser
     std::vector<delay_t> max_delay_cache;
     // Whether the paths of a domain pair have a hold check (see get_hold_slack)
     bool has_hold_check(domain_id_t domain_pair) const;
+    // Whether the clocks of a domain pair time its paths against each other: the same or related clocks
+    bool timed_pair(domain_id_t domain_pair) const;
+    // From an input to an output with delays against one clock net, the clock network is on neither side: what the
+    // times of the two points differ by in its latency (each has the value against its own check) is added to
+    // the setup and to the hold slack of the pair again. 0 for other pairs.
+    delay_t io_pair_spread(domain_id_t domain_pair) const;
 
     // get the N worst endpoints for a given domain pair
     std::vector<CellPortKey> get_worst_eps(domain_id_t domain_pair, int count);
@@ -349,6 +429,10 @@ struct TimingAnalyser
         // False path: the setup or the hold check of the pair is not made. Its slacks do not count in the worst
         // slacks, the criticality, Fmax and the reports.
         bool false_setup = false, false_hold = false;
+        // Likewise for a pair from inputs or to outputs whose delays have no maximum (setup) or minimum (hold)
+        bool no_setup = false, no_hold = false;
+        bool setup_checked() const { return !false_setup && !no_setup; }
+        bool hold_checked() const { return !false_hold && !no_hold; }
         // The exceptions applying to the setup and the hold check, and all matching the pair (indices into
         // ctx->timing_exceptions)
         int setup_exception = -1, hold_exception = -1;
@@ -378,11 +462,35 @@ struct TimingAnalyser
     std::vector<std::vector<int>> tag_sets{{}};
     std::map<std::vector<int>, int> tag_ids{{{}, 0}};
 
+    // An input delay on a start point or an output delay on an end point, resolved for this analysis
+    struct IoPoint
+    {
+        int index;      // in ctx->io_delays
+        IdString clock; // the clock net whose registers the paths are timed against
+        // What the delay is against: 0 the clock at its source, else 1 + the index of the clock the design puts
+        // out; and the edge of the clock net (the other one for an inverted clock at the port)
+        int ref = 0;
+        ClockEdge edge = RISING_EDGE;
+        domain_id_t domain = -1;
+        // The delay outside of the device, and that of the pad buffer between the pad and the point (over the
+        // cell arc from or to pad_pin; none: no such arc)
+        DelayPair external{0}, buffer{0};
+        IdString pad_pin;
+    };
+    dict<CellPortKey, std::vector<IoPoint>> io_starts, io_ends;
+    // The point of a start or end point in a domain (of several, the one of the longest or the shortest delay)
+    const IoPoint *io_point(bool output, CellPortKey port, domain_id_t domain, bool longest) const;
+    // Per clock net and reference of the points: the delay from the source of the clock to the driver of the net,
+    // or the delay from there to the port of a clock the design puts out, negated (see get_clock_latency)
+    dict<std::pair<IdString, int>, DelayPair> clock_latency;
+    // The delays that are not applied, and why
+    std::vector<std::string> io_notes;
+
     CellInfo *cell_info(const CellPortKey &key);
     PortInfo &port_info(const CellPortKey &key);
 
     domain_id_t domain_id(IdString cell, IdString clock_port, ClockEdge edge, int tag = 0);
-    domain_id_t domain_id(const NetInfo *net, ClockEdge edge, int tag = 0);
+    domain_id_t domain_id(const NetInfo *net, ClockEdge edge, int tag = 0, int io = 0);
     // The domain of async start or end points with a domain tag
     domain_id_t async_domain_id(int tag);
     domain_id_t domain_pair_id(domain_id_t launch, domain_id_t capture);

@@ -91,6 +91,18 @@ struct BaseCtx
     // of the same specificity wins)
     std::vector<TimingException> timing_exceptions;
 
+    // The input and output delays of the timing constraints (set_input_delay, set_output_delay): one per port (or
+    // pad buffer cell), direction, clock and clock edge
+    std::vector<IoDelay> io_delays;
+
+    // The clocks the design puts out at a port (create_generated_clock on an output port): input and output delays
+    // may be against them
+    std::vector<ForwardedClock> forwarded_clocks;
+
+    // The arch checks the hold times of the finished routing itself, after passes that repair them: until then, the
+    // timing reports (as the router's) list hold violations without raising them as errors
+    bool hold_checked_later = false;
+
     Context *as_ctx = nullptr;
 
     // Has the frontend loaded a design?

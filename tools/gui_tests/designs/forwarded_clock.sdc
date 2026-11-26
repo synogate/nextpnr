@@ -1,0 +1,6 @@
+create_clock -name sys -period 20 [get_ports clk]
+create_generated_clock -name fwd -source [get_ports clk] [get_ports clk_out]
+set_output_delay -clock fwd -max 2 [get_ports {dout[*]}]
+set_output_delay -clock fwd -min -1 [get_ports {dout[*]}]
+set_input_delay -clock fwd -max 6 [get_ports {din[*]}]
+set_input_delay -clock fwd -min 1 [get_ports {din[*]}]
